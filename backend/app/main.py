@@ -8,6 +8,7 @@ from fastapi import FastAPI, Header, HTTPException
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
+from .intelligence import enrich
 
 DB = Path(os.environ.get("MODELHARBOR_DB", "/data/modelharbor.sqlite3"))
 TOKEN = os.environ.get("MODELHARBOR_AGENT_TOKEN", "")
@@ -58,7 +59,7 @@ def models(x_modelharbor_token: str | None = Header(default=None)):
     authorize(x_modelharbor_token)
     with closing(connect()) as db:
         rows = db.execute("SELECT device,path,name,kind,size_bytes,modified_ns FROM models ORDER BY device,kind,name").fetchall()
-    return [dict(zip(("device","path","name","kind","size_bytes","modified_ns"), row)) for row in rows]
+    return enrich([dict(zip(("device","path","name","kind","size_bytes","modified_ns"), row)) for row in rows])
 
 def authorize(value):
     if not TOKEN or value != TOKEN:
