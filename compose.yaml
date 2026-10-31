@@ -1,6 +1,6 @@
 services:
   modelharbor:
-    build: ./backend
+    image: ghcr.io/rpeters1430/modelharbor:latest
     container_name: modelharbor
     restart: unless-stopped
     ports:
@@ -9,6 +9,9 @@ services:
       MODELHARBOR_DB: /data/modelharbor.sqlite3
       MODELHARBOR_AGENT_TOKEN: ${MODELHARBOR_AGENT_TOKEN:?Set MODELHARBOR_AGENT_TOKEN in .env}
     volumes:
-      - ./data:/data
+      - modelharbor_data:/data
     security_opt:
       - no-new-privileges:true
+
+volumes:
+  modelharbor_data:
