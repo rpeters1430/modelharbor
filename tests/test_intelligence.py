@@ -23,3 +23,12 @@ def test_unknown_is_not_verified():
     item=enrich([record("unknown.safetensors","a")])[0]
     assert item["family_guess"]=="Unknown"
     assert item["family_verified"] is False
+
+def test_hard_links_are_one_file():
+    a=record("x.safetensors","C:/m/x.safetensors"); a["file_id"]="1:42"
+    b=record("x.safetensors","C:/m/SDXL/x.safetensors"); b["file_id"]="1:42"
+    rows=enrich([a,b])
+    assert not any(x["possible_duplicate"] for x in rows)
+    assert [x["hard_link"] for x in rows]==[False,True]
+    c=record("x.safetensors","D:/x.safetensors"); c["file_id"]="2:7"
+    assert all(x["possible_duplicate"] for x in enrich([a,b,c]))
