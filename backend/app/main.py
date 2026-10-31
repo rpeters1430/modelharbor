@@ -4,11 +4,23 @@ import sqlite3
 from contextlib import closing
 from pathlib import Path
 from fastapi import FastAPI, Header, HTTPException
+from fastapi.responses import FileResponse
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 DB = Path(os.environ.get("MODELHARBOR_DB", "/data/modelharbor.sqlite3"))
 TOKEN = os.environ.get("MODELHARBOR_AGENT_TOKEN", "")
 app = FastAPI(title="ModelHarbor", version="0.1.0")
+STATIC = Path(__file__).parent / "static"
+app.mount("/static", StaticFiles(directory=STATIC), name="static")
+
+@app.get("/", include_in_schema=False)
+def dashboard():
+    return FileResponse(STATIC / "index.html")
+
+@app.get("/manifest.webmanifest", include_in_schema=False)
+def manifest():
+    return FileResponse(STATIC / "manifest.webmanifest", media_type="application/manifest+json")
 
 class ModelRecord(BaseModel):
     device: str = Field(min_length=1, max_length=100)
