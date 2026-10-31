@@ -31,7 +31,9 @@ def scan(root: Path, device: str):
                 except OSError:
                     continue
                 found.append({"device":device, "path":str(path), "name":filename,
-                    "kind":kind, "size_bytes":stat.st_size, "modified_ns":stat.st_mtime_ns})
+                    "kind":kind, "size_bytes":stat.st_size, "modified_ns":stat.st_mtime_ns,
+                    # Hard links share volume + file index; lets the server count them once.
+                    "file_id":f"{stat.st_dev}:{stat.st_ino}" if stat.st_ino else None})
     return found
 
 def main():

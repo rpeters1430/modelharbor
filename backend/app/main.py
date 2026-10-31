@@ -31,6 +31,7 @@ class ModelRecord(BaseModel):
     kind: str = Field(min_length=1, max_length=64)
     size_bytes: int = Field(ge=0)
     modified_ns: int = Field(ge=0)
+    file_id: str | None = Field(default=None, max_length=64)
 
 class Heartbeat(BaseModel):
     device: str = Field(min_length=1, max_length=100)
@@ -48,6 +49,8 @@ def connect():
         device TEXT NOT NULL, path TEXT NOT NULL, name TEXT NOT NULL,
         kind TEXT NOT NULL, size_bytes INTEGER NOT NULL, modified_ns INTEGER NOT NULL,
         PRIMARY KEY (device, path))""")
+    if "file_id" not in [row[1] for row in db.execute("PRAGMA table_info(models)")]:
+        db.execute("ALTER TABLE models ADD COLUMN file_id TEXT")
     return db
 
 @app.get("/api/health")
@@ -58,8 +61,8 @@ def health():
 def models(x_modelharbor_token: str | None = Header(default=None)):
     authorize(x_modelharbor_token)
     with closing(connect()) as db:
-        rows = db.execute("SELECT device,path,name,kind,size_bytes,modified_ns FROM models ORDER BY device,kind,name").fetchall()
-    return enrich([dict(zip(("device","path","name","kind","size_bytes","modified_ns"), row)) for row in rows])
+        rows = db.execute("SELECT device,path,name,kind,size_bytes,modified_ns,file_id FROM models ORDER BY device,kind,name").fetchall()
+    return enrich([dict(zip(("device","path","name","kind","size_bytes","modified_ns","file_id"), row)) for row in rows])
 
 def authorize(value):
     if not TOKEN or value != TOKEN:
@@ -73,8 +76,8 @@ def inventory(payload: Inventory, x_modelharbor_token: str | None = Header(defau
     with closing(connect()) as db:
         with db:
             db.execute("DELETE FROM models WHERE device=?", (payload.device,))
-            db.executemany("INSERT INTO models VALUES (?,?,?,?,?,?)",
-                [(m.device,m.path,m.name,m.kind,m.size_bytes,m.modified_ns) for m in payload.models])
+            db.executemany("INSERT INTO models (device,path,name,kind,size_bytes,modified_ns,file_id) VALUES (?,?,?,?,?,?,?)",
+                [(m.device,m.path,m.name,m.kind,m.size_bytes,m.modified_ns,m.file_id) for m in payload.models])
     return {"device": payload.device, "count": len(payload.models)}
 
 @app.post("/api/agents/heartbeat")

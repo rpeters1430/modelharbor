@@ -22,17 +22,26 @@ def family(record):
     return "Unknown"
 
 def enrich(records):
-    groups = defaultdict(list)
+    groups = defaultdict(set)
+    seen_files = set()
+    hard_links = set()
     for index, record in enumerate(records):
+        # Same device + file id is one file on disk under several paths (hard link).
+        file_key = (physical_device(record["device"]), record.get("file_id")) if record.get("file_id") else None
+        if file_key in seen_files:
+            hard_links.add(index)
+        elif file_key:
+            seen_files.add(file_key)
         # Filename + size is only a *possible* duplicate, not proof of same bytes.
         key = (record["name"].casefold(), record["size_bytes"])
         if record["size_bytes"] > 0 and not record["kind"].startswith("ollama/"):
-            groups[key].append(index)
+            groups[key].add(file_key or index)
     result = []
     for index, record in enumerate(records):
-        matches = groups.get((record["name"].casefold(), record["size_bytes"]), [])
+        copies = len(groups.get((record["name"].casefold(), record["size_bytes"]), ()))
         result.append({**record, "physical_device": physical_device(record["device"]),
             "family_guess": family(record), "family_verified": False,
-            "possible_duplicate": len(matches) > 1,
-            "duplicate_group_size": len(matches) if len(matches) > 1 else 0})
+            "hard_link": index in hard_links,
+            "possible_duplicate": copies > 1,
+            "duplicate_group_size": copies if copies > 1 else 0})
     return result
