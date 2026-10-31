@@ -1,0 +1,14 @@
+services:
+  modelharbor:
+    build: ./backend
+    container_name: modelharbor
+    restart: unless-stopped
+    ports:
+      - "8096:8096"
+    environment:
+      MODELHARBOR_DB: /data/modelharbor.sqlite3
+      MODELHARBOR_AGENT_TOKEN: ${MODELHARBOR_AGENT_TOKEN:?Set MODELHARBOR_AGENT_TOKEN in .env}
+    volumes:
+      - ./data:/data
+    security_opt:
+      - no-new-privileges:true
