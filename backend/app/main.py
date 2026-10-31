@@ -9,6 +9,7 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 from .intelligence import enrich
+from .providers import search as provider_search
 
 DB = Path(os.environ.get("MODELHARBOR_DB", "/data/modelharbor.sqlite3"))
 TOKEN = os.environ.get("MODELHARBOR_AGENT_TOKEN", "")
@@ -105,3 +106,9 @@ def agents(x_modelharbor_token: str | None = Header(default=None)):
     now = int(time.time())
     return [{"device": r[0], "last_seen": r[1], "online": now-r[1] <= 3900,
              "comfyui_count":r[2], "ollama_count":r[3]} for r in rows]
+
+@app.get("/api/discovery/{provider}")
+def discover(provider: str, q: str, x_modelharbor_token: str | None = Header(default=None)):
+    authorize(x_modelharbor_token)
+    return {"provider": provider, "query": q, "verified": False,
+            "results": provider_search(provider, q)}
