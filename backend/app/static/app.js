@@ -11,31 +11,40 @@ function showNotice(message){ $("notice").textContent=message; $("notice").hidde
 function setStatus(online){ $("status").textContent=online?"● Connected":"● Disconnected"; $("status").classList.toggle("online",online); }
 function openAuth(){ $("token").value=token; $("auth-dialog").showModal(); }
 function switchView(next){view=next;document.querySelectorAll(".tab").forEach(b=>b.classList.toggle("active",b.dataset.view===next));document.querySelectorAll(".view").forEach(e=>e.hidden=e.id!==next+"-view");$("heading").textContent=({overview:"Model overview",library:"Model library",devices:"Connected sources"})[next];}
-function modelRow(m){const b=text("button","", "model");b.type="button";b.append(text("span","◈","glyph"));const info=text("span","","model-text");info.append(text("div",m.name,"model-name"),text("div",m.kind+" · "+m.device+" · "+fmt(m.size_bytes),"model-sub"));b.append(info,text("span","›","chevron"));b.addEventListener("click",()=>details(m));return b;}
+function modelRow(m){const b=text("button","", "model");b.type="button";b.append(text("span","◈","glyph"));const info=text("span","","model-text");info.append(text("div",m.name,"model-name"),text("div",m.kind+" · "+m.device+" · "+fmt(m.size_bytes)+(m.possible_duplicate?" · Possible duplicate":""),"model-sub"));b.append(info,text("span","›","chevron"));b.addEventListener("click",()=>details(m));return b;}
 function fill(target,items,empty){target.replaceChildren();if(!items.length)target.append(text("p",empty,"muted"));else items.forEach(m=>target.append(modelRow(m)));}
-function details(m){$("detail-title").textContent=m.name;const dl=$("detail-fields");dl.replaceChildren();for(const [k,v] of Object.entries({Type:m.kind,Device:m.device,Size:fmt(m.size_bytes),Path:m.path})){dl.append(text("dt",k),text("dd",v));}$("detail-dialog").showModal();}
+function details(m){$("detail-title").textContent=m.name;const dl=$("detail-fields");dl.replaceChildren();for(const [k,v] of Object.entries({Type:m.kind,Device:m.device,Size:fmt(m.size_bytes),Family:(m.family_guess||"Unknown")+" (unverified)",Duplicates:m.possible_duplicate?"Possible match — verify hashes":"No matching name and size",Path:m.path})){dl.append(text("dt",k),text("dd",v));}$("detail-dialog").showModal();}
 function options(id,values,label){const el=$(id),old=el.value;el.replaceChildren(new Option(label,""));values.forEach(v=>el.add(new Option(v,v)));el.value=values.includes(old)?old:"";}
 function render(){
  $("count").textContent=models.length.toLocaleString();
  $("size").textContent=fmt(models.reduce((n,m)=>n+(Number(m.size_bytes)||0),0));
  const devices=[...new Set(models.map(m=>m.device))].sort();
- $("devices-count").textContent=devices.length;
+ const physical=[...new Set(models.map(m=>m.physical_device||m.device))];
+ $("devices-count").textContent=physical.length;
  fill($("recent"),models.slice(0,8),"No models indexed yet. Run the Windows inventory agent.");
  const counts=new Map();models.forEach(m=>counts.set(m.kind,(counts.get(m.kind)||0)+1));
  $("types").replaceChildren();[...counts].sort((a,b)=>b[1]-a[1]).slice(0,10).forEach(([kind,count])=>{const row=text("div");const line=text("div","","type-line");line.append(text("span",kind),text("span",String(count)));const bar=text("div","","bar");const inner=text("span");inner.style.width=(count/Math.max(models.length,1)*100)+"%";bar.append(inner);row.append(line,bar);$("types").append(row);});
  if(!counts.size)$("types").append(text("p","Model categories will appear after the first inventory scan.","muted"));
- options("kind",[...counts.keys()].sort(),"All types");options("device",devices,"All devices");
+ options("kind",[...counts.keys()].sort(),"All types");options("device",devices,"All sources");options("family",[...new Set(models.map(m=>m.family_guess||"Unknown"))].sort(),"All families");
  const deviceList=$("device-list");deviceList.replaceChildren();
  agents.forEach(a=>{const card=text("div","","agent-card");const state=text("span",a.online?"● Online":"● Offline",a.online?"agent-online":"agent-offline");card.append(text("strong",a.device),state,text("div","ComfyUI: "+a.comfyui_count+" · Ollama: "+(a.ollama_count ?? "unavailable"),"model-sub"),text("div","Last sync: "+new Date(a.last_seen*1000).toLocaleString(),"model-sub"));deviceList.append(card);});
  devices.forEach(device=>{const matching=models.filter(m=>m.device===device);const b=text("button","","model");b.append(text("span","▣","glyph"));const info=text("span","","model-text");info.append(text("div",device,"model-name"),text("div",matching.length+" models · "+fmt(matching.reduce((n,m)=>n+m.size_bytes,0)),"model-sub"));b.append(info,text("span","›","chevron"));b.onclick=()=>{switchView("library");$("device").value=device;filter();};deviceList.append(b);});
  if(!devices.length)deviceList.append(text("p","No inventory sources registered.","muted"));
  filter();
 }
-function filter(){const q=$("search").value.trim().toLowerCase(),kind=$("kind").value,device=$("device").value;const subset=models.filter(m=>(!q||(m.name+" "+m.path).toLowerCase().includes(q))&&(!kind||m.kind===kind)&&(!device||m.device===device));$("results").textContent=subset.length+" results";fill($("library"),subset.slice(0,500), "No matching models.");if(subset.length>500)$("library").append(text("p","Showing first 500 results. Narrow your filters to see more.","muted"));}
+function filter(){
+ const q=$("search").value.trim().toLowerCase(),kind=$("kind").value,device=$("device").value;
+ const family=$("family").value, duplicates=$("duplicates").checked, sort=$("sort").value;
+ const subset=models.filter(m=>(!q||(m.name+" "+m.path).toLowerCase().includes(q))&&(!kind||m.kind===kind)&&(!device||m.device===device)&&(!family||m.family_guess===family)&&(!duplicates||m.possible_duplicate));
+ subset.sort((a,b)=>sort==="size-desc"?b.size_bytes-a.size_bytes:sort==="size-asc"?a.size_bytes-b.size_bytes:sort==="kind"?a.kind.localeCompare(b.kind)||a.name.localeCompare(b.name):a.name.localeCompare(b.name));
+ $("results").textContent=subset.length+" results";
+ fill($("library"),subset.slice(0,500),"No matching models.");
+ if(subset.length>500)$("library").append(text("p","Showing first 500 results. Narrow your filters to see more.","muted"));
+}
 async function refresh(){if(!token){openAuth();return;} $("refresh").disabled=true;try{const response=await fetch("/api/models",{headers:{"X-ModelHarbor-Token":token},cache:"no-store"});if(response.status===401){token="";sessionStorage.removeItem("modelharbor_token");setStatus(false);showNotice("Token rejected. Enter your configured API token.");openAuth();return;}if(!response.ok)throw Error("Server returned HTTP "+response.status);const data=await response.json();if(!Array.isArray(data))throw Error("Unexpected inventory response");models=data;try{const agentsResponse=await fetch("/api/agents",{headers:{"X-ModelHarbor-Token":token},cache:"no-store"});agents=agentsResponse.ok?await agentsResponse.json():[];}catch(_){agents=[];}setStatus(true);showNotice("");render();}catch(err){setStatus(false);showNotice("Unable to load inventory: "+err.message);}finally{$("refresh").disabled=false;}}
 document.querySelectorAll(".tab").forEach(b=>b.addEventListener("click",()=>switchView(b.dataset.view)));
 document.querySelectorAll("[data-go]").forEach(b=>b.addEventListener("click",()=>switchView(b.dataset.go)));
-["search","kind","device"].forEach(id=>$(id).addEventListener(id==="search"?"input":"change",filter));
+["search","kind","device","family","sort","duplicates"].forEach(id=>$(id).addEventListener(id==="search"?"input":"change",filter));
 $("refresh").onclick=refresh;$("settings").onclick=openAuth;
 $("auth-form").addEventListener("submit",e=>{e.preventDefault();token=$("token").value.trim();sessionStorage.setItem("modelharbor_token",token);$("auth-dialog").close();refresh();});
 $("cancel-auth").onclick=()=>$("auth-dialog").close();
