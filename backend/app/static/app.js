@@ -2,6 +2,7 @@
 "use strict";
 const $ = id => document.getElementById(id);
 let models = [];
+let agents = [];
 let token = sessionStorage.getItem("modelharbor_token") || "";
 let view = "overview";
 const fmt = n => { if (!Number.isFinite(n)) return "—"; if (n === 0) return "0 B"; const u = ["B","KB","MB","GB","TB","PB"]; const i = Math.min(Math.floor(Math.log(n)/Math.log(1000)),u.length-1); return (n/Math.pow(1000,i)).toFixed(i ? 1 : 0)+" "+u[i]; };
@@ -25,12 +26,13 @@ function render(){
  if(!counts.size)$("types").append(text("p","Model categories will appear after the first inventory scan.","muted"));
  options("kind",[...counts.keys()].sort(),"All types");options("device",devices,"All devices");
  const deviceList=$("device-list");deviceList.replaceChildren();
+ agents.forEach(a=>{const card=text("div","","agent-card");const state=text("span",a.online?"● Online":"● Offline",a.online?"agent-online":"agent-offline");card.append(text("strong",a.device),state,text("div","ComfyUI: "+a.comfyui_count+" · Ollama: "+(a.ollama_count ?? "unavailable"),"model-sub"),text("div","Last sync: "+new Date(a.last_seen*1000).toLocaleString(),"model-sub"));deviceList.append(card);});
  devices.forEach(device=>{const matching=models.filter(m=>m.device===device);const b=text("button","","model");b.append(text("span","▣","glyph"));const info=text("span","","model-text");info.append(text("div",device,"model-name"),text("div",matching.length+" models · "+fmt(matching.reduce((n,m)=>n+m.size_bytes,0)),"model-sub"));b.append(info,text("span","›","chevron"));b.onclick=()=>{switchView("library");$("device").value=device;filter();};deviceList.append(b);});
  if(!devices.length)deviceList.append(text("p","No inventory sources registered.","muted"));
  filter();
 }
 function filter(){const q=$("search").value.trim().toLowerCase(),kind=$("kind").value,device=$("device").value;const subset=models.filter(m=>(!q||(m.name+" "+m.path).toLowerCase().includes(q))&&(!kind||m.kind===kind)&&(!device||m.device===device));$("results").textContent=subset.length+" results";fill($("library"),subset.slice(0,500), "No matching models.");if(subset.length>500)$("library").append(text("p","Showing first 500 results. Narrow your filters to see more.","muted"));}
-async function refresh(){if(!token){openAuth();return;} $("refresh").disabled=true;try{const response=await fetch("/api/models",{headers:{"X-ModelHarbor-Token":token},cache:"no-store"});if(response.status===401){token="";sessionStorage.removeItem("modelharbor_token");setStatus(false);showNotice("Token rejected. Enter your configured API token.");openAuth();return;}if(!response.ok)throw Error("Server returned HTTP "+response.status);const data=await response.json();if(!Array.isArray(data))throw Error("Unexpected inventory response");models=data;setStatus(true);showNotice("");render();}catch(err){setStatus(false);showNotice("Unable to load inventory: "+err.message);}finally{$("refresh").disabled=false;}}
+async function refresh(){if(!token){openAuth();return;} $("refresh").disabled=true;try{const response=await fetch("/api/models",{headers:{"X-ModelHarbor-Token":token},cache:"no-store"});if(response.status===401){token="";sessionStorage.removeItem("modelharbor_token");setStatus(false);showNotice("Token rejected. Enter your configured API token.");openAuth();return;}if(!response.ok)throw Error("Server returned HTTP "+response.status);const data=await response.json();if(!Array.isArray(data))throw Error("Unexpected inventory response");models=data;try{const agentsResponse=await fetch("/api/agents",{headers:{"X-ModelHarbor-Token":token},cache:"no-store"});agents=agentsResponse.ok?await agentsResponse.json():[];}catch(_){agents=[];}setStatus(true);showNotice("");render();}catch(err){setStatus(false);showNotice("Unable to load inventory: "+err.message);}finally{$("refresh").disabled=false;}}
 document.querySelectorAll(".tab").forEach(b=>b.addEventListener("click",()=>switchView(b.dataset.view)));
 document.querySelectorAll("[data-go]").forEach(b=>b.addEventListener("click",()=>switchView(b.dataset.go)));
 ["search","kind","device"].forEach(id=>$(id).addEventListener(id==="search"?"input":"change",filter));

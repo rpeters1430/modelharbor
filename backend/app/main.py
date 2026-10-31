@@ -1,6 +1,7 @@
 """ModelHarbor read-only API foundation."""
 import os
 import sqlite3
+import time
 from contextlib import closing
 from pathlib import Path
 from fastapi import FastAPI, Header, HTTPException
@@ -29,6 +30,11 @@ class ModelRecord(BaseModel):
     kind: str = Field(min_length=1, max_length=64)
     size_bytes: int = Field(ge=0)
     modified_ns: int = Field(ge=0)
+
+class Heartbeat(BaseModel):
+    device: str = Field(min_length=1, max_length=100)
+    comfyui_count: int = Field(ge=0)
+    ollama_count: int | None = Field(default=None, ge=0)
 
 class Inventory(BaseModel):
     device: str
@@ -69,3 +75,29 @@ def inventory(payload: Inventory, x_modelharbor_token: str | None = Header(defau
             db.executemany("INSERT INTO models VALUES (?,?,?,?,?,?)",
                 [(m.device,m.path,m.name,m.kind,m.size_bytes,m.modified_ns) for m in payload.models])
     return {"device": payload.device, "count": len(payload.models)}
+
+@app.post("/api/agents/heartbeat")
+def heartbeat(payload: Heartbeat, x_modelharbor_token: str | None = Header(default=None)):
+    authorize(x_modelharbor_token)
+    with closing(connect()) as db:
+        with db:
+            db.execute("""CREATE TABLE IF NOT EXISTS agent_heartbeats
+                (device TEXT PRIMARY KEY, last_seen INTEGER NOT NULL,
+                 comfyui_count INTEGER NOT NULL, ollama_count INTEGER)""")
+            db.execute("""INSERT INTO agent_heartbeats VALUES (?,?,?,?)
+                ON CONFLICT(device) DO UPDATE SET last_seen=excluded.last_seen,
+                comfyui_count=excluded.comfyui_count,ollama_count=excluded.ollama_count""",
+                (payload.device, int(time.time()), payload.comfyui_count, payload.ollama_count))
+    return {"ok": True}
+
+@app.get("/api/agents")
+def agents(x_modelharbor_token: str | None = Header(default=None)):
+    authorize(x_modelharbor_token)
+    with closing(connect()) as db:
+        db.execute("""CREATE TABLE IF NOT EXISTS agent_heartbeats
+            (device TEXT PRIMARY KEY, last_seen INTEGER NOT NULL,
+             comfyui_count INTEGER NOT NULL, ollama_count INTEGER)""")
+        rows = db.execute("SELECT device,last_seen,comfyui_count,ollama_count FROM agent_heartbeats ORDER BY device").fetchall()
+    now = int(time.time())
+    return [{"device": r[0], "last_seen": r[1], "online": now-r[1] <= 3900,
+             "comfyui_count":r[2], "ollama_count":r[3]} for r in rows]

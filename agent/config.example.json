@@ -1,0 +1,8 @@
+{
+  "server": "http://192.168.8.137:8099",
+  "device": "windows-pc",
+  "comfyui_models_dirs": [],
+  "ollama_enabled": true,
+  "ollama_url": "http://127.0.0.1:11434",
+  "sync_interval_seconds": 1800
+}
