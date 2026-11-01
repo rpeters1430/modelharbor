@@ -23,6 +23,9 @@ def db():
     ensure_hash_tables(connection)
     ensure_source_tables(connection)
     downloads.ensure_tables(connection)
+    connection.execute("""CREATE TABLE agent_status (device TEXT PRIMARY KEY, phase TEXT NOT NULL, done INTEGER, total INTEGER,
+        done_bytes INTEGER, total_bytes INTEGER, current TEXT, message TEXT, started_at INTEGER, updated_at INTEGER,
+        worker_seen INTEGER, scan_requested_at INTEGER)""")
     connection.execute("INSERT INTO models VALUES ('pc:comfyui','C:/m/cool.safetensors','cool.safetensors','lora',5,1,NULL,?)", (OLD_SHA,))
     yield connection
     connection.close()
@@ -119,9 +122,6 @@ def test_agent_rejects_bad_downloads_and_leaves_nothing(tmp_path):
     assert (tmp_path / "cool_v2.safetensors").read_bytes() == b"mine"
 
 def test_cleanup_only_after_verified_download_and_triggers_rescan(db):
-    db.execute("""CREATE TABLE agent_status (device TEXT PRIMARY KEY, phase TEXT NOT NULL, done INTEGER, total INTEGER,
-        done_bytes INTEGER, total_bytes INTEGER, current TEXT, message TEXT, started_at INTEGER, updated_at INTEGER,
-        worker_seen INTEGER, scan_requested_at INTEGER)""")
     civitai_update(db)
     job = downloads.create(db, "pc:comfyui", "C:/m/cool.safetensors")
     with pytest.raises(HTTPException):

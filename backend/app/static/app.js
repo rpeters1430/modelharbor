@@ -11,7 +11,7 @@ const text = (tag,value,cls) => { const e=document.createElement(tag); e.textCon
 function showNotice(message){ $("notice").textContent=message; $("notice").hidden=!message; }
 function setStatus(online){ $("status").textContent=online?"● Connected":"● Disconnected"; $("status").classList.toggle("online",online); }
 function openAuth(){ $("token").value=token; $("auth-dialog").showModal(); }
-function switchView(next){view=next;document.querySelectorAll(".tab").forEach(b=>b.classList.toggle("active",b.dataset.view===next));document.querySelectorAll(".view").forEach(e=>e.hidden=e.id!==next+"-view");$("heading").textContent=({overview:"Model overview",library:"Model library",devices:"Connected sources"})[next];}
+function switchView(next){view=next;document.querySelectorAll(".tab").forEach(b=>b.classList.toggle("active",b.dataset.view===next));document.querySelectorAll(".view").forEach(e=>e.hidden=e.id!==next+"-view");$("heading").textContent=({overview:"Model overview",library:"Model library",browse:"Browse models",devices:"Connected sources"})[next];}
 let currentModel=null;
 function reopen(){const fresh=models.find(x=>x.device===currentModel.device&&x.path===currentModel.path);if(fresh)details(fresh);}
 async function showCivitaiVersions(item,target){
@@ -240,6 +240,89 @@ async function pollAgents(){
  }catch(_){}
 }
 setInterval(()=>{if(token&&!document.hidden&&(view==="devices"||agentsBusy))pollAgents();},4000);
+let browseCursor=null,browseJobs=[];
+const browseAgent=()=>$("browse-agent").value||(agents.find(a=>a.online)||agents[0]||{}).device;
+function fillBrowseAgents(){
+ // Only ask which PC to download to when there is a choice.
+ const select=$("browse-agent"),current=select.value;select.replaceChildren(...agents.map(a=>new Option("Download to "+a.device+(a.online?"":" (offline)"),a.device)));
+ if(agents.some(a=>a.device===current))select.value=current;select.hidden=agents.length<2;
+}
+function newDownloadStatus(j){
+ if(j.state==="queued")return "Waiting for the Windows agent…";
+ if(j.state==="running")return "Downloading "+fmt(j.bytes_done)+(j.size_bytes?" of "+fmt(j.size_bytes):"")+"…";
+ if(j.state==="done")return "✓ Downloaded and verified: "+shortPath(j.result_path);
+ return "Download failed: "+(j.error||"unknown error");
+}
+function fileRow(label,onPc,ref,request){
+ // One downloadable file: "On your PC", an existing job's state, or a Download button.
+ const row=text("div","","browse-file");row.append(text("span",label,"model-sub"));
+ const status=text("span","","browse-status");row.append(status);
+ if(onPc){status.textContent="✓ On your PC";status.classList.add("on-pc");return row;}
+ const button=text("button","Download","repo-action");button.type="button";row.append(button);
+ const show=j=>{if(!j)return;status.textContent=newDownloadStatus(j);button.hidden=j.state!=="failed";
+  if(j.state==="queued"||j.state==="running")setTimeout(async()=>{if(view!=="browse")return;try{show((await apiRequest("/api/downloads")).find(x=>x.id===j.id));}catch(_){}},3000);};
+ if(!browseAgent()){button.disabled=true;status.textContent="No Windows agent connected";}
+ button.addEventListener("click",async()=>{button.disabled=true;try{show(await apiRequest("/api/downloads/new","POST",{agent:browseAgent(),...request}));}catch(err){status.textContent=err.message;button.disabled=false;}});
+ show(browseJobs.find(j=>j.source_ref===ref&&j.state!=="failed"));
+ return row;
+}
+function civitaiCard(item){
+ const card=text("div","","browse-card");
+ const mature=$("browse-mature").checked;
+ if(item.image&&(item.image.nsfw_level<=1||mature)){const img=document.createElement("img");img.src=item.image.url;img.alt="";img.loading="lazy";img.referrerPolicy="no-referrer";card.append(img);}
+ const info=text("div","","browse-info");
+ info.append(text("strong",item.name),text("div",[item.type,item.creator,item.downloads!=null?"↓ "+Number(item.downloads).toLocaleString():""].filter(Boolean).join(" · "),"model-sub"));
+ info.append(text("div",item.installed_version?(item.latest_installed?"✓ On your PC ("+item.installed_version+")":"Other version on your PC ("+item.installed_version+")"):"Not on your PC","browse-badge"+(item.installed_version?" on-pc":"")));
+ const toggle=text("button","Versions & files","repo-action");toggle.type="button";const files=text("div","","browse-versions");files.hidden=true;
+ toggle.addEventListener("click",()=>{files.hidden=!files.hidden;});
+ item.versions.forEach(v=>{files.append(text("div",v.name+(v.base_model?" · "+v.base_model:"")+(v.published_at?" · "+v.published_at.slice(0,10):""),"version-name"));
+  v.files.forEach(f=>files.append(fileRow(f.name+" · "+f.type+" · "+fmt(f.size_bytes)+" → "+f.folder,f.on_pc,"civitai:"+f.id,{provider:"civitai",model_id:item.id,version_id:v.id,file_id:f.id})));});
+ const link=document.createElement("a");link.href=item.url;link.target="_blank";link.rel="noopener noreferrer";link.textContent="Open on Civitai ↗";link.className="model-sub";
+ info.append(toggle,link);card.append(info,files);return card;
+}
+function huggingfaceCard(repo){
+ const card=text("div","","browse-card");const info=text("div","","browse-info");
+ info.append(text("strong",repo.id),text("div","Hugging Face"+(repo.downloads!=null?" · ↓ "+Number(repo.downloads).toLocaleString():""),"model-sub"));
+ const toggle=text("button","Show files","repo-action");toggle.type="button";const files=text("div","","browse-versions");files.hidden=true;
+ const folder=document.createElement("select");folder.setAttribute("aria-label","Save into folder");["loras","checkpoints","diffusion_models","text_encoders","vae","embeddings","controlnet","upscale_models"].forEach(f=>folder.append(new Option("Save into "+f,f)));
+ toggle.addEventListener("click",async()=>{files.hidden=!files.hidden;if(files.hidden||files.childElementCount)return;files.append(text("p","Loading files…","muted"));
+  try{const listing=await apiRequest("/api/huggingface/repository?repo="+encodeURIComponent(repo.id));files.replaceChildren(folder);
+   if(!listing.files.length)files.append(text("p","No model files in this repository.","muted"));
+   listing.files.forEach(f=>files.append(fileRow(f.path+(f.size_bytes?" · "+fmt(f.size_bytes):"")+(f.sha256?"":" · no published hash"),f.on_pc,"huggingface:"+repo.id+"/"+f.path,{provider:"huggingface",repository:repo.id,remote_path:f.path,get folder(){return folder.value;}})));}
+  catch(err){files.replaceChildren(text("p",err.message,"muted"));}});
+ const link=document.createElement("a");link.href=repo.url;link.target="_blank";link.rel="noopener noreferrer";link.textContent="Open on Hugging Face ↗";link.className="model-sub";
+ info.append(toggle,link);card.append(info,files);return card;
+}
+async function browseSearch(more){
+ const list=$("browse-list"),provider=$("browse-provider").value,q=$("browse-q").value.trim();
+ if(!more){list.replaceChildren(text("p","Searching…","muted"));browseCursor=null;}
+ $("browse-go").disabled=$("browse-more").disabled=true;
+ try{
+  browseJobs=await apiRequest("/api/downloads").catch(()=>[]);
+  if(provider==="huggingface"){
+   if(q.length<3)throw Error("Enter at least 3 characters to search Hugging Face.");
+   const data=await apiRequest("/api/discovery/huggingface?q="+encodeURIComponent(q));
+   list.replaceChildren(...data.results.map(huggingfaceCard));$("browse-more").hidden=true;
+   $("browse-results").textContent=data.results.length+" repositories";
+  }else{
+   const params=new URLSearchParams({q,type:$("browse-type").value,base:$("browse-base").value,sort:$("browse-sort").value});
+   if(more&&browseCursor)params.set("cursor",browseCursor);
+   const data=await apiRequest("/api/browse/civitai?"+params);
+   if(!more)list.replaceChildren();
+   data.items.forEach(item=>list.append(civitaiCard(item)));
+   browseCursor=data.next_cursor;$("browse-more").hidden=!browseCursor;
+   $("browse-results").textContent=list.querySelectorAll(".browse-card").length+" models";
+  }
+  if(!list.childElementCount)list.append(text("p","Nothing found. Try fewer filters.","muted"));
+ }catch(err){if(!more)list.replaceChildren();list.append(text("p",err.message,"muted"));}
+ finally{$("browse-go").disabled=$("browse-more").disabled=false;}
+}
+$("browse-go").addEventListener("click",()=>browseSearch(false));
+$("browse-more").addEventListener("click",()=>browseSearch(true));
+$("browse-q").addEventListener("keydown",e=>{if(e.key==="Enter")browseSearch(false);});
+$("browse-provider").addEventListener("change",()=>{const hf=$("browse-provider").value==="huggingface";["browse-type","browse-base","browse-sort"].forEach(id=>$(id).hidden=hf);});
+try{$("browse-mature").checked=localStorage.getItem("modelharbor_mature")==="1";}catch(_){}
+$("browse-mature").addEventListener("change",()=>{try{localStorage.setItem("modelharbor_mature",$("browse-mature").checked?"1":"0");}catch(_){}});
 function render(){
  $("count").textContent=models.length.toLocaleString();
  $("size").textContent=fmt(models.reduce((n,m)=>n+(m.hard_link?0:Number(m.size_bytes)||0),0));
@@ -255,7 +338,7 @@ function render(){
  if(!counts.size)$("types").append(text("p","Model categories will appear after the first inventory scan.","muted"));
  options("kind",[...counts.keys()].sort(),"All types");options("device",devices,"All sources");options("family",[...new Set(models.map(m=>m.family_guess||"Unknown"))].sort(),"All families");options("folder",[...new Set(models.filter(m=>m.kind==="lora").map(m=>m.path.replace(/[\\/][^\\/]+$/,"")))].sort(),"All LoRA folders");
  const deviceList=$("device-list");deviceList.replaceChildren();
- renderAgents();
+ renderAgents();fillBrowseAgents();
  devices.forEach(device=>{const matching=models.filter(m=>m.device===device);const b=text("button","","model");b.append(text("span","▣","glyph"));const info=text("span","","model-text");info.append(text("div",device,"model-name"),text("div",matching.length+" models · "+fmt(matching.reduce((n,m)=>n+(m.hard_link?0:m.size_bytes),0)),"model-sub"));b.append(info,text("span","›","chevron"));b.onclick=()=>{switchView("library");$("device").value=device;filter();};deviceList.append(b);});
  if(!devices.length)deviceList.append(text("p","No inventory sources registered.","muted"));
  filter();

@@ -11,8 +11,10 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 from .intelligence import enrich
 from .providers import search as provider_search
-from .hf_repository import list_model_files
-from . import downloads
+from urllib.parse import quote
+from .hf_repository import list_model_files, validate_repo
+from . import browse, downloads
+from .sources import _civitai_model, _file_sha, fetch
 from .sources import annotate, civitai_link, civitai_unlink, civitai_versions, ensure_tables as ensure_source_tables, start_worker
 from .hash_matches import ensure_tables, queue_job, claim_job, finish_job, get_job, select_match, selected_for_inventory
 
@@ -210,7 +212,9 @@ def discover(provider: str, q: str, x_modelharbor_token: str | None = Header(def
 @app.get("/api/huggingface/repository")
 def huggingface_repository(repo: str, q: str = "", x_modelharbor_token: str | None = Header(default=None)):
     authorize(x_modelharbor_token)
-    return list_model_files(repo, q)
+    with closing(connect()) as db:
+        shas = browse.local_shas(db)
+    return browse.mark_huggingface(list_model_files(repo, q), shas)
 
 class VerifyRequest(BaseModel):
     device: str = Field(min_length=1,max_length=100)
@@ -385,3 +389,48 @@ def cleanup_result(job_id: str, payload: CleanupResult, x_modelharbor_token: str
     with closing(connect()) as db:
         with db:
             return downloads.finish_cleanup(db, job_id, payload.agent, payload.error)
+
+@app.get("/api/browse/civitai")
+def browse_civitai(q: str = "", type: str = "", base: str = "", sort: str = "Most Downloaded", cursor: str = "",
+                   x_modelharbor_token: str | None = Header(default=None)):
+    authorize(x_modelharbor_token)
+    with closing(connect()) as db:
+        shas = browse.local_shas(db)
+    try:
+        return browse.search_civitai(q, type, base, sort, cursor, shas)
+    except (OSError, ValueError) as exc:
+        raise HTTPException(502, "Civitai is unavailable right now") from exc
+
+class NewDownload(BaseModel):
+    agent: str = Field(min_length=1, max_length=100)
+    provider: str = Field(pattern=r"^(civitai|huggingface)$")
+    model_id: int | None = Field(default=None, ge=1)
+    version_id: int | None = Field(default=None, ge=1)
+    file_id: int | None = Field(default=None, ge=1)
+    repository: str | None = Field(default=None, max_length=193)
+    remote_path: str | None = Field(default=None, max_length=1024)
+    folder: str | None = Field(default=None, max_length=40)
+
+@app.post("/api/downloads/new", status_code=202)
+def new_download(payload: NewDownload, x_modelharbor_token: str | None = Header(default=None)):
+    """Download a model that is not on the PC. URL, file name and hash come from the provider, not the client."""
+    authorize(x_modelharbor_token)
+    if payload.provider == "civitai":
+        model = _civitai_model(payload.model_id or 0, fetch)
+        version = next((v for v in model.get("modelVersions") or [] if v.get("id") == payload.version_id), None)
+        file = version and next((f for f in version.get("files") or [] if f.get("id") == payload.file_id), None)
+        if not file:
+            raise HTTPException(404, "That file is not part of the chosen Civitai version")
+        args = (f"https://civitai.com/api/download/models/{payload.version_id}?fileId={payload.file_id}",
+                str(file.get("name") or ""), _file_sha(file), int(float(file.get("sizeKB") or 0) * 1024),
+                browse.folder_for(model.get("type"), file.get("type")), f"civitai:{payload.file_id}")
+    else:
+        repo = validate_repo(payload.repository or "")
+        item = next((f for f in list_model_files(repo)["files"] if f["path"] == payload.remote_path), None)
+        if not item:
+            raise HTTPException(404, "File not found in that repository")
+        args = ("https://huggingface.co/" + quote(repo, safe="/") + "/resolve/main/" + quote(item["path"], safe="/"),
+                item["name"], item["sha256"], item["size_bytes"], payload.folder or "loras", f"huggingface:{repo}/{item['path']}")
+    with closing(connect()) as db:
+        with db:
+            return downloads.create_new(db, payload.agent, *args, payload.provider)
