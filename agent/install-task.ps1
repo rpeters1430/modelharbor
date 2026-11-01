@@ -17,3 +17,12 @@ $Trigger.Repetition = New-CimInstance -ClientOnly -ClassName MSFT_TaskRepetition
 $Principal = New-ScheduledTaskPrincipal -UserId "$env:USERDOMAIN\$env:USERNAME" -LogonType Interactive -RunLevel Limited
 Register-ScheduledTask -TaskName "ModelHarbor Inventory Sync" -Action $Action -Trigger $Trigger -Principal $Principal -Description "Read-only ComfyUI and Ollama inventory sync" -Force
 Write-Host "Installed task: ModelHarbor Inventory Sync"
+
+# Dedicated per-user hash worker, independent of the 30-minute inventory schedule.
+# It only reads locally stored files after an authenticated dashboard request.
+$HashAction = New-ScheduledTaskAction -Execute $Python -Argument ('"' + $Script + '" --config "' + $Config + '" --hash-worker') -WorkingDirectory $AgentDir
+$HashTrigger = New-ScheduledTaskTrigger -AtLogOn -User $env:USERNAME
+$HashSettings = New-ScheduledTaskSettingsSet -RestartCount 3 -RestartInterval (New-TimeSpan -Minutes 1) -ExecutionTimeLimit (New-TimeSpan -Seconds 0) -MultipleInstances IgnoreNew
+Register-ScheduledTask -TaskName "ModelHarbor Hash Worker" -Action $HashAction -Trigger $HashTrigger -Principal $Principal -Settings $HashSettings -Description "On-demand read-only model SHA-256 verification" -Force
+Start-ScheduledTask -TaskName "ModelHarbor Hash Worker"
+Write-Host "Installed and started task: ModelHarbor Hash Worker"

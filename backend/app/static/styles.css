@@ -14,3 +14,9 @@
 .repo-action{border:1px solid #5265a3;background:#2a3758;color:#edf2ff;border-radius:8px;padding:9px 12px;font-size:12px;align-self:start}
 .match-possible{color:#92e4ba;font-size:11px}
 @media(max-width:550px){.repo-controls{grid-template-columns:1fr}.repo-controls button{min-height:44px}.repo-files{max-height:360px}}
+
+.verify-controls{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:9px;margin-top:10px}
+.verify-controls select{min-width:0;width:100%;font-size:12px;overflow:hidden}
+.verify-controls button{min-width:130px}
+.match-verified{color:#8cf0bf;font-size:12px;font-weight:650;overflow-wrap:anywhere}
+@media(max-width:550px){.verify-controls{grid-template-columns:1fr}.verify-controls button{min-height:44px}}
