@@ -79,3 +79,13 @@ def test_invalid_digest_rejected(db):
     claim_job(db,"pc:comfyui")
     with pytest.raises(HTTPException):
         finish_job(db,job["id"],"pc:comfyui","xyz",None)
+
+def test_selected_association_disappears_when_inventory_changes(db):
+    job=queue(db)
+    claim_job(db,"pc:comfyui")
+    finish_job(db,job["id"],"pc:comfyui",DIGEST,None)
+    with patch("backend.app.hash_matches._remote_file",return_value=remote()):
+        select_match(db,job["id"])
+    assert len(selected_for_inventory(db))==1
+    db.execute("UPDATE models SET modified_ns=9876")
+    assert selected_for_inventory(db)==[]
