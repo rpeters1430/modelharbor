@@ -22,9 +22,10 @@ Open a model with **⬆ Update** in the dashboard and press **Download update**.
 
 - The NAS decides exactly which file to fetch and the SHA-256 it must have: for Civitai, the file of the same kind (main weights, text encoder, VAE…) in the newer version; for Hugging Face, the changed file on `main`; for Ollama, the newer build of the same tag.
 - The Windows agent's background task (`ModelHarbor Hash Worker`) downloads it **next to the old file**, only from `civitai.com`, `civitai.red` or `huggingface.co`, after checking free disk space. The file is written as `.partial`, its SHA-256 is checked, and only then is it renamed. A mismatch deletes the partial file.
-- It never overwrites or deletes anything. An existing file with the same name stops the download. Hugging Face copies get a hash suffix (`name.1a2b3c4d.safetensors`) because the upstream filename is unchanged.
+- A download never overwrites anything. An existing file with the same name stops the download. Hugging Face copies get a hash suffix (`name.1a2b3c4d.safetensors`) because the upstream filename is unchanged.
 - Ollama updates run `ollama pull` for the same tag through the local Ollama API.
-- The new file appears in the dashboard after the next inventory sync. Remove the old version yourself once you're happy with the new one.
+- The new file appears in the dashboard after the next inventory sync.
+- Once the download has finished and passed its hash check, **Delete old version** appears. After you confirm, the agent re-hashes both files and permanently deletes the old one only if the new file still matches its verified hash and the old file is exactly the one in the inventory. Otherwise nothing is deleted and the reason is shown. A rescan runs afterwards so the dashboard updates. Ollama needs no cleanup, because a pull replaces the old build.
 
 ### API keys (only on the Windows PC)
 

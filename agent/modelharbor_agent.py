@@ -139,6 +139,7 @@ def run_hash_worker(cfg, token):
                 try:
                     download_worker.process_one(session,server,token,device.rsplit(":",1)[0],roots,
                                                 cfg.get("ollama_url","http://127.0.0.1:11434"))
+                    download_worker.process_cleanup(session,server,token,agent,roots)
                 except (requests.RequestException,OSError,ValueError) as exc:
                     LOG.warning("Download poll failed; retrying: %s",exc)
             time.sleep(interval)

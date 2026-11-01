@@ -1,5 +1,6 @@
 """User-approved update downloads. The NAS decides what to fetch and the expected SHA-256;
-the Windows agent downloads next to the old file and never overwrites or deletes anything."""
+the Windows agent downloads next to the old file and never overwrites it. The old file is
+deleted only when the user asks after a verified download (see request_cleanup)."""
 import json
 import re
 import time
@@ -14,7 +15,7 @@ SAFE_NAME = re.compile(r"^[\w .()+,-]{1,200}\.(?:safetensors|ckpt|pt|pth|bin|ggu
 ACTIVE = ("queued", "running")
 STALE_SECONDS = 1800
 FIELDS = ("id", "device", "path", "provider", "file_name", "size_bytes", "state", "bytes_done",
-          "error", "result_path", "created_at", "updated_at")
+          "error", "result_path", "created_at", "updated_at", "cleanup", "cleanup_error")
 
 def ensure_tables(db):
     db.execute("""CREATE TABLE IF NOT EXISTS download_jobs (
@@ -22,6 +23,11 @@ def ensure_tables(db):
         provider TEXT NOT NULL, url TEXT, file_name TEXT NOT NULL, expected_sha TEXT,
         size_bytes INTEGER, state TEXT NOT NULL, bytes_done INTEGER NOT NULL DEFAULT 0,
         error TEXT, result_path TEXT, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL)""")
+    columns = [row[1] for row in db.execute("PRAGMA table_info(download_jobs)")]
+    # cleanup: NULL, then queued -> running -> done | failed when the user deletes the old file.
+    for column in ("old_sha", "cleanup", "cleanup_error"):
+        if column not in columns:
+            db.execute(f"ALTER TABLE download_jobs ADD COLUMN {column} TEXT")
 
 def _record(db, device, path):
     row = db.execute("SELECT device,path,name,kind,size_bytes,modified_ns,sha256 FROM models WHERE device=? AND path=?",
@@ -103,3 +109,43 @@ def finish(db, job_id, agent, sha256, error, result_path):
 def recent(db, limit=100):
     rows = db.execute(f"SELECT {','.join(FIELDS)} FROM download_jobs ORDER BY created_at DESC LIMIT ?", (limit,))
     return [dict(zip(FIELDS, row)) for row in rows]
+
+def request_cleanup(db, job_id):
+    """Queue deletion of the old file after a verified download. The agent re-checks both files first."""
+    row = db.execute("SELECT device,path,provider,state,result_path,cleanup FROM download_jobs WHERE id=?",
+                     (job_id,)).fetchone()
+    if not row:
+        raise HTTPException(404, "Unknown download")
+    device, path, provider, state, result_path, cleanup = row
+    if provider == "ollama":
+        raise HTTPException(409, "Ollama replaces the old build itself")
+    if state != "done" or not result_path:
+        raise HTTPException(409, "The new version must finish downloading and pass its hash check first")
+    if cleanup in ("queued", "running", "done"):
+        return {"id": job_id, "cleanup": cleanup}
+    current = db.execute("SELECT sha256 FROM models WHERE device=? AND path=?", (device, path)).fetchone()
+    if not current or not current[0]:
+        raise HTTPException(409, "The old file is no longer in the inventory")
+    # Pin the exact old file: the agent deletes nothing whose hash differs from this.
+    db.execute("UPDATE download_jobs SET cleanup='queued',cleanup_error=NULL,old_sha=?,updated_at=? WHERE id=?",
+               (current[0], int(time.time()), job_id))
+    return {"id": job_id, "cleanup": "queued"}
+
+def claim_cleanup(db, agent):
+    row = db.execute("""SELECT id,path,result_path,old_sha,expected_sha FROM download_jobs
+        WHERE agent=? AND cleanup='queued' ORDER BY updated_at LIMIT 1""", (agent,)).fetchone()
+    if not row or db.execute("UPDATE download_jobs SET cleanup='running' WHERE id=? AND cleanup='queued'",
+                             (row[0],)).rowcount != 1:
+        return None
+    return dict(zip(("id", "path", "new_path", "old_sha", "new_sha"), row))
+
+def finish_cleanup(db, job_id, agent, error):
+    if db.execute("""UPDATE download_jobs SET cleanup=?,cleanup_error=?,updated_at=?
+        WHERE id=? AND agent=? AND cleanup='running'""",
+        ("failed" if error else "done", str(error)[:300] if error else None, int(time.time()), job_id, agent)).rowcount != 1:
+        raise HTTPException(409, "Cleanup is no longer running for this agent")
+    if not error:
+        # Rescan so the dashboard drops the deleted file and lists the new one.
+        db.execute("""INSERT INTO agent_status (device,phase,scan_requested_at) VALUES (?,'idle',?)
+            ON CONFLICT(device) DO UPDATE SET scan_requested_at=excluded.scan_requested_at""", (agent, int(time.time())))
+    return {"id": job_id, "cleanup": "failed" if error else "done"}

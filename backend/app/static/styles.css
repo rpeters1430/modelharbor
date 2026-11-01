@@ -24,3 +24,4 @@
 .download-box{display:grid;gap:8px;margin:4px 0 18px}.download-box:empty{display:none}.download-box p{margin:0;font-size:13px;overflow-wrap:anywhere}
 .version-picker{display:grid;gap:6px;margin:4px 0 12px}.version-picker:empty{display:none}.version-name{font-size:13px;margin-top:8px}.repo-action.exact{border-color:#3fb98a;color:#bff5dd}
 .agent-status{font-size:14px;margin:6px 0;overflow-wrap:anywhere}.agent-error{color:#ffb4ab}.agent-card .bar{margin:4px 0 8px}.agent-card .repo-action{margin-top:8px}
+.repo-action.danger{border-color:#c4554d;color:#ffd9d4;background:#3b2224}

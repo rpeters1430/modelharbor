@@ -117,3 +117,41 @@ def test_agent_rejects_bad_downloads_and_leaves_nothing(tmp_path):
     with pytest.raises(ValueError, match="already exists"):
         download_file(FakeSession(FakeResponse(b"expected")), job, [str(tmp_path)], lambda d: None)
     assert (tmp_path / "cool_v2.safetensors").read_bytes() == b"mine"
+
+def test_cleanup_only_after_verified_download_and_triggers_rescan(db):
+    db.execute("""CREATE TABLE agent_status (device TEXT PRIMARY KEY, phase TEXT NOT NULL, done INTEGER, total INTEGER,
+        done_bytes INTEGER, total_bytes INTEGER, current TEXT, message TEXT, started_at INTEGER, updated_at INTEGER,
+        worker_seen INTEGER, scan_requested_at INTEGER)""")
+    civitai_update(db)
+    job = downloads.create(db, "pc:comfyui", "C:/m/cool.safetensors")
+    with pytest.raises(HTTPException):
+        downloads.request_cleanup(db, job["id"])  # not downloaded yet
+    downloads.claim(db, "pc")
+    downloads.finish(db, job["id"], "pc", NEW_SHA, None, "C:/m/cool_v2.safetensors")
+    assert downloads.request_cleanup(db, job["id"])["cleanup"] == "queued"
+    task = downloads.claim_cleanup(db, "pc")
+    assert task == {"id": job["id"], "path": "C:/m/cool.safetensors", "new_path": "C:/m/cool_v2.safetensors",
+                    "old_sha": OLD_SHA, "new_sha": NEW_SHA}
+    assert downloads.claim_cleanup(db, "pc") is None
+    assert downloads.finish_cleanup(db, job["id"], "pc", None)["cleanup"] == "done"
+    assert db.execute("SELECT scan_requested_at FROM agent_status WHERE device='pc'").fetchone()[0]
+
+def test_agent_deletes_old_only_when_both_hashes_still_match(tmp_path):
+    from download_worker import delete_old
+    old, new = tmp_path / "cool.safetensors", tmp_path / "cool_v2.safetensors"
+    old.write_bytes(b"old"); new.write_bytes(b"new")
+    sha = lambda b: hashlib.sha256(b).hexdigest()
+    job = {"path": str(old), "new_path": str(new), "old_sha": sha(b"old"), "new_sha": sha(b"new")}
+    with pytest.raises(ValueError, match="new file no longer matches"):
+        delete_old({**job, "new_sha": sha(b"other")}, [str(tmp_path)])
+    with pytest.raises(ValueError, match="old file changed"):
+        delete_old({**job, "old_sha": sha(b"other")}, [str(tmp_path)])
+    with pytest.raises(ValueError, match="same file"):
+        delete_old({**job, "new_path": str(old)}, [str(tmp_path)])
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    with pytest.raises(ValueError, match="outside approved"):
+        delete_old(job, [str(elsewhere)])
+    assert old.exists()
+    delete_old(job, [str(tmp_path)])
+    assert not old.exists() and new.read_bytes() == b"new"
