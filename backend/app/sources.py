@@ -35,6 +35,8 @@ def ensure_tables(db):
     if "verified" not in columns:
         # NULL: found by hash lookup. 0: linked by hand to a file with a different hash.
         db.execute("ALTER TABLE civitai_files ADD COLUMN verified INTEGER")
+    # Files the user marked as not on any site (own LoRAs, merges), so they leave the Unmatched list.
+    db.execute("CREATE TABLE IF NOT EXISTS match_ignored (sha256 TEXT PRIMARY KEY, ignored_at INTEGER NOT NULL)")
     db.execute("""CREATE TABLE IF NOT EXISTS ollama_remote (
         name TEXT PRIMARY KEY, remote_digest TEXT, checked_at INTEGER NOT NULL)""")
 
@@ -272,6 +274,7 @@ def annotate(db, records):
         base_model,trained_words,published_at,nsfw,latest_version_id,latest_version_name,latest_published_at,verified
         FROM civitai_files WHERE found=1""")}
     checked = {r[0] for r in db.execute("SELECT sha256 FROM civitai_files")}
+    ignored = {r[0] for r in db.execute("SELECT sha256 FROM match_ignored")}
     ollama = dict(db.execute("SELECT name,remote_digest FROM ollama_remote WHERE remote_digest IS NOT NULL"))
     hf = {(r[0], r[1]): r for r in db.execute("""SELECT s.device,s.path,s.repository,s.remote_path,s.sha256,s.latest_sha
         FROM selected_matches s JOIN models m ON s.device=m.device AND s.path=m.path
@@ -279,6 +282,7 @@ def annotate(db, records):
     for record in records:
         record["source"] = record["update"] = None
         record["source_checked"] = record.get("sha256") in checked
+        record["match_ignored"] = record.get("sha256") in ignored
         sha = record.get("sha256")
         if record["kind"].startswith("ollama/"):
             remote = ollama.get(record["name"])

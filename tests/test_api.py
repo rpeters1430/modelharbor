@@ -65,3 +65,20 @@ def test_new_download_endpoint_builds_job_from_provider_data(tmp_path, monkeypat
     job = client.post("/api/downloads/new", headers=headers, json=body).json()
     assert (job["file_name"], job["target_folder"], job["source_ref"]) == ("cool.safetensors", "loras", "civitai:120")
     assert client.post("/api/downloads/new", headers=headers, json={**body, "file_id": 999}).status_code == 404
+
+def test_mark_file_local_only(tmp_path, monkeypatch):
+    from backend.app import main
+    monkeypatch.setattr(main, "DB", tmp_path / "ignore.sqlite3")
+    client, headers = TestClient(app), {"X-ModelHarbor-Token": "test-token"}
+    model = {"device": "pc:comfyui", "path": "C:/m/mine.safetensors", "name": "mine.safetensors", "kind": "lora",
+             "size_bytes": 5, "modified_ns": 1, "sha256": "c" * 64}
+    client.post("/api/inventory", json={"device": "pc:comfyui", "models": [model]}, headers=headers)
+    body = {"device": "pc:comfyui", "path": "C:/m/mine.safetensors", "ignored": True}
+    assert client.post("/api/match-ignore", headers=headers, json=body).json() == {"ignored": True}
+    assert client.get("/api/models", headers=headers).json()[0]["match_ignored"] is True
+    # Keyed by hash, so the mark survives the file being moved or renamed.
+    client.post("/api/inventory", json={"device": "pc:comfyui", "models": [{**model, "path": "C:/m/LoRA/renamed.safetensors"}]}, headers=headers)
+    assert client.get("/api/models", headers=headers).json()[0]["match_ignored"] is True
+    client.post("/api/match-ignore", headers=headers, json={**body, "path": "C:/m/LoRA/renamed.safetensors", "ignored": False})
+    assert client.get("/api/models", headers=headers).json()[0]["match_ignored"] is False
+    assert client.post("/api/match-ignore", headers=headers, json={**body, "path": "C:/nope"}).status_code == 404

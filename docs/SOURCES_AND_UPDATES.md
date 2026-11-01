@@ -55,3 +55,12 @@ The **Browse** tab searches Civitai (filter by type, base model and sort, with L
 - A finished download requests a rescan, so the card and library show it as on your PC.
 - With more than one PC connected, a **Download to** picker chooses which one.
 - Mature preview images are hidden unless **Show mature previews** is ticked. That setting is remembered per browser.
+
+## Unmatched files
+
+The overview's **N to match →** (under "files identified") opens the library filtered to **Unmatched only**: hashed ComfyUI files no site has identified yet. For each one, open it and either:
+
+- search under **Find model online** and use **Link to my file** (Civitai) or **Browse Hugging Face collection** to match it, or
+- press **Mark as local only** for your own LoRAs and merges that are on no site. They are tagged "Local only" and leave the list; **Show in Unmatched again** undoes it.
+
+Links and local-only marks are stored by the file's SHA-256, so they survive rescans, renames and moves.

@@ -434,3 +434,21 @@ def new_download(payload: NewDownload, x_modelharbor_token: str | None = Header(
     with closing(connect()) as db:
         with db:
             return downloads.create_new(db, payload.agent, *args, payload.provider)
+
+class MatchIgnore(BaseModel):
+    device: str = Field(min_length=1, max_length=100)
+    path: str = Field(min_length=1, max_length=4096)
+    ignored: bool
+
+@app.post("/api/match-ignore")
+def match_ignore(payload: MatchIgnore, x_modelharbor_token: str | None = Header(default=None)):
+    """Mark a file as local only (not on any site) or put it back on the Unmatched list. Keyed by hash."""
+    authorize(x_modelharbor_token)
+    with closing(connect()) as db:
+        with db:
+            sha = _local_sha(db, payload.device, payload.path)
+            if payload.ignored:
+                db.execute("INSERT OR IGNORE INTO match_ignored VALUES (?,?)", (sha, int(time.time())))
+            else:
+                db.execute("DELETE FROM match_ignored WHERE sha256=?", (sha,))
+    return {"ignored": payload.ignored}
