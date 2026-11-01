@@ -159,7 +159,8 @@ async function browseRepository(){
 }
 $("repo-browse").addEventListener("click",browseRepository);
 $("repo-filter").addEventListener("input",displayRepoFiles);
-function modelRow(m){const b=text("button","", "model");b.type="button";b.append(text("span","◈","glyph"));const info=text("span","","model-text");info.append(text("div",m.name,"model-name"),text("div",m.kind+" · "+m.device+" · "+fmt(m.size_bytes)+(m.possible_duplicate?" · Possible duplicate":"")+(m.hard_link?" · Hard link":"")+(m.source?" · ✓ "+providerName(m.source.provider):"")+(m.update?" · ⬆ Update":""),"model-sub"));b.append(info,text("span","›","chevron"));b.addEventListener("click",()=>details(m));return b;}
+const isUnmatched=m=>!!m.sha256&&!m.source&&!m.hard_link&&!m.kind.startsWith("ollama/")&&!m.match_ignored;
+function modelRow(m){const b=text("button","", "model");b.type="button";b.append(text("span","◈","glyph"));const info=text("span","","model-text");info.append(text("div",m.name,"model-name"),text("div",m.kind+" · "+m.device+" · "+fmt(m.size_bytes)+(m.possible_duplicate?" · Possible duplicate":"")+(m.hard_link?" · Hard link":"")+(m.source?" · ✓ "+providerName(m.source.provider):"")+(m.update?" · ⬆ Update":"")+(isUnmatched(m)?" · Unmatched":"")+(m.match_ignored?" · Local only":""),"model-sub"));b.append(info,text("span","›","chevron"));b.addEventListener("click",()=>details(m));return b;}
 function fill(target,items,empty){target.replaceChildren();if(!items.length)target.append(text("p",empty,"muted"));else items.forEach(m=>target.append(modelRow(m)));}
 const providerName=p=>({civitai:"Civitai",huggingface:"Hugging Face",ollama:"Ollama"})[p]||p;
 function linkRow(dl,label,caption,url){const a=document.createElement("a");a.href=url;a.target="_blank";a.rel="noopener noreferrer";a.textContent=caption;const dd=document.createElement("dd");dd.append(a);dl.append(text("dt",label),dd);}
@@ -199,7 +200,14 @@ async function renderDownload(m){
  try{show((await apiRequest("/api/downloads")).find(x=>x.device===m.device&&x.path===m.path));}catch(_){show(null);}
 }
 function renderLinkTools(m){
- const box=$("link-box");box.replaceChildren();if(!m.source||m.source.provider!=="civitai")return;
+ const box=$("link-box");box.replaceChildren();
+ if(isUnmatched(m)||m.match_ignored){
+  // Own LoRAs and merges are on no site; marking them keeps the Unmatched list to real work.
+  const b=text("button",m.match_ignored?"Show in Unmatched again":"Mark as local only (not on any site)","repo-action");b.type="button";
+  b.addEventListener("click",async()=>{b.disabled=true;try{await apiRequest("/api/match-ignore","POST",{device:m.device,path:m.path,ignored:!m.match_ignored});await refresh();showNotice((m.match_ignored?"Back on the Unmatched list: ":"Marked local only: ")+m.name);reopen();}catch(err){box.append(text("p",err.message,"muted"));b.disabled=false;}});
+  box.append(b);return;
+ }
+ if(!m.source||m.source.provider!=="civitai")return;
  const b=text("button",m.source.verified?"Unlink and re-check by hash":"Unlink from Civitai","repo-action");b.type="button";
  b.addEventListener("click",async()=>{b.disabled=true;try{await apiRequest("/api/civitai/unlink","POST",{device:m.device,path:m.path});await refresh();showNotice("Unlinked "+m.name);reopen();}catch(err){box.append(text("p",err.message,"muted"));b.disabled=false;}});
  box.append(b);
@@ -332,6 +340,7 @@ function render(){
  const files=models.filter(m=>!m.hard_link);
  $("updates-count").textContent=files.filter(m=>m.update).length.toLocaleString();
  $("identified-count").textContent=files.filter(m=>m.source).length+" of "+files.length+" files identified";
+ const toMatch=files.filter(isUnmatched).length;$("unmatched-link").hidden=!toMatch;$("unmatched-link").textContent=toMatch+" to match →";
  fill($("recent"),models.slice(0,8),"No models indexed yet. Run the Windows inventory agent.");
  const counts=new Map();models.forEach(m=>counts.set(m.kind,(counts.get(m.kind)||0)+1));
  $("types").replaceChildren();[...counts].sort((a,b)=>b[1]-a[1]).slice(0,10).forEach(([kind,count])=>{const row=text("div");const line=text("div","","type-line");line.append(text("span",kind),text("span",String(count)));const bar=text("div","","bar");const inner=text("span");inner.style.width=(count/Math.max(models.length,1)*100)+"%";bar.append(inner);row.append(line,bar);$("types").append(row);});
@@ -345,8 +354,8 @@ function render(){
 }
 function filter(){
  const q=$("search").value.trim().toLowerCase(),kind=$("kind").value,device=$("device").value;
- const family=$("family").value, folder=$("folder").value, duplicates=$("duplicates").checked, updates=$("updates").checked, sort=$("sort").value;
- const subset=models.filter(m=>(!q||(m.name+" "+m.path).toLowerCase().includes(q))&&(!kind||m.kind===kind)&&(!device||m.device===device)&&(!family||m.family_guess===family)&&(!folder||m.kind==="lora"&&m.path.replace(/[\\/][^\\/]+$/,"")===folder)&&(!duplicates||m.possible_duplicate)&&(!updates||m.update));
+ const family=$("family").value, folder=$("folder").value, duplicates=$("duplicates").checked, updates=$("updates").checked, unmatched=$("unmatched").checked, sort=$("sort").value;
+ const subset=models.filter(m=>(!q||(m.name+" "+m.path).toLowerCase().includes(q))&&(!kind||m.kind===kind)&&(!device||m.device===device)&&(!family||m.family_guess===family)&&(!folder||m.kind==="lora"&&m.path.replace(/[\\/][^\\/]+$/,"")===folder)&&(!duplicates||m.possible_duplicate)&&(!updates||m.update)&&(!unmatched||isUnmatched(m)));
  subset.sort((a,b)=>sort==="size-desc"?b.size_bytes-a.size_bytes:sort==="size-asc"?a.size_bytes-b.size_bytes:sort==="kind"?a.kind.localeCompare(b.kind)||a.name.localeCompare(b.name):a.name.localeCompare(b.name));
  $("results").textContent=subset.length+" results";
  fill($("library"),subset.slice(0,500),"No matching models.");
@@ -355,7 +364,8 @@ function filter(){
 async function refresh(){if(!token){openAuth();return;} $("refresh").disabled=true;try{const response=await fetch("/api/models",{headers:{"X-ModelHarbor-Token":token},cache:"no-store"});if(response.status===401){token="";sessionStorage.removeItem("modelharbor_token");setStatus(false);showNotice("Token rejected. Enter your configured API token.");openAuth();return;}if(!response.ok)throw Error("Server returned HTTP "+response.status);const data=await response.json();if(!Array.isArray(data))throw Error("Unexpected inventory response");models=data;try{selectedMatches=await apiRequest("/api/selected-matches");}catch(_){selectedMatches=[];}try{const agentsResponse=await fetch("/api/agents",{headers:{"X-ModelHarbor-Token":token},cache:"no-store"});agents=agentsResponse.ok?await agentsResponse.json():[];}catch(_){agents=[];}setStatus(true);showNotice("");render();}catch(err){setStatus(false);showNotice("Unable to load inventory: "+err.message);}finally{$("refresh").disabled=false;}}
 document.querySelectorAll(".tab").forEach(b=>b.addEventListener("click",()=>switchView(b.dataset.view)));
 document.querySelectorAll("[data-go]").forEach(b=>b.addEventListener("click",()=>switchView(b.dataset.go)));
-["search","kind","device","family","folder","sort","duplicates","updates"].forEach(id=>$(id).addEventListener(id==="search"?"input":"change",filter));
+["search","kind","device","family","folder","sort","duplicates","updates","unmatched"].forEach(id=>$(id).addEventListener(id==="search"?"input":"change",filter));
+$("unmatched-link").addEventListener("click",()=>{switchView("library");$("unmatched").checked=true;$("updates").checked=$("duplicates").checked=false;filter();});
 $("refresh").onclick=refresh;$("settings").onclick=openAuth;
 $("auth-form").addEventListener("submit",e=>{e.preventDefault();token=$("token").value.trim();sessionStorage.setItem("modelharbor_token",token);$("auth-dialog").close();refresh();});
 $("cancel-auth").onclick=()=>$("auth-dialog").close();

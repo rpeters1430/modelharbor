@@ -36,3 +36,4 @@
 .browse-file .repo-action{grid-row:1;grid-column:2}
 #browse-more{justify-self:center;margin-top:10px}
 .browse-versions[hidden],#browse-more[hidden],.filters [hidden]{display:none}
+#unmatched-link{display:block;padding:4px 0 0;font-size:13px;cursor:pointer}#unmatched-link[hidden]{display:none}
