@@ -5,7 +5,7 @@ import socket
 from pathlib import Path
 import requests
 
-EXTENSIONS = {".safetensors", ".ckpt", ".pt", ".pth", ".bin", ".gguf"}
+EXTENSIONS = {".safetensors", ".ckpt", ".pt", ".pth", ".bin", ".gguf", ".onnx"}
 KINDS = {"checkpoints":"checkpoint", "loras":"lora", "vae":"vae",
          "embeddings":"embedding", "controlnet":"controlnet",
          "diffusion_models":"diffusion", "unet":"diffusion",
