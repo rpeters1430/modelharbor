@@ -12,6 +12,7 @@ from pydantic import BaseModel, Field
 from .intelligence import enrich
 from .providers import search as provider_search
 from .hf_repository import list_model_files
+from . import downloads
 from .sources import annotate, ensure_tables as ensure_source_tables, start_worker
 from .hash_matches import ensure_tables, queue_job, claim_job, finish_job, get_job, select_match, selected_for_inventory
 
@@ -72,6 +73,7 @@ def connect():
          comfyui_count INTEGER NOT NULL, ollama_count INTEGER)""")
     ensure_tables(db)
     ensure_source_tables(db)
+    downloads.ensure_tables(db)
     db.commit()
     return db
 
@@ -188,3 +190,51 @@ def selected_matches(x_modelharbor_token: str | None=Header(default=None)):
     authorize(x_modelharbor_token)
     with closing(connect()) as db:
         return selected_for_inventory(db)
+
+class DownloadRequest(BaseModel):
+    device: str = Field(min_length=1, max_length=100)
+    path: str = Field(min_length=1, max_length=4096)
+
+class DownloadProgress(BaseModel):
+    agent: str = Field(min_length=1, max_length=100)
+    bytes_done: int = Field(ge=0)
+
+class DownloadResult(BaseModel):
+    agent: str = Field(min_length=1, max_length=100)
+    sha256: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
+    error: str | None = Field(default=None, max_length=300)
+    result_path: str | None = Field(default=None, max_length=4096)
+
+@app.post("/api/downloads", status_code=202)
+def create_download(payload: DownloadRequest, x_modelharbor_token: str | None = Header(default=None)):
+    authorize(x_modelharbor_token)
+    with closing(connect()) as db:
+        with db:
+            return downloads.create(db, payload.device, payload.path)
+
+@app.get("/api/downloads")
+def list_downloads(x_modelharbor_token: str | None = Header(default=None)):
+    authorize(x_modelharbor_token)
+    with closing(connect()) as db:
+        return downloads.recent(db)
+
+@app.get("/api/downloads/next")
+def next_download(agent: str, x_modelharbor_token: str | None = Header(default=None)):
+    authorize(x_modelharbor_token)
+    with closing(connect()) as db:
+        with db:
+            return {"job": downloads.claim(db, agent)}
+
+@app.post("/api/downloads/{job_id}/progress")
+def download_progress(job_id: str, payload: DownloadProgress, x_modelharbor_token: str | None = Header(default=None)):
+    authorize(x_modelharbor_token)
+    with closing(connect()) as db:
+        with db:
+            return downloads.progress(db, job_id, payload.agent, payload.bytes_done)
+
+@app.post("/api/downloads/{job_id}/result")
+def download_result(job_id: str, payload: DownloadResult, x_modelharbor_token: str | None = Header(default=None)):
+    authorize(x_modelharbor_token)
+    with closing(connect()) as db:
+        with db:
+            return downloads.finish(db, job_id, payload.agent, payload.sha256, payload.error, payload.result_path)
