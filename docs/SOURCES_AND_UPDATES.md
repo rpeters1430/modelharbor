@@ -76,6 +76,20 @@ The **Browse** tab searches Civitai (filter by type, base model and sort, with L
 
 A file you converted yourself (fp8, GGUF, a different precision) has a different SHA-256 from anything on the site, so the hash lookup can't find it. Open it, search under **Find model online** (the search box drops conversion words like `fp8` or `Q4_K_M` from the name so the original turns up), and press **Link to my file** on the original. It is remembered by your file's hash as "linked by hand, hash differs", and update checks work. An update downloads the original format, so convert it again before deleting your old file.
 
+## Suggestions for your PC
+
+The Windows agent reports its GPU, VRAM and RAM with each sync (read from the Windows registry, so ComfyUI need not be running). Browse rates every file for the PC in **Download to**:
+
+- **✓ Fits in your VRAM**: the weights fit with about 2 GB to spare.
+- **⚠ Bigger than your VRAM**: ComfyUI offloads to RAM, so it runs slower. Older pickle files (`.ckpt`, `.pt`) and fp32 copies are flagged too.
+- **✗ Won't run**: NVIDIA-only formats (NVFP4, MXFP4, SVDQuant/Nunchaku) on an AMD or Intel GPU, or too big for the PC.
+
+When a version or repository offers the same model in several precisions (fp16, fp8, GGUF Q8/Q4…, pruned or full), **★ Best for your PC** marks the highest-precision copy that fits in VRAM, or the smallest one that runs if none fits.
+
+## Deleting files from a PC
+
+Open a ComfyUI file and press **Delete from <PC>…**. The confirmation lists every path. Copies that are hard links of the same file (a family folder next to the loose file) are deleted together, because deleting only one would free no space. The agent re-checks the SHA-256 first and deletes nothing if the file changed. Preview images and `.metadata.json`/`.civitai.info` files with the same name go too. Set `"deletes_enabled": false` in `agent.json` to turn this off on a PC.
+
 ## Unmatched files
 
 The overview's **N to match →** (under "files identified") opens the library filtered to **Unmatched only**: hashed ComfyUI files no site has identified yet. For each one, open it and either:
