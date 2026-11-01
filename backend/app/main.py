@@ -1,8 +1,9 @@
 """ModelHarbor read-only API foundation."""
+import hmac
 import os
 import sqlite3
 import time
-from contextlib import closing
+from contextlib import asynccontextmanager, closing
 from pathlib import Path
 from fastapi import FastAPI, Header, HTTPException
 from fastapi.responses import FileResponse
@@ -11,11 +12,19 @@ from pydantic import BaseModel, Field
 from .intelligence import enrich
 from .providers import search as provider_search
 from .hf_repository import list_model_files
+from .sources import annotate, ensure_tables as ensure_source_tables, start_worker
 from .hash_matches import ensure_tables, queue_job, claim_job, finish_job, get_job, select_match, selected_for_inventory
 
 DB = Path(os.environ.get("MODELHARBOR_DB", "/data/modelharbor.sqlite3"))
 TOKEN = os.environ.get("MODELHARBOR_AGENT_TOKEN", "")
-app = FastAPI(title="ModelHarbor", version="0.1.0")
+
+@asynccontextmanager
+async def lifespan(_app):
+    if os.environ.get("MODELHARBOR_SOURCE_CHECKS", "1") != "0":
+        start_worker(connect, list_model_files)
+    yield
+
+app = FastAPI(title="ModelHarbor", version="0.1.0", lifespan=lifespan)
 STATIC = Path(__file__).parent / "static"
 app.mount("/static", StaticFiles(directory=STATIC), name="static")
 
@@ -35,6 +44,8 @@ class ModelRecord(BaseModel):
     size_bytes: int = Field(ge=0)
     modified_ns: int = Field(ge=0)
     file_id: str | None = Field(default=None, max_length=64)
+    # File SHA-256 for ComfyUI files; registry manifest digest for Ollama models.
+    sha256: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
 
 class Heartbeat(BaseModel):
     device: str = Field(min_length=1, max_length=100)
@@ -47,13 +58,21 @@ class Inventory(BaseModel):
 
 def connect():
     DB.parent.mkdir(parents=True, exist_ok=True)
-    db = sqlite3.connect(DB)
+    db = sqlite3.connect(DB, timeout=30)
     db.execute("""CREATE TABLE IF NOT EXISTS models (
         device TEXT NOT NULL, path TEXT NOT NULL, name TEXT NOT NULL,
         kind TEXT NOT NULL, size_bytes INTEGER NOT NULL, modified_ns INTEGER NOT NULL,
         PRIMARY KEY (device, path))""")
-    if "file_id" not in [row[1] for row in db.execute("PRAGMA table_info(models)")]:
-        db.execute("ALTER TABLE models ADD COLUMN file_id TEXT")
+    columns = [row[1] for row in db.execute("PRAGMA table_info(models)")]
+    for column in ("file_id", "sha256"):
+        if column not in columns:
+            db.execute(f"ALTER TABLE models ADD COLUMN {column} TEXT")
+    db.execute("""CREATE TABLE IF NOT EXISTS agent_heartbeats
+        (device TEXT PRIMARY KEY, last_seen INTEGER NOT NULL,
+         comfyui_count INTEGER NOT NULL, ollama_count INTEGER)""")
+    ensure_tables(db)
+    ensure_source_tables(db)
+    db.commit()
     return db
 
 @app.get("/api/health")
@@ -64,11 +83,12 @@ def health():
 def models(x_modelharbor_token: str | None = Header(default=None)):
     authorize(x_modelharbor_token)
     with closing(connect()) as db:
-        rows = db.execute("SELECT device,path,name,kind,size_bytes,modified_ns,file_id FROM models ORDER BY device,kind,name").fetchall()
-    return enrich([dict(zip(("device","path","name","kind","size_bytes","modified_ns","file_id"), row)) for row in rows])
+        fields = ("device","path","name","kind","size_bytes","modified_ns","file_id","sha256")
+        rows = db.execute(f"SELECT {','.join(fields)} FROM models ORDER BY device,kind,name").fetchall()
+        return enrich(annotate(db, [dict(zip(fields, row)) for row in rows]))
 
 def authorize(value):
-    if not TOKEN or value != TOKEN:
+    if not TOKEN or not hmac.compare_digest((value or "").encode(), TOKEN.encode()):
         raise HTTPException(status_code=401, detail="Unauthorized")
 
 @app.post("/api/inventory")
@@ -79,8 +99,8 @@ def inventory(payload: Inventory, x_modelharbor_token: str | None = Header(defau
     with closing(connect()) as db:
         with db:
             db.execute("DELETE FROM models WHERE device=?", (payload.device,))
-            db.executemany("INSERT INTO models (device,path,name,kind,size_bytes,modified_ns,file_id) VALUES (?,?,?,?,?,?,?)",
-                [(m.device,m.path,m.name,m.kind,m.size_bytes,m.modified_ns,m.file_id) for m in payload.models])
+            db.executemany("INSERT INTO models (device,path,name,kind,size_bytes,modified_ns,file_id,sha256) VALUES (?,?,?,?,?,?,?,?)",
+                [(m.device,m.path,m.name,m.kind,m.size_bytes,m.modified_ns,m.file_id,m.sha256) for m in payload.models])
     return {"device": payload.device, "count": len(payload.models)}
 
 @app.post("/api/agents/heartbeat")
@@ -88,9 +108,6 @@ def heartbeat(payload: Heartbeat, x_modelharbor_token: str | None = Header(defau
     authorize(x_modelharbor_token)
     with closing(connect()) as db:
         with db:
-            db.execute("""CREATE TABLE IF NOT EXISTS agent_heartbeats
-                (device TEXT PRIMARY KEY, last_seen INTEGER NOT NULL,
-                 comfyui_count INTEGER NOT NULL, ollama_count INTEGER)""")
             db.execute("""INSERT INTO agent_heartbeats VALUES (?,?,?,?)
                 ON CONFLICT(device) DO UPDATE SET last_seen=excluded.last_seen,
                 comfyui_count=excluded.comfyui_count,ollama_count=excluded.ollama_count""",
@@ -101,9 +118,6 @@ def heartbeat(payload: Heartbeat, x_modelharbor_token: str | None = Header(defau
 def agents(x_modelharbor_token: str | None = Header(default=None)):
     authorize(x_modelharbor_token)
     with closing(connect()) as db:
-        db.execute("""CREATE TABLE IF NOT EXISTS agent_heartbeats
-            (device TEXT PRIMARY KEY, last_seen INTEGER NOT NULL,
-             comfyui_count INTEGER NOT NULL, ollama_count INTEGER)""")
         rows = db.execute("SELECT device,last_seen,comfyui_count,ollama_count FROM agent_heartbeats ORDER BY device").fetchall()
     now = int(time.time())
     return [{"device": r[0], "last_seen": r[1], "online": now-r[1] <= 3900,
@@ -136,8 +150,9 @@ def create_hash_job(payload: VerifyRequest,x_modelharbor_token: str | None=Heade
     authorize(x_modelharbor_token)
     with closing(connect()) as db:
         with db:
-            ensure_tables(db)
-            return queue_job(db,payload.device,payload.path,payload.repository,payload.remote_path)
+            known = db.execute("SELECT sha256 FROM models WHERE device=? AND path=?",(payload.device,payload.path)).fetchone()
+            # The agent already hashed this file during inventory, so no worker round trip is needed.
+            return queue_job(db,payload.device,payload.path,payload.repository,payload.remote_path,known and known[0])
 
 @app.get("/api/hash-jobs/next")
 def next_hash_job(device: str,x_modelharbor_token: str | None=Header(default=None)):
@@ -146,7 +161,6 @@ def next_hash_job(device: str,x_modelharbor_token: str | None=Header(default=Non
         raise HTTPException(422,"Unsupported device")
     with closing(connect()) as db:
         with db:
-            ensure_tables(db)
             return {"job":claim_job(db,device)}
 
 @app.post("/api/hash-jobs/{job_id}/result")
@@ -154,14 +168,12 @@ def report_hash(job_id: str,payload: HashReport,x_modelharbor_token: str | None=
     authorize(x_modelharbor_token)
     with closing(connect()) as db:
         with db:
-            ensure_tables(db)
             return finish_job(db,job_id,payload.device,payload.sha256,payload.error)
 
 @app.get("/api/hash-jobs/{job_id}")
 def hash_status(job_id: str,x_modelharbor_token: str | None=Header(default=None)):
     authorize(x_modelharbor_token)
     with closing(connect()) as db:
-        ensure_tables(db)
         return get_job(db,job_id)
 
 @app.post("/api/hash-jobs/{job_id}/select")
@@ -169,12 +181,10 @@ def confirm_hash_match(job_id: str,x_modelharbor_token: str | None=Header(defaul
     authorize(x_modelharbor_token)
     with closing(connect()) as db:
         with db:
-            ensure_tables(db)
             return select_match(db,job_id)
 
 @app.get("/api/selected-matches")
 def selected_matches(x_modelharbor_token: str | None=Header(default=None)):
     authorize(x_modelharbor_token)
     with closing(connect()) as db:
-        ensure_tables(db)
         return selected_for_inventory(db)

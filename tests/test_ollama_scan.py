@@ -4,7 +4,7 @@ class FakeResponse:
     def raise_for_status(self):
         pass
     def json(self):
-        return {"models":[{"name":"qwen:14b","size":1234,"digest":"abc",
+        return {"models":[{"name":"qwen:14b","size":1234,"digest":"a"*64,
                  "details":{"family":"qwen"}}]}
 
 class FakeSession:
@@ -15,4 +15,4 @@ class FakeSession:
 def test_collect():
     models = collect(FakeSession(), "http://localhost:11434/", "test:ollama")
     assert models == [{"device":"test:ollama","path":"ollama://qwen:14b",
-        "name":"qwen:14b","kind":"ollama/qwen","size_bytes":1234,"modified_ns":0}]
+        "name":"qwen:14b","kind":"ollama/qwen","size_bytes":1234,"modified_ns":0,"sha256":"a"*64}]

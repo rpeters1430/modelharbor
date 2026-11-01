@@ -56,7 +56,7 @@ def search(provider, query):
                     "description": "", "image": None,
                     "downloads": m.get("downloads")} for m in data if m.get("id")]
     else:
-        data = get_json("https://civitai.com/api/v1/models?query=" + encoded + "&limit=12")
+        data = get_json("https://civitai.com/api/v1/models?query=" + encoded + "&limit=12&nsfw=true")
         results = []
         for m in data.get("items", []):
             if not isinstance(m.get("id"), int):

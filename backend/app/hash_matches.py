@@ -24,6 +24,10 @@ def ensure_tables(db):
         remote_path TEXT NOT NULL, sha256 TEXT NOT NULL, local_size INTEGER NOT NULL,
         local_modified_ns INTEGER NOT NULL, selected_at INTEGER NOT NULL,
         PRIMARY KEY(device,path))""")
+    columns = [row[1] for row in db.execute("PRAGMA table_info(selected_matches)")]
+    for column, kind in (("latest_sha", "TEXT"), ("latest_checked_at", "INTEGER")):
+        if column not in columns:
+            db.execute(f"ALTER TABLE selected_matches ADD COLUMN {column} {kind}")
 
 def _inventory_row(db, device, path):
     return db.execute("SELECT size_bytes,modified_ns,kind FROM models WHERE device=? AND path=?",
@@ -38,7 +42,7 @@ def _remote_file(repo, remote_path):
             return item
     raise HTTPException(404, "Remote model file not found in repository listing")
 
-def queue_job(db, device, path, repository, remote_path):
+def queue_job(db, device, path, repository, remote_path, known_sha=None):
     remote = _remote_file(repository, remote_path)
     if remote["sha256"] is None or remote["size_bytes"] is None:
         raise HTTPException(422, "Provider has no SHA-256 and size for this file")
@@ -63,6 +67,14 @@ def queue_job(db, device, path, repository, remote_path):
         raise HTTPException(429, "Too many pending checks for this device")
     now = int(time.time())
     job_id = uuid.uuid4().hex
+    if known_sha and SHA.fullmatch(known_sha):
+        state = "verified" if hmac.compare_digest(known_sha.lower(), remote["sha256"].lower()) else "mismatch"
+        db.execute("""INSERT INTO hash_jobs
+            (id,device,path,repository,remote_path,remote_sha,remote_size,local_size,local_modified_ns,
+            state,result_sha,created_at,completed_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+            (job_id,device,path,repository,remote_path,remote["sha256"],remote["size_bytes"],size,modified,
+             state,known_sha.lower(),now,now))
+        return {"id": job_id, "state": state}
     db.execute("""INSERT INTO hash_jobs
         (id,device,path,repository,remote_path,remote_sha,remote_size,
         local_size,local_modified_ns,state,created_at) VALUES (?,?,?,?,?,?,?,?,?,'queued',?)""",

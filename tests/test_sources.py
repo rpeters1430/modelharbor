@@ -1,0 +1,116 @@
+"""Offline coverage for source identification and update checks."""
+import hashlib
+import json
+import sqlite3
+import pytest
+from backend.app.hash_matches import ensure_tables as ensure_hash_tables
+from backend.app.intelligence import enrich
+from backend.app.sources import annotate, ensure_tables, run_pass
+
+SHA = "a" * 64
+OLD = {"id": 10, "modelId": 7, "name": "v1.0", "baseModel": "Pony", "publishedAt": "2025-01-01T00:00:00Z",
+       "trainedWords": ["trigger"], "nsfwLevel": 1, "model": {"name": "Cool LoRA", "nsfw": False}}
+MODEL = {"modelVersions": [
+    {"id": 12, "name": "v2.0", "baseModel": "Pony", "publishedAt": "2025-06-01T00:00:00Z"},
+    {"id": 13, "name": "Illustrious v1", "baseModel": "Illustrious", "publishedAt": "2025-09-01T00:00:00Z"},
+    {"id": 10, "name": "v1.0", "baseModel": "Pony", "publishedAt": "2025-01-01T00:00:00Z"}]}
+MANIFEST = b'{"schemaVersion":2}'
+
+@pytest.fixture
+def db():
+    connection = sqlite3.connect(":memory:")
+    connection.execute("""CREATE TABLE models (device TEXT, path TEXT, name TEXT, kind TEXT,
+        size_bytes INTEGER, modified_ns INTEGER, file_id TEXT, sha256 TEXT, PRIMARY KEY(device,path))""")
+    ensure_hash_tables(connection)
+    ensure_tables(connection)
+    yield connection
+    connection.close()
+
+def add(db, path, kind="lora", sha=SHA, name=None):
+    db.execute("INSERT INTO models VALUES (?,?,?,?,?,?,?,?)",
+               ("pc:comfyui", path, name or path.rsplit("/", 1)[-1], kind, 100, 1, None, sha))
+
+def records(db):
+    rows = db.execute("SELECT device,path,name,kind,size_bytes,modified_ns,file_id,sha256 FROM models").fetchall()
+    fields = ("device", "path", "name", "kind", "size_bytes", "modified_ns", "file_id", "sha256")
+    return enrich(annotate(db, [dict(zip(fields, r)) for r in rows]))
+
+def fake(responses, calls):
+    def get(url, accept="application/json"):
+        calls.append(url)
+        body = responses.get(url)
+        return body if body is None or isinstance(body, bytes) else json.dumps(body).encode()
+    return get
+
+def test_civitai_identity_and_same_base_update(db):
+    add(db, "C:/m/loras/Pony/cool.safetensors")
+    calls = []
+    run_pass(db, fake({f"https://civitai.com/api/v1/model-versions/by-hash/{SHA}": OLD,
+                       "https://civitai.com/api/v1/models/7": MODEL}, calls), pause=0)
+    item = records(db)[0]
+    assert item["source"]["model_name"] == "Cool LoRA" and item["source"]["trained_words"] == ["trigger"]
+    assert item["source"]["url"] == "https://civitai.com/models/7?modelVersionId=10"
+    # The newer Illustrious version is a variant; the Pony v2.0 is the update.
+    assert item["update"]["version_name"] == "v2.0" and item["update"]["version_id"] == 12
+    assert (item["family_guess"], item["family_verified"]) == ("Pony", True)
+
+def test_falls_back_to_civitai_red_and_links_mature_models_there(db):
+    add(db, "C:/m/loras/x.safetensors")
+    mature = {**OLD, "nsfwLevel": 16, "model": {"name": "Mature", "nsfw": True}}
+    calls = []
+    run_pass(db, fake({f"https://civitai.red/api/v1/model-versions/by-hash/{SHA}": mature,
+                       "https://civitai.com/api/v1/models/7": {"modelVersions": [OLD]}}, calls), pause=0)
+    item = records(db)[0]
+    assert calls[:2] == [f"https://civitai.com/api/v1/model-versions/by-hash/{SHA}",
+                         f"https://civitai.red/api/v1/model-versions/by-hash/{SHA}"]
+    assert item["source"]["url"].startswith("https://civitai.red/models/7")
+    assert item["update"] is None
+
+def test_unknown_hash_is_not_retried_every_pass(db):
+    add(db, "C:/m/loras/private.safetensors")
+    calls = []
+    run_pass(db, fake({}, calls), pause=0, now=1_000_000)
+    run_pass(db, fake({}, calls), pause=0, now=1_000_100)
+    assert len(calls) == 2  # both hosts once, then cached as not found
+    assert records(db)[0]["source"] is None
+
+def test_ollama_update_from_manifest_digest(db):
+    current = hashlib.sha256(MANIFEST).hexdigest()
+    add(db, "ollama://qwen3:8b", kind="ollama/qwen3", sha=current, name="qwen3:8b")
+    add(db, "ollama://huihui_ai/gemma:12b", kind="ollama/gemma", sha="b" * 64, name="huihui_ai/gemma:12b")
+    add(db, "ollama://huggingface.co/a/b:latest", kind="ollama/x", sha="c" * 64, name="huggingface.co/a/b:latest")
+    calls = []
+    run_pass(db, fake({"https://registry.ollama.ai/v2/library/qwen3/manifests/8b": MANIFEST,
+                       "https://registry.ollama.ai/v2/huihui_ai/gemma/manifests/12b": MANIFEST}, calls), pause=0)
+    by_name = {r["name"]: r for r in records(db)}
+    assert by_name["qwen3:8b"]["update"] is None
+    assert by_name["huihui_ai/gemma:12b"]["update"]["url"] == "https://ollama.com/huihui_ai/gemma"
+    assert by_name["huggingface.co/a/b:latest"]["source"] is None
+    assert not any("huggingface.co/a" in url for url in calls)
+
+def test_selected_huggingface_match_reports_changed_file(db):
+    add(db, "C:/m/loras/hf.safetensors", sha=None)
+    db.execute("""INSERT INTO selected_matches (device,path,repository,remote_path,sha256,local_size,
+        local_modified_ns,selected_at) VALUES ('pc:comfyui','C:/m/loras/hf.safetensors','o/r','hf.safetensors',?,100,1,0)""", (SHA,))
+    run_pass(db, fake({}, []), list_files=lambda repo: {"files": [{"path": "hf.safetensors", "sha256": "d" * 64}]}, pause=0)
+    item = records(db)[0]
+    assert item["source"]["provider"] == "huggingface"
+    assert item["update"]["provider"] == "huggingface"
+
+def test_family_folder_beats_filename(db):
+    add(db, "C:/m/checkpoints/SDXL/ponyish.safetensors", kind="checkpoint", sha=None)
+    item = records(db)[0]
+    assert (item["family_guess"], item["family_verified"]) == ("SDXL", False)
+
+def test_variants_are_not_updates():
+    from backend.app.sources import newer_version
+    versions = lambda *names: [{"id": i, "name": n, "baseModel": "SDXL 1.0"} for i, n in enumerate(names)]
+    assert newer_version("V0.1", "SDXL 1.0", versions("V0.1", "V0.4"))["name"] == "V0.4"
+    dated = [{"name": "V0.25", "baseModel": "B", "publishedAt": "2025-01-01"}, {"name": "V0.4", "baseModel": "B", "publishedAt": "2025-05-01"}]
+    assert newer_version("V0.1", "B", dated)["name"] == "V0.4"
+    assert newer_version("Turbo v1.0", "SDXL 1.0", versions("Turbo v3.0", "Turbo v2.0"))["name"] == "Turbo v3.0"
+    for local, other in (("v7.0", "v6.0 - Inpainting"), ("v7.0 Photo XL", "v7.0 Photo XL DMD"),
+                         ("4 Steps", "8 Steps"), ("v1.5 fp8", "v1.5 INT8"), ("v2.1", "v2.1 Turbo"),
+                         ("Base", "SFT"), ("v1.0", "v1.0-inpainting")):
+        assert newer_version(local, "SDXL 1.0", versions(local, other)) is None, (local, other)
+    assert newer_version("v1.0", "Pony", versions("v2.0")) is None  # other base model
