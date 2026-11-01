@@ -11,6 +11,7 @@ from pydantic import BaseModel, Field
 from .intelligence import enrich
 from .providers import search as provider_search
 from .hf_repository import list_model_files
+from .hash_matches import ensure_tables, queue_job, claim_job, finish_job, get_job, select_match, selected_for_inventory
 
 DB = Path(os.environ.get("MODELHARBOR_DB", "/data/modelharbor.sqlite3"))
 TOKEN = os.environ.get("MODELHARBOR_AGENT_TOKEN", "")
@@ -118,3 +119,62 @@ def discover(provider: str, q: str, x_modelharbor_token: str | None = Header(def
 def huggingface_repository(repo: str, q: str = "", x_modelharbor_token: str | None = Header(default=None)):
     authorize(x_modelharbor_token)
     return list_model_files(repo, q)
+
+class VerifyRequest(BaseModel):
+    device: str = Field(min_length=1,max_length=100)
+    path: str = Field(min_length=1,max_length=4096)
+    repository: str = Field(min_length=3,max_length=193)
+    remote_path: str = Field(min_length=1,max_length=1024)
+
+class HashReport(BaseModel):
+    device: str = Field(min_length=1,max_length=100)
+    sha256: str | None = Field(default=None,max_length=64)
+    error: str | None = Field(default=None,max_length=300)
+
+@app.post("/api/hash-jobs",status_code=202)
+def create_hash_job(payload: VerifyRequest,x_modelharbor_token: str | None=Header(default=None)):
+    authorize(x_modelharbor_token)
+    with closing(connect()) as db:
+        with db:
+            ensure_tables(db)
+            return queue_job(db,payload.device,payload.path,payload.repository,payload.remote_path)
+
+@app.get("/api/hash-jobs/next")
+def next_hash_job(device: str,x_modelharbor_token: str | None=Header(default=None)):
+    authorize(x_modelharbor_token)
+    if not 1 <= len(device) <= 100 or not device.endswith(":comfyui"):
+        raise HTTPException(422,"Unsupported device")
+    with closing(connect()) as db:
+        with db:
+            ensure_tables(db)
+            return {"job":claim_job(db,device)}
+
+@app.post("/api/hash-jobs/{job_id}/result")
+def report_hash(job_id: str,payload: HashReport,x_modelharbor_token: str | None=Header(default=None)):
+    authorize(x_modelharbor_token)
+    with closing(connect()) as db:
+        with db:
+            ensure_tables(db)
+            return finish_job(db,job_id,payload.device,payload.sha256,payload.error)
+
+@app.get("/api/hash-jobs/{job_id}")
+def hash_status(job_id: str,x_modelharbor_token: str | None=Header(default=None)):
+    authorize(x_modelharbor_token)
+    with closing(connect()) as db:
+        ensure_tables(db)
+        return get_job(db,job_id)
+
+@app.post("/api/hash-jobs/{job_id}/select")
+def confirm_hash_match(job_id: str,x_modelharbor_token: str | None=Header(default=None)):
+    authorize(x_modelharbor_token)
+    with closing(connect()) as db:
+        with db:
+            ensure_tables(db)
+            return select_match(db,job_id)
+
+@app.get("/api/selected-matches")
+def selected_matches(x_modelharbor_token: str | None=Header(default=None)):
+    authorize(x_modelharbor_token)
+    with closing(connect()) as db:
+        ensure_tables(db)
+        return selected_for_inventory(db)
