@@ -24,4 +24,5 @@ $HashAction = New-ScheduledTaskAction -Execute $Python -Argument ('"' + $Script 
 $HashTrigger = New-ScheduledTaskTrigger -AtLogOn -User $env:USERNAME
 $HashSettings = New-ScheduledTaskSettingsSet -RestartCount 3 -RestartInterval (New-TimeSpan -Minutes 1) -ExecutionTimeLimit (New-TimeSpan -Seconds 0) -MultipleInstances IgnoreNew
 Register-ScheduledTask -TaskName "ModelHarbor Hash Worker" -Action $HashAction -Trigger $HashTrigger -Principal $Principal -Settings $HashSettings -Description "On-demand read-only model SHA-256 verification" -Force
-Write-Host "Installed task: ModelHarbor Hash Worker"
+Start-ScheduledTask -TaskName "ModelHarbor Hash Worker"
+Write-Host "Installed and started task: ModelHarbor Hash Worker"
