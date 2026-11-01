@@ -53,3 +53,15 @@ def test_agent_status_and_scan_request(tmp_path, monkeypatch):
     assert client.get("/api/agents/pc/scan-request", headers=headers).json() == {"scan": False}  # taken once
     [agent] = client.get("/api/agents", headers=headers).json()
     assert agent["worker_running"] is True and agent["scan_requested"] is False
+
+def test_new_download_endpoint_builds_job_from_provider_data(tmp_path, monkeypatch):
+    from backend.app import main
+    monkeypatch.setattr(main, "DB", tmp_path / "new.sqlite3")
+    model = {"type": "LORA", "modelVersions": [{"id": 12, "files": [
+        {"id": 120, "type": "Model", "name": "cool.safetensors", "sizeKB": 2.0, "hashes": {"SHA256": "B" * 64}}]}]}
+    monkeypatch.setattr(main, "_civitai_model", lambda model_id, get: model)
+    client, headers = TestClient(app), {"X-ModelHarbor-Token": "test-token"}
+    body = {"agent": "pc", "provider": "civitai", "model_id": 1, "version_id": 12, "file_id": 120}
+    job = client.post("/api/downloads/new", headers=headers, json=body).json()
+    assert (job["file_name"], job["target_folder"], job["source_ref"]) == ("cool.safetensors", "loras", "civitai:120")
+    assert client.post("/api/downloads/new", headers=headers, json={**body, "file_id": 999}).status_code == 404

@@ -43,3 +43,15 @@ Set `"downloads_enabled": false` in `agent.json` to turn downloads off on that P
 ## Linking a model by hand
 
 For a file the hash lookup didn't find, open it, search Civitai under **Find model online**, and press **Link to my file** on the right result. Pick the version and file you have: **✓** marks a file whose SHA-256 is identical to yours, which links as an exact match. Linking to a different file asks first and is shown as "linked by hand, hash differs". Update checks and downloads work either way, and downloads are still verified against the new file's published hash. **Unlink** removes the link, and the file is looked up by hash again.
+
+## Browsing and downloading new models
+
+The **Browse** tab searches Civitai (filter by type, base model and sort, with Load more) or Hugging Face repositories.
+
+- Every file is compared with your inventory by **SHA-256**: **✓ On your PC** means you already have exactly that file. "Other version on your PC" means you have a different version of the model.
+- **Download** queues the file for your PC. The NAS takes the URL, file name and expected hash from the provider, never from the browser. The agent saves it into a fixed ComfyUI folder under your first configured models root and keeps it only if the hash matches:
+  - Civitai: by file type, then model type. LoRA/LyCORIS → `loras`, Checkpoint → `checkpoints`, UNet/Diffusion Model → `diffusion_models`, Text Encoder → `text_encoders`, VAE → `vae`, Embedding → `embeddings`, ControlNet → `controlnet`, Upscaler → `upscale_models`.
+  - Hugging Face: the folder you pick on the card (default `loras`).
+- A finished download requests a rescan, so the card and library show it as on your PC.
+- With more than one PC connected, a **Download to** picker chooses which one.
+- Mature preview images are hidden unless **Show mature previews** is ticked. That setting is remembered per browser.

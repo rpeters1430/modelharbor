@@ -25,3 +25,14 @@
 .version-picker{display:grid;gap:6px;margin:4px 0 12px}.version-picker:empty{display:none}.version-name{font-size:13px;margin-top:8px}.repo-action.exact{border-color:#3fb98a;color:#bff5dd}
 .agent-status{font-size:14px;margin:6px 0;overflow-wrap:anywhere}.agent-error{color:#ffb4ab}.agent-card .bar{margin:4px 0 8px}.agent-card .repo-action{margin-top:8px}
 .repo-action.danger{border-color:#c4554d;color:#ffd9d4;background:#3b2224}
+.browse-card{display:grid;grid-template-columns:96px 1fr;gap:12px;padding:12px;border:1px solid #354363;background:#1c2740;border-radius:12px}
+.browse-card>img{width:96px;height:128px;object-fit:cover;border-radius:8px;background:#2a3652}
+.browse-card:not(:has(>img)){grid-template-columns:1fr}
+.browse-info{display:grid;gap:6px;align-content:start;min-width:0}.browse-info strong{overflow-wrap:anywhere}
+.browse-badge{font-size:13px;color:#aab7d3}.browse-badge.on-pc,.browse-status.on-pc{color:#8ff0c2}
+.browse-versions{grid-column:1/-1;display:grid;gap:6px}.browse-versions select{width:100%}
+.browse-file{display:grid;grid-template-columns:1fr auto;gap:4px 8px;align-items:center;padding:8px;border-radius:8px;background:#162036}
+.browse-file .model-sub{overflow-wrap:anywhere}.browse-status{grid-column:1/-1;font-size:12px;color:#aab7d3;overflow-wrap:anywhere}.browse-status:empty{display:none}
+.browse-file .repo-action{grid-row:1;grid-column:2}
+#browse-more{justify-self:center;margin-top:10px}
+.browse-versions[hidden],#browse-more[hidden],.filters [hidden]{display:none}

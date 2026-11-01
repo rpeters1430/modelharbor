@@ -15,6 +15,9 @@ SAFE_NAME = re.compile(r"^[\w .()+,-]{1,200}\.(?:safetensors|ckpt|pt|pth|bin|ggu
 CHUNK = 8 * 1024 * 1024
 HEADROOM = 2 * 1024**3
 PROGRESS_SECONDS = 15
+# Subfolders of the models root that a new download (one with no old file) may go into.
+NEW_FOLDERS = {"checkpoints", "loras", "embeddings", "vae", "controlnet", "upscale_models",
+               "text_encoders", "diffusion_models"}
 
 def auth_headers(host):
     # Keys live in the Windows user environment, never in the NAS database or config files.
@@ -29,19 +32,25 @@ def explain(status, host):
 
 def download_file(session, job, roots, report_progress):
     """Return (sha256, final_path). Raises ValueError with a readable reason."""
-    old = allowed_file(job["path"], roots)
+    if job.get("target_folder"):
+        if job["target_folder"] not in NEW_FOLDERS or not roots:
+            raise ValueError("Download folder is not allowed")
+        directory = Path(roots[0]).resolve(strict=True) / job["target_folder"]
+        directory.mkdir(exist_ok=True)
+    else:
+        directory = allowed_file(job["path"], roots).parent
     name = job["file_name"]
     if not SAFE_NAME.fullmatch(name or "") or Path(name).name != name:
         raise ValueError("Unsafe file name")
     url = urlsplit(job["url"] or "")
     if url.scheme != "https" or url.hostname not in ALLOWED_HOSTS or url.port:
         raise ValueError("Download host is not allowed")
-    target = old.parent / name
+    target = directory / name
     partial = target.with_name(name + ".partial")
     if target.exists():
-        raise ValueError(f"{name} already exists next to the old file")
+        raise ValueError(f"{name} already exists in {directory.name}")
     needed = (job.get("size_bytes") or 0) + HEADROOM
-    if shutil.disk_usage(old.parent).free < needed:
+    if shutil.disk_usage(directory).free < needed:
         raise ValueError("Not enough free disk space")
     digest, done, last = hashlib.sha256(), 0, time.monotonic()
     # requests drops the Authorization header when a redirect leaves the original host (CDN links).

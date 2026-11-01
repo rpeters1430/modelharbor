@@ -15,7 +15,7 @@ SAFE_NAME = re.compile(r"^[\w .()+,-]{1,200}\.(?:safetensors|ckpt|pt|pth|bin|ggu
 ACTIVE = ("queued", "running")
 STALE_SECONDS = 1800
 FIELDS = ("id", "device", "path", "provider", "file_name", "size_bytes", "state", "bytes_done",
-          "error", "result_path", "created_at", "updated_at", "cleanup", "cleanup_error")
+          "error", "result_path", "created_at", "updated_at", "cleanup", "cleanup_error", "target_folder", "source_ref")
 
 def ensure_tables(db):
     db.execute("""CREATE TABLE IF NOT EXISTS download_jobs (
@@ -25,7 +25,8 @@ def ensure_tables(db):
         error TEXT, result_path TEXT, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL)""")
     columns = [row[1] for row in db.execute("PRAGMA table_info(download_jobs)")]
     # cleanup: NULL, then queued -> running -> done | failed when the user deletes the old file.
-    for column in ("old_sha", "cleanup", "cleanup_error"):
+    # target_folder/source_ref: new downloads from Browse, which have no old file next to them.
+    for column in ("old_sha", "cleanup", "cleanup_error", "target_folder", "source_ref"):
         if column not in columns:
             db.execute(f"ALTER TABLE download_jobs ADD COLUMN {column} TEXT")
 
@@ -81,12 +82,12 @@ def claim(db, agent):
     # A download whose agent stopped reporting progress is handed out again.
     db.execute("UPDATE download_jobs SET state='queued' WHERE agent=? AND state='running' AND updated_at<?",
                (agent, now - STALE_SECONDS))
-    row = db.execute("""SELECT id,device,path,provider,url,file_name,expected_sha,size_bytes FROM download_jobs
+    row = db.execute("""SELECT id,device,path,provider,url,file_name,expected_sha,size_bytes,target_folder FROM download_jobs
         WHERE agent=? AND state='queued' ORDER BY created_at LIMIT 1""", (agent,)).fetchone()
     if not row or db.execute("UPDATE download_jobs SET state='running',bytes_done=0,updated_at=? WHERE id=? AND state='queued'",
                              (now, row[0])).rowcount != 1:
         return None
-    return dict(zip(("id", "device", "path", "provider", "url", "file_name", "expected_sha", "size_bytes"), row))
+    return dict(zip(("id", "device", "path", "provider", "url", "file_name", "expected_sha", "size_bytes", "target_folder"), row))
 
 def progress(db, job_id, agent, bytes_done):
     if db.execute("UPDATE download_jobs SET bytes_done=?,updated_at=? WHERE id=? AND agent=? AND state='running'",
@@ -104,6 +105,8 @@ def finish(db, job_id, agent, sha256, error, result_path):
     state = "failed" if error else "done"
     db.execute("UPDATE download_jobs SET state=?,error=?,result_path=?,updated_at=? WHERE id=?",
                (state, str(error)[:300] if error else None, None if error else result_path, int(time.time()), job_id))
+    if state == "done":
+        _request_scan(db, agent)  # list the new file without waiting for the scheduled sync
     return {"id": job_id, "state": state}
 
 def recent(db, limit=100):
@@ -145,7 +148,25 @@ def finish_cleanup(db, job_id, agent, error):
         ("failed" if error else "done", str(error)[:300] if error else None, int(time.time()), job_id, agent)).rowcount != 1:
         raise HTTPException(409, "Cleanup is no longer running for this agent")
     if not error:
-        # Rescan so the dashboard drops the deleted file and lists the new one.
-        db.execute("""INSERT INTO agent_status (device,phase,scan_requested_at) VALUES (?,'idle',?)
-            ON CONFLICT(device) DO UPDATE SET scan_requested_at=excluded.scan_requested_at""", (agent, int(time.time())))
+        _request_scan(db, agent)  # the dashboard drops the deleted file
     return {"id": job_id, "cleanup": "failed" if error else "done"}
+
+def _request_scan(db, agent):
+    db.execute("""INSERT INTO agent_status (device,phase,scan_requested_at) VALUES (?,'idle',?)
+        ON CONFLICT(device) DO UPDATE SET scan_requested_at=excluded.scan_requested_at""", (agent, int(time.time())))
+
+def create_new(db, agent, url, file_name, expected_sha, size_bytes, folder, source_ref, provider):
+    """Queue a download of a model that is not on the PC yet, into a fixed ComfyUI folder."""
+    from .browse import FOLDERS
+    if folder not in FOLDERS or not SAFE_NAME.fullmatch(file_name or "") or not expected_sha:
+        raise HTTPException(422, "Unsupported folder, unsafe file name or no published hash")
+    existing = db.execute(f"SELECT {','.join(FIELDS)} FROM download_jobs WHERE source_ref=? AND agent=? AND state IN (?,?)",
+                          (source_ref, agent, *ACTIVE)).fetchone()
+    if existing:
+        return dict(zip(FIELDS, existing))
+    now = int(time.time())
+    job_id = uuid.uuid4().hex
+    db.execute("""INSERT INTO download_jobs (id,agent,device,path,provider,url,file_name,expected_sha,size_bytes,
+        state,created_at,updated_at,target_folder,source_ref) VALUES (?,?,?,'',?,?,?,?,?,'queued',?,?,?,?)""",
+        (job_id, agent, agent + ":comfyui", provider, url, file_name, expected_sha, size_bytes, now, now, folder, source_ref))
+    return dict(zip(FIELDS, db.execute(f"SELECT {','.join(FIELDS)} FROM download_jobs WHERE id=?", (job_id,)).fetchone()))
