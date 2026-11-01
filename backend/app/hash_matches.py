@@ -21,7 +21,8 @@ def ensure_tables(db):
         created_at INTEGER NOT NULL, claimed_at INTEGER, completed_at INTEGER)""")
     db.execute("""CREATE TABLE IF NOT EXISTS selected_matches (
         device TEXT NOT NULL, path TEXT NOT NULL, repository TEXT NOT NULL,
-        remote_path TEXT NOT NULL, sha256 TEXT NOT NULL, selected_at INTEGER NOT NULL,
+        remote_path TEXT NOT NULL, sha256 TEXT NOT NULL, local_size INTEGER NOT NULL,
+        local_modified_ns INTEGER NOT NULL, selected_at INTEGER NOT NULL,
         PRIMARY KEY(device,path))""")
 
 def _inventory_row(db, device, path):
@@ -123,14 +124,16 @@ def select_match(db, job_id):
     remote=_remote_file(repo,remote_path)
     if remote["sha256"] != sha or remote["size_bytes"] != rsize:
         raise HTTPException(409,"Provider metadata changed; verify again")
-    db.execute("""INSERT INTO selected_matches (device,path,repository,remote_path,sha256,selected_at)
-        VALUES (?,?,?,?,?,?) ON CONFLICT(device,path) DO UPDATE SET
+    db.execute("""INSERT INTO selected_matches (device,path,repository,remote_path,sha256,local_size,local_modified_ns,selected_at)
+        VALUES (?,?,?,?,?,?,?,?) ON CONFLICT(device,path) DO UPDATE SET
         repository=excluded.repository,remote_path=excluded.remote_path,
-        sha256=excluded.sha256,selected_at=excluded.selected_at""",
-        (device,path,repo,remote_path,sha,int(time.time())))
+        sha256=excluded.sha256,local_size=excluded.local_size,
+        local_modified_ns=excluded.local_modified_ns,selected_at=excluded.selected_at""",
+        (device,path,repo,remote_path,sha,lsize,modified,int(time.time())))
     return {"device":device,"path":path,"repository":repo,"remote_path":remote_path,"sha256":sha,"selected":True}
 
 def selected_for_inventory(db):
     rows=db.execute("""SELECT s.device,s.path,s.repository,s.remote_path,s.sha256
-    FROM selected_matches s JOIN models m ON s.device=m.device AND s.path=m.path""").fetchall()
+    FROM selected_matches s JOIN models m ON s.device=m.device AND s.path=m.path
+    AND s.local_size=m.size_bytes AND s.local_modified_ns=m.modified_ns""").fetchall()
     return [dict(zip(("device","path","repository","remote_path","sha256"),r)) for r in rows]
