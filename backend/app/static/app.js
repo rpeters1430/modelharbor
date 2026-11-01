@@ -187,6 +187,40 @@ function renderLinkTools(m){
 }
 function details(m){currentModel=m;$("detail-title").textContent=m.name;const dl=$("detail-fields");dl.replaceChildren();for(const [k,v] of Object.entries({Type:m.kind,Device:m.device,Size:fmt(m.size_bytes),Family:(m.family_guess||"Unknown")+(m.family_verified?" (from source)":" (unverified)"),...(m.source?{Source:providerName(m.source.provider)+" · "+m.source.model_name+(m.source.version_name?" — "+m.source.version_name:"")+(m.source.provider==="civitai"?(m.source.verified?" (exact hash match)":" (linked by hand, hash differs)"):"")}:{"Source":!m.sha256?"Waiting for the Windows agent to hash this file":m.kind.startsWith("ollama/")?"Not on the Ollama registry":m.source_checked?"Not found on Civitai":"Checking Civitai…"}),...(m.source&&m.source.base_model?{"Base model":m.source.base_model}:{}),...(m.source&&m.source.trained_words&&m.source.trained_words.length?{"Trigger words":m.source.trained_words.join(", ")}:{}),...(m.update?{Update:m.update.version_name}:{}),Duplicates:m.possible_duplicate?"Possible match — verify hashes":"No matching name and size",Folder:m.path.replace(/[\\/][^\\/]+$/,""),Path:m.path,...(m.sha256?{[m.kind.startsWith("ollama/")?"Digest":"SHA-256"]:m.sha256}:{}),...(selectedMatches.some(s=>s.device===m.device&&s.path===m.path)?{"Verified source":selectedMatches.filter(s=>s.device===m.device&&s.path===m.path).map(s=>"Hugging Face · "+s.repository+" / "+s.remote_path).join(", ")}:{})})){dl.append(text("dt",k),text("dd",v));}if(m.source)linkRow(dl,"Source page","Open on "+providerName(m.source.provider)+" ↗",m.source.url);if(m.update)linkRow(dl,"New version","Open "+m.update.version_name+" ↗",m.update.url);$("provider-query").value=m.name.replace(/\.(safetensors|ckpt|gguf|pt|pth|bin)$/i,"").replace(/[_-]+/g," ").slice(0,120);$("provider-results").replaceChildren();$("repo-files").replaceChildren();$("repo-status").textContent="";$("repo-filter").value="";renderDownload(m);renderLinkTools(m);if(!$("detail-dialog").open)$("detail-dialog").showModal();}
 function options(id,values,label){const el=$(id),old=el.value;el.replaceChildren(new Option(label,""));values.forEach(v=>el.add(new Option(v,v)));el.value=values.includes(old)?old:"";}
+const ago=t=>{if(!t)return "never";const s=Math.max(0,Math.round(Date.now()/1000-t));return s<60?s+" s ago":s<3600?Math.round(s/60)+" min ago":s<86400?Math.round(s/3600)+" h ago":new Date(t*1000).toLocaleString();};
+const shortPath=p=>(p||"").split(/[\\/]/).slice(-2).join("\\");
+function agentStatusText(a){
+ const s=a.status;const busy=s&&["scanning","hashing","uploading"].includes(s.phase);
+ if(a.scan_requested&&!busy)return a.worker_running?"Scan requested — starting within about 20 seconds…":"Scan requested — waiting for the PC's background task to come online.";
+ if(!s)return "No scan reported yet.";
+ if(s.phase==="scanning")return "Scanning folders… "+shortPath(s.current);
+ if(s.phase==="hashing")return "Hashing new or changed files: "+s.done+" of "+s.total+" · "+fmt(s.done_bytes)+" of "+fmt(s.total_bytes)+(s.current?" · "+shortPath(s.current):"");
+ if(s.phase==="uploading")return "Uploading inventory ("+s.total+" models)…";
+ if(s.phase==="error")return "Last scan failed "+ago(s.updated_at)+": "+(s.message||"unknown error");
+ return "Up to date · "+(s.message||"scan finished")+" · "+ago(s.updated_at);
+}
+function renderAgents(){
+ const list=$("agent-list");list.replaceChildren();
+ if(!agents.length){list.append(text("p","No Windows agent has reported yet.","muted"));return;}
+ agents.forEach(a=>{
+  const card=text("div","","agent-card");const s=a.status;const busy=s&&["scanning","hashing","uploading"].includes(s.phase);
+  card.append(text("strong",a.device),text("span",a.online?"● Online":"● Offline",a.online?"agent-online":"agent-offline"));
+  card.append(text("div",agentStatusText(a),"agent-status"+(s&&s.phase==="error"?" agent-error":"")));
+  if(s&&s.phase==="hashing"&&s.total_bytes){const bar=text("div","","bar");const inner=text("span");inner.style.width=Math.min(100,s.done_bytes/s.total_bytes*100)+"%";bar.append(inner);card.append(bar);}
+  card.append(text("div","ComfyUI: "+a.comfyui_count+" · Ollama: "+(a.ollama_count ?? "unavailable")+" · last full sync "+ago(a.last_seen),"model-sub"));
+  card.append(text("div",a.worker_running?"Background task running (checks for scan requests and downloads)":"Background task not running"+(a.worker_seen?" · last seen "+ago(a.worker_seen):"")+". Start “ModelHarbor Hash Worker” in Task Scheduler.","model-sub"));
+  const button=text("button",busy?"Scanning…":a.scan_requested?"Scan requested":"Scan now","repo-action");button.type="button";button.disabled=!!busy||a.scan_requested;
+  button.addEventListener("click",async()=>{button.disabled=true;try{await apiRequest("/api/agents/"+encodeURIComponent(a.device)+"/scan","POST");await pollAgents();}catch(err){showNotice(err.message);button.disabled=false;}});
+  card.append(button);list.append(card);
+ });
+}
+let agentsBusy=false;
+async function pollAgents(){
+ try{const wasBusy=agentsBusy;agents=await apiRequest("/api/agents");agentsBusy=agents.some(a=>a.scan_requested||a.status&&["scanning","hashing","uploading"].includes(a.status.phase));renderAgents();
+  if(wasBusy&&!agentsBusy)refresh();  // a scan just finished: reload the inventory
+ }catch(_){}
+}
+setInterval(()=>{if(token&&!document.hidden&&(view==="devices"||agentsBusy))pollAgents();},4000);
 function render(){
  $("count").textContent=models.length.toLocaleString();
  $("size").textContent=fmt(models.reduce((n,m)=>n+(m.hard_link?0:Number(m.size_bytes)||0),0));
@@ -202,7 +236,7 @@ function render(){
  if(!counts.size)$("types").append(text("p","Model categories will appear after the first inventory scan.","muted"));
  options("kind",[...counts.keys()].sort(),"All types");options("device",devices,"All sources");options("family",[...new Set(models.map(m=>m.family_guess||"Unknown"))].sort(),"All families");options("folder",[...new Set(models.filter(m=>m.kind==="lora").map(m=>m.path.replace(/[\\/][^\\/]+$/,"")))].sort(),"All LoRA folders");
  const deviceList=$("device-list");deviceList.replaceChildren();
- agents.forEach(a=>{const card=text("div","","agent-card");const state=text("span",a.online?"● Online":"● Offline",a.online?"agent-online":"agent-offline");card.append(text("strong",a.device),state,text("div","ComfyUI: "+a.comfyui_count+" · Ollama: "+(a.ollama_count ?? "unavailable"),"model-sub"),text("div","Last sync: "+new Date(a.last_seen*1000).toLocaleString(),"model-sub"));deviceList.append(card);});
+ renderAgents();
  devices.forEach(device=>{const matching=models.filter(m=>m.device===device);const b=text("button","","model");b.append(text("span","▣","glyph"));const info=text("span","","model-text");info.append(text("div",device,"model-name"),text("div",matching.length+" models · "+fmt(matching.reduce((n,m)=>n+(m.hard_link?0:m.size_bytes),0)),"model-sub"));b.append(info,text("span","›","chevron"));b.onclick=()=>{switchView("library");$("device").value=device;filter();};deviceList.append(b);});
  if(!devices.length)deviceList.append(text("p","No inventory sources registered.","muted"));
  filter();
