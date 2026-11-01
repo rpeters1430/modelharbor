@@ -1,5 +1,6 @@
 """Read-only, explicitly initiated provider discovery. No automatic identity claims."""
 import json
+import re
 import time
 from urllib.parse import quote
 from urllib.request import Request, urlopen
@@ -25,6 +26,12 @@ def get_json(url):
     except (URLError, TimeoutError, ValueError, OSError) as exc:
         raise HTTPException(502, "Provider temporarily unavailable") from exc
 
+def variants(query):
+    cleaned = re.sub(r"\.(safetensors|ckpt|gguf|pt|pth|bin)$", "", query, flags=re.I)
+    cleaned = re.sub(r"[_-]+", " ", cleaned).strip()
+    shortened = re.sub(r"(?i)\s+v?\d+(?:\.\d+)*$", "", cleaned).strip()
+    return list(dict.fromkeys(x for x in (query.strip(), cleaned, shortened) if len(x) >= 3))[:3]
+
 def search(provider, query):
     query = query.strip()
     if len(query) < 3 or len(query) > 120:
@@ -38,7 +45,11 @@ def search(provider, query):
         return cached[1]
     encoded = quote(query, safe="")
     if provider == "huggingface":
-        data = get_json("https://huggingface.co/api/models?search=" + encoded + "&limit=12")
+        data = []
+        for term in variants(query):
+            data = get_json("https://huggingface.co/api/models?search=" + quote(term, safe="") + "&limit=12")
+            if data:
+                break
         results = [{"provider": provider, "id": str(m.get("id", "")),
                     "name": str(m.get("id", "")).split("/")[-1],
                     "url": "https://huggingface.co/" + quote(str(m.get("id", "")), safe="/"),
