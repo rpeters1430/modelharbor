@@ -4,3 +4,13 @@
 .filters{grid-template-columns:minmax(180px,2fr) repeat(4,minmax(120px,1fr));align-items:center}.duplicate-toggle{display:flex;align-items:center;gap:8px;font-size:12px;color:#aab7d3;grid-column:1/-1}.duplicate-toggle input{min-width:auto;accent-color:#7d8aff}@media(max-width:750px){.filters{grid-template-columns:repeat(2,minmax(0,1fr))}.filters input[type=search]{grid-column:1/-1}.duplicate-toggle{grid-column:1/-1}}
 
 .discovery{border-top:1px solid #394765;padding-top:16px;margin:20px 0}.discovery h3{font-size:16px;margin:0}.discovery-controls{display:grid;grid-template-columns:1fr 1.4fr auto;gap:8px;margin:15px 0}.discovery-controls input{width:100%}.provider-results{display:grid;gap:8px;max-height:270px;overflow:auto}.provider-result{display:grid;gap:5px;padding:12px;background:#222e4a;border:1px solid #35476d;border-radius:10px;color:#f0f4ff;text-decoration:none;overflow-wrap:anywhere}.provider-result:hover{border-color:#7c8aff}@media(max-width:600px){.discovery-controls{grid-template-columns:1fr 1fr}.discovery-controls input{grid-column:1/-1;grid-row:1}.discovery-controls button{min-height:44px}}
+
+.repo-browser{border-top:1px solid #394765;margin-top:20px;padding-top:20px;display:grid;gap:12px}
+.repo-browser h3{font-size:16px;margin:0}.repo-browser label{font-size:12px;color:#b8c6e3}
+.repo-controls{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:9px}
+.repo-controls input{min-width:0;width:100%}.repo-files{display:grid;gap:9px;max-height:400px;overflow-y:auto}
+.repo-file{display:grid;gap:6px;padding:13px;background:#1e2a46;border:1px solid #35476d;border-radius:11px;overflow-wrap:anywhere;min-width:0}
+.repo-filename{font-size:13px;overflow-wrap:anywhere}.repo-link{color:#acbcff;font-size:13px}
+.repo-action{border:1px solid #5265a3;background:#2a3758;color:#edf2ff;border-radius:8px;padding:9px 12px;font-size:12px;align-self:start}
+.match-possible{color:#92e4ba;font-size:11px}
+@media(max-width:550px){.repo-controls{grid-template-columns:1fr}.repo-controls button{min-height:44px}.repo-files{max-height:360px}}
