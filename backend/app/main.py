@@ -360,3 +360,28 @@ def unlink_civitai(payload: CivitaiLink, x_modelharbor_token: str | None = Heade
         with db:
             civitai_unlink(db, _local_sha(db, payload.device, payload.path))
     return {"ok": True}
+
+class CleanupResult(BaseModel):
+    agent: str = Field(min_length=1, max_length=100)
+    error: str | None = Field(default=None, max_length=300)
+
+@app.post("/api/downloads/{job_id}/delete-old", status_code=202)
+def delete_old_version(job_id: str, x_modelharbor_token: str | None = Header(default=None)):
+    authorize(x_modelharbor_token)
+    with closing(connect()) as db:
+        with db:
+            return downloads.request_cleanup(db, job_id)
+
+@app.get("/api/downloads/cleanup-next")
+def next_cleanup(agent: str, x_modelharbor_token: str | None = Header(default=None)):
+    authorize(x_modelharbor_token)
+    with closing(connect()) as db:
+        with db:
+            return {"job": downloads.claim_cleanup(db, agent)}
+
+@app.post("/api/downloads/{job_id}/cleanup-result")
+def cleanup_result(job_id: str, payload: CleanupResult, x_modelharbor_token: str | None = Header(default=None)):
+    authorize(x_modelharbor_token)
+    with closing(connect()) as db:
+        with db:
+            return downloads.finish_cleanup(db, job_id, payload.agent, payload.error)

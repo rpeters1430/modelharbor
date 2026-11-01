@@ -1,4 +1,4 @@
-"""Download user-approved model updates next to the old file. Never overwrites or deletes."""
+"""Download user-approved model updates next to the old file, and delete the old file only when asked."""
 import hashlib
 import os
 import re
@@ -8,6 +8,7 @@ from pathlib import Path
 from urllib.parse import urlsplit
 import requests
 from hash_worker import allowed_file
+from hash_cache import sha256_file
 
 ALLOWED_HOSTS = {"civitai.com", "civitai.red", "huggingface.co"}
 SAFE_NAME = re.compile(r"^[\w .()+,-]{1,200}\.(?:safetensors|ckpt|pt|pth|bin|gguf|onnx)$")
@@ -96,4 +97,33 @@ def process_one(session, server, token, agent, roots, ollama_url):
     except (OSError, ValueError, requests.RequestException) as exc:
         result["error"] = str(exc)[:300]
     session.post(base + job["id"] + "/result", headers=headers, json=result, timeout=30).raise_for_status()
+    return True
+
+def delete_old(job, roots, hasher=sha256_file):
+    """Permanently delete the old version, but only if the verified new file is still intact
+    and the old file is exactly the one that was inventoried."""
+    old, new = allowed_file(job["path"], roots), allowed_file(job["new_path"], roots)
+    if old.resolve() == new.resolve():
+        raise ValueError("Old and new paths are the same file")
+    if hasher(new) != job["new_sha"]:
+        raise ValueError("The new file no longer matches its verified hash; nothing was deleted")
+    if hasher(old) != job["old_sha"]:
+        raise ValueError("The old file changed since it was inventoried; nothing was deleted")
+    os.remove(old)
+
+def process_cleanup(session, server, token, agent, roots):
+    headers = {"X-ModelHarbor-Token": token}
+    base = server.rstrip("/") + "/api/downloads/"
+    res = session.get(base + "cleanup-next", params={"agent": agent}, headers=headers, timeout=20)
+    res.raise_for_status()
+    job = res.json().get("job")
+    if not job:
+        return False
+    error = None
+    try:
+        delete_old(job, roots)
+    except (OSError, ValueError) as exc:
+        error = str(exc)[:300]
+    session.post(base + job["id"] + "/cleanup-result", headers=headers,
+                 json={"agent": agent, "error": error}, timeout=30).raise_for_status()
     return True
