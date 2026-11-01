@@ -13,7 +13,7 @@ from .intelligence import enrich
 from .providers import search as provider_search
 from .hf_repository import list_model_files
 from . import downloads
-from .sources import annotate, ensure_tables as ensure_source_tables, start_worker
+from .sources import annotate, civitai_link, civitai_unlink, civitai_versions, ensure_tables as ensure_source_tables, start_worker
 from .hash_matches import ensure_tables, queue_job, claim_job, finish_job, get_job, select_match, selected_for_inventory
 
 DB = Path(os.environ.get("MODELHARBOR_DB", "/data/modelharbor.sqlite3"))
@@ -246,3 +246,49 @@ def download_result(job_id: str, payload: DownloadResult, x_modelharbor_token: s
     with closing(connect()) as db:
         with db:
             return downloads.finish(db, job_id, payload.agent, payload.sha256, payload.error, payload.result_path)
+
+class CivitaiLink(BaseModel):
+    device: str = Field(min_length=1, max_length=100)
+    path: str = Field(min_length=1, max_length=4096)
+    model_id: int | None = Field(default=None, ge=1)
+    version_id: int | None = Field(default=None, ge=1)
+    file_id: int | None = Field(default=None, ge=1)
+
+def _local_sha(db, device, path):
+    row = db.execute("SELECT sha256 FROM models WHERE device=? AND path=?", (device, path)).fetchone()
+    if not row:
+        raise HTTPException(404, "Model not found in inventory")
+    if not row[0]:
+        raise HTTPException(409, "This file has not been hashed yet; wait for the next Windows sync")
+    return row[0]
+
+@app.get("/api/civitai/models/{model_id}")
+def civitai_model_versions(model_id: int, device: str, path: str, x_modelharbor_token: str | None = Header(default=None)):
+    authorize(x_modelharbor_token)
+    with closing(connect()) as db:
+        sha = _local_sha(db, device, path)
+    result = civitai_versions(model_id, sha)
+    if not result:
+        raise HTTPException(404, "Civitai model not found")
+    return result
+
+@app.post("/api/civitai/link")
+def link_civitai(payload: CivitaiLink, x_modelharbor_token: str | None = Header(default=None)):
+    authorize(x_modelharbor_token)
+    if not (payload.model_id and payload.version_id and payload.file_id):
+        raise HTTPException(422, "Choose a model, version and file")
+    with closing(connect()) as db:
+        with db:
+            result = civitai_link(db, _local_sha(db, payload.device, payload.path),
+                                  payload.model_id, payload.version_id, payload.file_id)
+    if not result:
+        raise HTTPException(404, "That file is not part of the chosen Civitai version")
+    return result
+
+@app.post("/api/civitai/unlink")
+def unlink_civitai(payload: CivitaiLink, x_modelharbor_token: str | None = Header(default=None)):
+    authorize(x_modelharbor_token)
+    with closing(connect()) as db:
+        with db:
+            civitai_unlink(db, _local_sha(db, payload.device, payload.path))
+    return {"ok": True}
