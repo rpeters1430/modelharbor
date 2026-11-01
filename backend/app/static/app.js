@@ -90,16 +90,17 @@ function repoFileRow(file){
  if(chosen.length){
   card.append(text("span","✓ Selected exact match: "+chosen.map(s=>s.device+" · "+s.path).join(", "),"match-verified"));
  }
- const candidates=models.filter(m=>m.name.toLowerCase()===file.name.toLowerCase()&&m.kind!=="ollama"&&Number(m.size_bytes)===file.size_bytes);
- const byName=models.filter(m=>m.name.toLowerCase()===file.name.toLowerCase()&&m.kind!=="ollama");
- card.append(text("span",candidates.length?"Filename + size match (unverified)":byName.length?"Filename match; size differs":"Not matched by filename",candidates.length?"match-possible":"model-sub"));
+ const byName=models.filter(m=>m.name.toLowerCase()===file.name.toLowerCase()&&m.device.endsWith(":comfyui"));
+ const sameSize=models.filter(m=>m.device.endsWith(":comfyui")&&Number(m.size_bytes)===file.size_bytes);
+ const candidates=sameSize.sort((a,b)=>(Number(b.name.toLowerCase()===file.name.toLowerCase())-Number(a.name.toLowerCase()===file.name.toLowerCase()))||a.name.localeCompare(b.name));
+ card.append(text("span",byName.some(m=>m.size_bytes===file.size_bytes)?"Filename + size match (unverified)":byName.length?"Filename match (size differs)":candidates.length?"Other local files have the same size; select one to verify":"No similar local file",candidates.length?"match-possible":"model-sub"));
  if(file.sha256)card.append(text("span","Remote SHA-256 available","model-sub"));
  const link=document.createElement("a");link.href=file.url;link.target="_blank";link.rel="noopener noreferrer";
  link.textContent="View file ↗";link.className="repo-link";card.append(link);
  if(candidates.length && file.sha256){
   const controls=text("div","","verify-controls");
   const picker=document.createElement("select");picker.setAttribute("aria-label","Choose local file to verify");
-  candidates.forEach((m,i)=>picker.add(new Option(m.device+" · "+m.path,i)));
+  candidates.slice(0,300).forEach((m,i)=>picker.add(new Option(m.name+" · "+m.device+" · "+m.path,i)));
   const verify=text("button","Verify SHA-256","primary");verify.type="button";
   const status=text("p","","muted");status.setAttribute("role","status");
   verify.onclick=()=>requestVerification(file,candidates[Number(picker.value)],status,verify,controls);
