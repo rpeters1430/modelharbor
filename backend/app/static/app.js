@@ -4,7 +4,14 @@ const $ = id => document.getElementById(id);
 let models = [];
 let agents = [];
 let selectedMatches = [];
-let token = sessionStorage.getItem("modelharbor_token") || "";
+// "Remember on this device" keeps the token in localStorage so it survives closing the tab and app updates;
+// otherwise it lives only for this tab. Storage can be blocked (private mode), so every access is guarded.
+const store = (kind, fn) => { try { return fn(window[kind]); } catch (_) { return null; } };
+let token = store("localStorage", s => s.getItem("modelharbor_token")) || store("sessionStorage", s => s.getItem("modelharbor_token")) || "";
+function saveToken(value, remember) {
+ for (const kind of ["localStorage", "sessionStorage"]) store(kind, s => s.removeItem("modelharbor_token"));
+ if (value) store(remember ? "localStorage" : "sessionStorage", s => s.setItem("modelharbor_token", value));
+}
 let view = "overview";
 const fmt = n => { if (!Number.isFinite(n)) return "—"; if (n === 0) return "0 B"; const u = ["B","KB","MB","GB","TB","PB"]; const i = Math.min(Math.floor(Math.log(n)/Math.log(1000)),u.length-1); return (n/Math.pow(1000,i)).toFixed(i ? 1 : 0)+" "+u[i]; };
 const text = (tag,value,cls) => { const e=document.createElement(tag); e.textContent=value; if(cls)e.className=cls; return e; };
@@ -352,12 +359,12 @@ function filter(){
  fill($("library"),subset.slice(0,500),"No matching models.");
  if(subset.length>500)$("library").append(text("p","Showing first 500 results. Narrow your filters to see more.","muted"));
 }
-async function refresh(){if(!token){openAuth();return;} $("refresh").disabled=true;try{const response=await fetch("/api/models",{headers:{"X-ModelHarbor-Token":token},cache:"no-store"});if(response.status===401){token="";sessionStorage.removeItem("modelharbor_token");setStatus(false);showNotice("Token rejected. Enter your configured API token.");openAuth();return;}if(!response.ok)throw Error("Server returned HTTP "+response.status);const data=await response.json();if(!Array.isArray(data))throw Error("Unexpected inventory response");models=data;try{selectedMatches=await apiRequest("/api/selected-matches");}catch(_){selectedMatches=[];}try{const agentsResponse=await fetch("/api/agents",{headers:{"X-ModelHarbor-Token":token},cache:"no-store"});agents=agentsResponse.ok?await agentsResponse.json():[];}catch(_){agents=[];}setStatus(true);showNotice("");render();}catch(err){setStatus(false);showNotice("Unable to load inventory: "+err.message);}finally{$("refresh").disabled=false;}}
+async function refresh(){if(!token){openAuth();return;} $("refresh").disabled=true;try{const response=await fetch("/api/models",{headers:{"X-ModelHarbor-Token":token},cache:"no-store"});if(response.status===401){token="";saveToken("");setStatus(false);showNotice("Token rejected. Enter your configured API token.");openAuth();return;}if(!response.ok)throw Error("Server returned HTTP "+response.status);const data=await response.json();if(!Array.isArray(data))throw Error("Unexpected inventory response");models=data;try{selectedMatches=await apiRequest("/api/selected-matches");}catch(_){selectedMatches=[];}try{const agentsResponse=await fetch("/api/agents",{headers:{"X-ModelHarbor-Token":token},cache:"no-store"});agents=agentsResponse.ok?await agentsResponse.json():[];}catch(_){agents=[];}setStatus(true);showNotice("");render();}catch(err){setStatus(false);showNotice("Unable to load inventory: "+err.message);}finally{$("refresh").disabled=false;}}
 document.querySelectorAll(".tab").forEach(b=>b.addEventListener("click",()=>switchView(b.dataset.view)));
 document.querySelectorAll("[data-go]").forEach(b=>b.addEventListener("click",()=>switchView(b.dataset.go)));
 ["search","kind","device","family","folder","sort","duplicates","updates"].forEach(id=>$(id).addEventListener(id==="search"?"input":"change",filter));
 $("refresh").onclick=refresh;$("settings").onclick=openAuth;
-$("auth-form").addEventListener("submit",e=>{e.preventDefault();token=$("token").value.trim();sessionStorage.setItem("modelharbor_token",token);$("auth-dialog").close();refresh();});
+$("auth-form").addEventListener("submit",e=>{e.preventDefault();token=$("token").value.trim();saveToken(token,$("remember").checked);$("auth-dialog").close();refresh();});
 $("cancel-auth").onclick=()=>$("auth-dialog").close();
 $("close-detail").onclick=$("detail-done").onclick=()=>$("detail-dialog").close();
 if(token)refresh();else openAuth();
