@@ -126,6 +126,44 @@ def delete_old(job, roots, hasher=sha256_file):
         raise ValueError("The old file changed since it was inventoried; nothing was deleted")
     os.remove(old)
 
+# Files ComfyUI managers keep next to a model (previews, Civitai info); removed with it.
+SIDECARS = (".metadata.json", ".civitai.info", ".preview.png", ".preview.jpg", ".preview.jpeg", ".preview.webp",
+            ".png", ".jpg", ".jpeg", ".webp")
+
+def delete_files(job, roots, hasher=sha256_file):
+    """Permanently delete a model file and its hard links, only if it is exactly the inventoried file."""
+    files = [allowed_file(p, roots) for p in job["paths"]]
+    if not files:
+        raise ValueError("Nothing to delete")
+    ids = {(s.st_dev, s.st_ino) for s in (f.stat() for f in files)}
+    if len(ids) != 1:
+        raise ValueError("These paths are no longer the same file; nothing was deleted")
+    if hasher(files[0]) != job["sha256"]:
+        raise ValueError("The file changed since it was inventoried; nothing was deleted")
+    for f in files:
+        os.remove(f)
+        for suffix in SIDECARS:
+            side = f.with_name(f.stem + suffix)
+            if side.is_file() and not side.is_symlink():
+                side.unlink()
+
+def process_delete(session, server, token, agent, roots):
+    headers = {"X-ModelHarbor-Token": token}
+    base = server.rstrip("/") + "/api/deletes/"
+    res = session.get(base + "next", params={"agent": agent}, headers=headers, timeout=20)
+    res.raise_for_status()
+    job = res.json().get("job")
+    if not job:
+        return False
+    error = None
+    try:
+        delete_files(job, roots)
+    except (OSError, ValueError) as exc:
+        error = str(exc)[:300]
+    session.post(base + job["id"] + "/result", headers=headers,
+                 json={"agent": agent, "error": error}, timeout=30).raise_for_status()
+    return True
+
 def process_cleanup(session, server, token, agent, roots):
     headers = {"X-ModelHarbor-Token": token}
     base = server.rstrip("/") + "/api/downloads/"

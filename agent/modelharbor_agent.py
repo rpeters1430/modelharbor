@@ -11,6 +11,7 @@ from scan import scan
 from ollama_scan import collect
 from hash_worker import process_one
 from hash_cache import fill_hashes
+from hardware import detect as detect_hardware
 import download_worker
 from status import NullReporter, Reporter, acquire_lock, release_lock
 
@@ -105,7 +106,7 @@ def run_once(cfg, token, dry_run=False, reporter=None):
         response = session.post(server.rstrip("/") + "/api/agents/heartbeat",
             headers={"X-ModelHarbor-Token": token},
             json={"device": device, "comfyui_count": len(comfy),
-                  "ollama_count": len(ollama) if ollama is not None else None}, timeout=20)
+                  "ollama_count": len(ollama) if ollama is not None else None, "hardware": detect_hardware()}, timeout=20)
         response.raise_for_status()
         reporter.update("idle", done=len(comfy), total=len(comfy), message=f"Synced {len(comfy)} ComfyUI files"
                         + (f" and {len(ollama)} Ollama models" if ollama is not None else "; Ollama unavailable"))
@@ -142,6 +143,11 @@ def run_hash_worker(cfg, token):
                     download_worker.process_cleanup(session,server,token,agent,roots)
                 except (requests.RequestException,OSError,ValueError) as exc:
                     LOG.warning("Download poll failed; retrying: %s",exc)
+            if cfg.get("deletes_enabled", True):
+                try:
+                    download_worker.process_delete(session,server,token,agent,roots)
+                except (requests.RequestException,OSError,ValueError) as exc:
+                    LOG.warning("Delete poll failed; retrying: %s",exc)
             time.sleep(interval)
 
 def main():

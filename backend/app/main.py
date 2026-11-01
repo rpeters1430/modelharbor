@@ -1,5 +1,6 @@
 """ModelHarbor read-only API foundation."""
 import hmac
+import json
 import os
 import sqlite3
 import time
@@ -13,7 +14,7 @@ from .intelligence import enrich
 from .providers import search as provider_search
 from urllib.parse import quote
 from .hf_repository import list_model_files, validate_repo
-from . import browse, downloads
+from . import browse, deletes, downloads, fit
 from .sources import _civitai_model, _file_sha, fetch
 from .sources import annotate, civitai_check, civitai_link, civitai_unlink, civitai_versions, ensure_tables as ensure_source_tables, start_worker
 from .hash_matches import ensure_tables, queue_job, claim_job, finish_job, get_job, select_match, selected_for_inventory
@@ -60,10 +61,17 @@ class ModelRecord(BaseModel):
     # SHA-256 of a safetensors file's tensor data only (Civitai AutoV3), unchanged by metadata edits.
     weights_sha256: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
 
+class Hardware(BaseModel):
+    gpu: str | None = Field(default=None, max_length=120)
+    vendor: str | None = Field(default=None, pattern=r"^(nvidia|amd|intel|other)$")
+    vram_bytes: int | None = Field(default=None, ge=0)
+    ram_bytes: int | None = Field(default=None, ge=0)
+
 class Heartbeat(BaseModel):
     device: str = Field(min_length=1, max_length=100)
     comfyui_count: int = Field(ge=0)
     ollama_count: int | None = Field(default=None, ge=0)
+    hardware: Hardware | None = None
 
 class Inventory(BaseModel):
     device: str
@@ -83,6 +91,8 @@ def connect():
     db.execute("""CREATE TABLE IF NOT EXISTS agent_heartbeats
         (device TEXT PRIMARY KEY, last_seen INTEGER NOT NULL,
          comfyui_count INTEGER NOT NULL, ollama_count INTEGER)""")
+    if "hardware" not in [row[1] for row in db.execute("PRAGMA table_info(agent_heartbeats)")]:
+        db.execute("ALTER TABLE agent_heartbeats ADD COLUMN hardware TEXT")  # JSON from the agent
     db.execute("""CREATE TABLE IF NOT EXISTS agent_status (
         device TEXT PRIMARY KEY, phase TEXT NOT NULL, done INTEGER, total INTEGER,
         done_bytes INTEGER, total_bytes INTEGER, current TEXT, message TEXT,
@@ -90,6 +100,7 @@ def connect():
     ensure_tables(db)
     ensure_source_tables(db)
     downloads.ensure_tables(db)
+    deletes.ensure_tables(db)
     db.commit()
     return db
 
@@ -127,10 +138,12 @@ def heartbeat(payload: Heartbeat, x_modelharbor_token: str | None = Header(defau
     authorize(x_modelharbor_token)
     with closing(connect()) as db:
         with db:
-            db.execute("""INSERT INTO agent_heartbeats VALUES (?,?,?,?)
-                ON CONFLICT(device) DO UPDATE SET last_seen=excluded.last_seen,
-                comfyui_count=excluded.comfyui_count,ollama_count=excluded.ollama_count""",
-                (payload.device, int(time.time()), payload.comfyui_count, payload.ollama_count))
+            hardware = payload.hardware and payload.hardware.model_dump_json()
+            db.execute("""INSERT INTO agent_heartbeats (device,last_seen,comfyui_count,ollama_count,hardware)
+                VALUES (?,?,?,?,?) ON CONFLICT(device) DO UPDATE SET last_seen=excluded.last_seen,
+                comfyui_count=excluded.comfyui_count,ollama_count=excluded.ollama_count,
+                hardware=COALESCE(excluded.hardware,agent_heartbeats.hardware)""",
+                (payload.device, int(time.time()), payload.comfyui_count, payload.ollama_count, hardware))
     return {"ok": True}
 
 @app.get("/api/agents")
@@ -139,7 +152,7 @@ def agents(x_modelharbor_token: str | None = Header(default=None)):
     with closing(connect()) as db:
         rows = db.execute("""SELECT h.device,h.last_seen,h.comfyui_count,h.ollama_count,
             s.phase,s.done,s.total,s.done_bytes,s.total_bytes,s.current,s.message,s.started_at,s.updated_at,
-            s.worker_seen,s.scan_requested_at
+            s.worker_seen,s.scan_requested_at,h.hardware
             FROM agent_heartbeats h LEFT JOIN agent_status s ON s.device=h.device ORDER BY h.device""").fetchall()
     now = int(time.time())
     result = []
@@ -151,8 +164,12 @@ def agents(x_modelharbor_token: str | None = Header(default=None)):
             "comfyui_count": r[2], "ollama_count": r[3], "status": status,
             # The worker polls every ~20 s, so two minutes of silence means it is not running.
             "worker_running": now - worker_seen <= 120, "worker_seen": worker_seen or None,
-            "scan_requested": bool(r[14])})
+            "scan_requested": bool(r[14]), "hardware": json.loads(r[15]) if r[15] else None})
     return result
+
+def _hardware(db, agent):
+    row = db.execute("SELECT hardware FROM agent_heartbeats WHERE device=?", (agent,)).fetchone() if agent else None
+    return json.loads(row[0]) if row and row[0] else None
 
 class AgentStatus(BaseModel):
     device: str = Field(min_length=1, max_length=100)
@@ -213,11 +230,11 @@ def discover(provider: str, q: str, x_modelharbor_token: str | None = Header(def
             "results": provider_search(provider, q)}
 
 @app.get("/api/huggingface/repository")
-def huggingface_repository(repo: str, q: str = "", x_modelharbor_token: str | None = Header(default=None)):
+def huggingface_repository(repo: str, q: str = "", agent: str = "", x_modelharbor_token: str | None = Header(default=None)):
     authorize(x_modelharbor_token)
     with closing(connect()) as db:
-        shas = browse.local_shas(db)
-    return browse.mark_huggingface(list_model_files(repo, q), shas)
+        shas, hw = browse.local_shas(db), _hardware(db, agent)
+    return fit.annotate_listing(browse.mark_huggingface(list_model_files(repo, q), shas), hw)
 
 class VerifyRequest(BaseModel):
     device: str = Field(min_length=1,max_length=100)
@@ -432,23 +449,23 @@ def browse_modelscope(q: str = "", type: str = "", sort: str = "Most Downloaded"
         raise HTTPException(502, "ModelScope is unavailable right now") from exc
 
 @app.get("/api/modelscope/repository")
-def modelscope_repository(repo: str, x_modelharbor_token: str | None = Header(default=None)):
+def modelscope_repository(repo: str, agent: str = "", x_modelharbor_token: str | None = Header(default=None)):
     authorize(x_modelharbor_token)
     with closing(connect()) as db:
-        shas = browse.local_shas(db)
+        shas, hw = browse.local_shas(db), _hardware(db, agent)
     try:
-        return browse.mark_huggingface(browse.list_modelscope_files(repo), shas)
+        return fit.annotate_listing(browse.mark_huggingface(browse.list_modelscope_files(repo), shas), hw)
     except (OSError, ValueError) as exc:
         raise HTTPException(502, "ModelScope is unavailable right now") from exc
 
 @app.get("/api/browse/civitai")
 def browse_civitai(q: str = "", type: str = "", base: str = "", sort: str = "Most Downloaded", cursor: str = "",
-                   x_modelharbor_token: str | None = Header(default=None)):
+                   agent: str = "", x_modelharbor_token: str | None = Header(default=None)):
     authorize(x_modelharbor_token)
     with closing(connect()) as db:
-        shas = browse.local_shas(db)
+        shas, hw = browse.local_shas(db), _hardware(db, agent)
     try:
-        return browse.search_civitai(q, type, base, sort, cursor, shas)
+        return browse.search_civitai(q, type, base, sort, cursor, shas, hw=hw)
     except (OSError, ValueError) as exc:
         raise HTTPException(502, "Civitai is unavailable right now") from exc
 
@@ -496,6 +513,42 @@ def new_download(payload: NewDownload, x_modelharbor_token: str | None = Header(
     with closing(connect()) as db:
         with db:
             return downloads.create_new(db, payload.agent, *args, payload.provider)
+
+class DeleteRequest(BaseModel):
+    device: str = Field(min_length=1, max_length=100)
+    path: str = Field(min_length=1, max_length=4096)
+
+class DeleteResult(BaseModel):
+    agent: str = Field(min_length=1, max_length=100)
+    error: str | None = Field(default=None, max_length=300)
+
+@app.post("/api/models/delete", status_code=202)
+def delete_model(payload: DeleteRequest, x_modelharbor_token: str | None = Header(default=None)):
+    """Queue permanent deletion of a ComfyUI file (and its hard links) on its PC."""
+    authorize(x_modelharbor_token)
+    with closing(connect()) as db:
+        with db:
+            return deletes.request(db, payload.device, payload.path)
+
+@app.get("/api/deletes/next")
+def next_delete(agent: str, x_modelharbor_token: str | None = Header(default=None)):
+    authorize(x_modelharbor_token)
+    with closing(connect()) as db:
+        with db:
+            return {"job": deletes.claim(db, agent)}
+
+@app.get("/api/deletes/{job_id}")
+def delete_status(job_id: str, x_modelharbor_token: str | None = Header(default=None)):
+    authorize(x_modelharbor_token)
+    with closing(connect()) as db:
+        return deletes.get(db, job_id)
+
+@app.post("/api/deletes/{job_id}/result")
+def delete_result(job_id: str, payload: DeleteResult, x_modelharbor_token: str | None = Header(default=None)):
+    authorize(x_modelharbor_token)
+    with closing(connect()) as db:
+        with db:
+            return deletes.finish(db, job_id, payload.agent, payload.error)
 
 class MatchIgnore(BaseModel):
     device: str = Field(min_length=1, max_length=100)

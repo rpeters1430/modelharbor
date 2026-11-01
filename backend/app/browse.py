@@ -3,7 +3,8 @@ import json
 import re
 from urllib.parse import quote, urlencode
 from fastapi import HTTPException
-from .sources import CIVITAI_HOSTS, _file_sha, civitai_url, fetch
+from .fit import mark_best, rate
+from .sources import CIVITAI_HOSTS, MAIN_FILE_TYPES, _file_sha, civitai_url, fetch
 from .hf_repository import _EXTENSIONS, validate_repo
 
 TYPES = ("Checkpoint", "LORA", "LoCon", "DoRA", "TextualInversion", "VAE", "Controlnet", "Upscaler")
@@ -115,7 +116,7 @@ def search_huggingface(query, kind, sort, get=fetch):
                       "folder": "loras" if lora else "checkpoints"})
     return {"items": items}
 
-def search_civitai(query, model_type, base_model, sort, cursor, shas, get=fetch):
+def search_civitai(query, model_type, base_model, sort, cursor, shas, get=fetch, hw=None):
     query = (query or "").strip()
     if len(query) > 120 or len(base_model or "") > 60:
         raise HTTPException(422, "Search text too long")
@@ -144,7 +145,10 @@ def search_civitai(query, model_type, base_model, sort, cursor, shas, get=fetch)
                     continue
                 files.append({"id": f["id"], "name": str(f.get("name") or "")[:200], "type": f.get("type"),
                               "primary": bool(f.get("primary")), "size_bytes": int(float(f.get("sizeKB") or 0) * 1024),
-                              "on_pc": sha in shas, "folder": folder_for(m.get("type"), f.get("type"), v.get("baseModel"))})
+                              "on_pc": sha in shas, "folder": folder_for(m.get("type"), f.get("type"), v.get("baseModel")),
+                              "fit": rate(str(f.get("name") or ""), int(float(f.get("sizeKB") or 0) * 1024), hw, f.get("metadata"))})
+            # Pruned/full and fp16/fp32 copies of the weights are variants; VAEs and text encoders are not.
+            mark_best(files, lambda f: "main" if f["type"] in MAIN_FILE_TYPES else f["type"])
             if any(f["on_pc"] for f in files) and installed is None:
                 installed = str(v.get("name") or "")
             versions.append({"id": v.get("id"), "name": str(v.get("name") or "")[:250], "base_model": v.get("baseModel"),

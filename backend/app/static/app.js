@@ -208,6 +208,24 @@ function downloadStatus(j){
  }
  return "Download failed: "+(j.error||"unknown error");
 }
+function renderDelete(m){
+ const box=$("delete-box");box.replaceChildren();
+ if(!m.device.endsWith(":comfyui")||!m.sha256)return;
+ const pc=m.device.replace(/:comfyui$/,""),links=m.file_id?models.filter(x=>x.device===m.device&&x.file_id===m.file_id):[m];
+ const b=text("button","Delete from "+pc+"…","repo-action danger");b.type="button";const status=text("p","","muted");box.append(b,status);
+ b.addEventListener("click",async()=>{
+  if(!confirm("Permanently delete this file from "+pc+"?\n\n"+links.map(x=>x.path).join("\n")+(links.length>1?"\n\nThese paths are the same file (hard links), so all of them go.":"")+"\n\nIts preview images and .metadata.json go too. The PC re-checks the file's SHA-256 first. This cannot be undone."))return;
+  b.disabled=true;
+  try{
+   let job=await apiRequest("/api/models/delete","POST",{device:m.device,path:m.path});
+   while(job.state==="queued"||job.state==="running"){
+    status.textContent=job.state==="queued"?"Waiting for the PC's background task (up to 20 seconds)…":"Checking the file and deleting…";
+    await new Promise(r=>setTimeout(r,3000));job=await apiRequest("/api/deletes/"+encodeURIComponent(job.id));}
+   if(job.state==="failed"){status.textContent="Not deleted: "+job.error;b.disabled=false;return;}
+   $("detail-dialog").close();await refresh();showNotice("Deleted "+m.name+" from "+pc);
+  }catch(err){status.textContent=err.message;b.disabled=false;}
+ });
+}
 async function renderDownload(m){
  const box=$("download-box");box.replaceChildren();if(!m.update)return;
  const button=text("button","Download update","primary");button.type="button";const status=text("p","","muted");box.append(button,status);
@@ -244,7 +262,7 @@ function renderLinkTools(m){
  box.append(b);
 }
 const CONVERSION_WORDS=/\b(fp8|fp16|fp32|bf16|fp4|nvfp4|mxfp4|e4m3fn|e5m2|scaled|int8|int4|nf4|svdq|gguf|q[2-8](?: k)?(?: [sml])?|q8 0|q4 [01]|q5 [01])\b/gi;
-function details(m){currentModel=m;$("detail-title").textContent=m.name;const dl=$("detail-fields");dl.replaceChildren();for(const [k,v] of Object.entries({Type:m.kind,Device:m.device,Size:fmt(m.size_bytes),Family:(m.family_guess||"Unknown")+(m.family_verified?" (from source)":" (unverified)"),...(m.source?{Source:providerName(m.source.provider)+" · "+m.source.model_name+(m.source.version_name?" — "+m.source.version_name:"")+(m.source.provider==="civitai"?(m.source.weights_match?" (same weights; file info differs)":m.source.verified?" (exact hash match)":" (linked by hand, hash differs)"):"")}:{"Source":!m.sha256?"Waiting for the Windows agent to hash this file":m.kind.startsWith("ollama/")?"Not on the Ollama registry":m.source_checked?"Not found on Civitai":"Checking Civitai…"}),...(m.source&&m.source.base_model?{"Base model":m.source.base_model}:{}),...(m.source&&m.source.trained_words&&m.source.trained_words.length?{"Trigger words":m.source.trained_words.join(", ")}:{}),...(m.update?{Update:m.update.version_name}:{}),Duplicates:m.possible_duplicate?"Possible match — verify hashes":"No matching name and size",Folder:m.path.replace(/[\\/][^\\/]+$/,""),Path:m.path,...(m.sha256?{[m.kind.startsWith("ollama/")?"Digest":"SHA-256"]:m.sha256}:{}),...(selectedMatches.some(s=>s.device===m.device&&s.path===m.path)?{"Verified source":selectedMatches.filter(s=>s.device===m.device&&s.path===m.path).map(s=>"Hugging Face · "+s.repository+" / "+s.remote_path).join(", ")}:{})})){dl.append(text("dt",k),text("dd",v));}if(m.source)linkRow(dl,"Source page","Open on "+providerName(m.source.provider)+" ↗",m.source.url);if(m.update)linkRow(dl,"New version","Open "+m.update.version_name+" ↗",m.update.url);$("provider-query").value=m.name.replace(/\.(safetensors|ckpt|gguf|pt|pth|bin)$/i,"").replace(/[_-]+/g," ").replace(CONVERSION_WORDS,"").replace(/\s+/g," ").trim().slice(0,120);$("provider-results").replaceChildren();$("repo-files").replaceChildren();$("repo-status").textContent="";$("repo-filter").value="";renderDownload(m);renderLinkTools(m);if(!$("detail-dialog").open)$("detail-dialog").showModal();}
+function details(m){currentModel=m;$("detail-title").textContent=m.name;const dl=$("detail-fields");dl.replaceChildren();for(const [k,v] of Object.entries({Type:m.kind,Device:m.device,Size:fmt(m.size_bytes),Family:(m.family_guess||"Unknown")+(m.family_verified?" (from source)":" (unverified)"),...(m.source?{Source:providerName(m.source.provider)+" · "+m.source.model_name+(m.source.version_name?" — "+m.source.version_name:"")+(m.source.provider==="civitai"?(m.source.weights_match?" (same weights; file info differs)":m.source.verified?" (exact hash match)":" (linked by hand, hash differs)"):"")}:{"Source":!m.sha256?"Waiting for the Windows agent to hash this file":m.kind.startsWith("ollama/")?"Not on the Ollama registry":m.source_checked?"Not found on Civitai":"Checking Civitai…"}),...(m.source&&m.source.base_model?{"Base model":m.source.base_model}:{}),...(m.source&&m.source.trained_words&&m.source.trained_words.length?{"Trigger words":m.source.trained_words.join(", ")}:{}),...(m.update?{Update:m.update.version_name}:{}),Duplicates:m.possible_duplicate?"Possible match — verify hashes":"No matching name and size",Folder:m.path.replace(/[\\/][^\\/]+$/,""),Path:m.path,...(m.sha256?{[m.kind.startsWith("ollama/")?"Digest":"SHA-256"]:m.sha256}:{}),...(selectedMatches.some(s=>s.device===m.device&&s.path===m.path)?{"Verified source":selectedMatches.filter(s=>s.device===m.device&&s.path===m.path).map(s=>"Hugging Face · "+s.repository+" / "+s.remote_path).join(", ")}:{})})){dl.append(text("dt",k),text("dd",v));}if(m.source)linkRow(dl,"Source page","Open on "+providerName(m.source.provider)+" ↗",m.source.url);if(m.update)linkRow(dl,"New version","Open "+m.update.version_name+" ↗",m.update.url);$("provider-query").value=m.name.replace(/\.(safetensors|ckpt|gguf|pt|pth|bin)$/i,"").replace(/[_-]+/g," ").replace(CONVERSION_WORDS,"").replace(/\s+/g," ").trim().slice(0,120);$("provider-results").replaceChildren();$("repo-files").replaceChildren();$("repo-status").textContent="";$("repo-filter").value="";renderDownload(m);renderLinkTools(m);renderDelete(m);if(!$("detail-dialog").open)$("detail-dialog").showModal();}
 function options(id,values,label){const el=$(id),old=el.value;el.replaceChildren(new Option(label,""));values.forEach(v=>el.add(new Option(v,v)));el.value=values.includes(old)?old:"";}
 const ago=t=>{if(!t)return "never";const s=Math.max(0,Math.round(Date.now()/1000-t));return s<60?s+" s ago":s<3600?Math.round(s/60)+" min ago":s<86400?Math.round(s/3600)+" h ago":new Date(t*1000).toLocaleString();};
 const shortPath=p=>(p||"").split(/[\\/]/).slice(-2).join("\\");
@@ -266,6 +284,7 @@ function renderAgents(){
   card.append(text("strong",a.device),text("span",a.online?"● Online":"● Offline",a.online?"agent-online":"agent-offline"));
   card.append(text("div",agentStatusText(a),"agent-status"+(s&&s.phase==="error"?" agent-error":"")));
   if(s&&s.phase==="hashing"&&s.total_bytes){const bar=text("div","","bar");const inner=text("span");inner.style.width=Math.min(100,s.done_bytes/s.total_bytes*100)+"%";bar.append(inner);card.append(bar);}
+  if(a.hardware)card.append(text("div",[a.hardware.gpu,a.hardware.vram_bytes?Math.round(a.hardware.vram_bytes/2**30)+" GB VRAM":"",a.hardware.ram_bytes?Math.round(a.hardware.ram_bytes/2**30)+" GB RAM":""].filter(Boolean).join(" · "),"model-sub"));
   card.append(text("div","ComfyUI: "+a.comfyui_count+" · Ollama: "+(a.ollama_count ?? "unavailable")+" · last full sync "+ago(a.last_seen),"model-sub"));
   card.append(text("div",a.worker_running?"Background task running (checks for scan requests and downloads)":"Background task not running"+(a.worker_seen?" · last seen "+ago(a.worker_seen):"")+". Start “ModelHarbor Hash Worker” in Task Scheduler.","model-sub"));
   const button=text("button",busy?"Scanning…":a.scan_requested?"Scan requested":"Scan now","repo-action");button.type="button";button.disabled=!!busy||a.scan_requested;
@@ -293,9 +312,10 @@ function newDownloadStatus(j){
  if(j.state==="done")return "✓ Downloaded and verified: "+shortPath(j.result_path);
  return "Download failed: "+(j.error||"unknown error");
 }
-function fileRow(label,onPc,ref,request){
- // One downloadable file: "On your PC", an existing job's state, or a Download button.
- const row=text("div","","browse-file");row.append(text("span",label,"model-sub"));
+function fileRow(label,onPc,ref,request,f={}){
+ // One downloadable file: "On your PC", an existing job's state, or a Download button; plus how it suits the PC.
+ const row=text("div","","browse-file"+(f.best?" best":""));row.append(text("span",label,"model-sub"));
+ if(f.fit)row.append(text("span",(f.best?"★ Best for your PC · ":"")+(f.fit.level==="good"?"✓ ":f.fit.level==="bad"?"✗ ":"⚠ ")+f.fit.note,"fit fit-"+f.fit.level));
  const status=text("span","","browse-status");row.append(status);
  if(onPc){status.textContent="✓ On your PC";status.classList.add("on-pc");return row;}
  const button=text("button","Download","repo-action");button.type="button";row.append(button);
@@ -316,7 +336,7 @@ function civitaiCard(item){
  const toggle=text("button","Versions & files","repo-action");toggle.type="button";const files=text("div","","browse-versions");files.hidden=true;
  toggle.addEventListener("click",()=>{files.hidden=!files.hidden;});
  item.versions.forEach(v=>{files.append(text("div",v.name+(v.base_model?" · "+v.base_model:"")+(v.published_at?" · "+v.published_at.slice(0,10):""),"version-name"));
-  v.files.forEach(f=>files.append(fileRow(f.name+" · "+f.type+" · "+fmt(f.size_bytes)+" → "+f.folder,f.on_pc,"civitai:"+f.id,{provider:"civitai",model_id:item.id,version_id:v.id,file_id:f.id})));});
+  v.files.forEach(f=>files.append(fileRow(f.name+" · "+f.type+" · "+fmt(f.size_bytes)+" → "+f.folder,f.on_pc,"civitai:"+f.id,{provider:"civitai",model_id:item.id,version_id:v.id,file_id:f.id},f)));});
  const link=document.createElement("a");link.href=item.url;link.target="_blank";link.rel="noopener noreferrer";link.textContent="Open on Civitai ↗";link.className="model-sub";
  info.append(toggle,link);card.append(info,files);return card;
 }
@@ -327,9 +347,9 @@ function repoCard(repo){
  const toggle=text("button","Show files","repo-action");toggle.type="button";const files=text("div","","browse-versions");files.hidden=true;
  const folder=document.createElement("select");folder.setAttribute("aria-label","Save into folder");["loras","checkpoints","diffusion_models","text_encoders","vae","embeddings","controlnet","upscale_models"].forEach(f=>folder.append(new Option("Save into "+f,f)));if(repo.folder)folder.value=repo.folder;
  toggle.addEventListener("click",async()=>{files.hidden=!files.hidden;if(files.hidden||files.childElementCount)return;files.append(text("p","Loading files…","muted"));
-  try{const listing=await apiRequest("/api/"+repo.provider+"/repository?repo="+encodeURIComponent(repo.id));files.replaceChildren(folder);
+  try{const listing=await apiRequest("/api/"+repo.provider+"/repository?"+new URLSearchParams({repo:repo.id,agent:browseAgent()||""}));files.replaceChildren(folder);
    if(!listing.files.length)files.append(text("p","No model files in this repository.","muted"));
-   listing.files.forEach(f=>files.append(fileRow(f.path+(f.size_bytes?" · "+fmt(f.size_bytes):"")+(f.sha256?"":" · no published hash"),f.on_pc,repo.provider+":"+repo.id+"/"+f.path,{provider:repo.provider,repository:repo.id,remote_path:f.path,get folder(){return folder.value;}})));}
+   listing.files.forEach(f=>files.append(fileRow(f.path+(f.size_bytes?" · "+fmt(f.size_bytes):"")+(f.sha256?"":" · no published hash"),f.on_pc,repo.provider+":"+repo.id+"/"+f.path,{provider:repo.provider,repository:repo.id,remote_path:f.path,get folder(){return folder.value;}},f)));}
   catch(err){files.replaceChildren(text("p",err.message,"muted"));}});
  const link=document.createElement("a");link.href=repo.url;link.target="_blank";link.rel="noopener noreferrer";link.textContent="Open on "+site+" ↗";link.className="model-sub";
  info.append(toggle,link);card.append(info,files);return card;
@@ -353,13 +373,14 @@ async function browseSearch(more){
    browseCursor=data.next_cursor;$("browse-more").hidden=!browseCursor;
    $("browse-results").textContent=list.querySelectorAll(".browse-card").length+" repositories";
   }else{
-   const params=new URLSearchParams({q,type:$("browse-type").value,base:$("browse-base").value,sort:$("browse-sort").value});
+   const params=new URLSearchParams({q,type:$("browse-type").value,base:$("browse-base").value,sort:$("browse-sort").value,agent:browseAgent()||""});
    if(more&&browseCursor)params.set("cursor",browseCursor);
    const data=await apiRequest("/api/browse/civitai?"+params);
    if(!more)list.replaceChildren();
    data.items.forEach(item=>list.append(civitaiCard(item)));
    browseCursor=data.next_cursor;$("browse-more").hidden=!browseCursor;
-   $("browse-results").textContent=list.querySelectorAll(".browse-card").length+" models";
+   const hw=(agents.find(a=>a.device===browseAgent())||{}).hardware;
+   $("browse-results").textContent=list.querySelectorAll(".browse-card").length+" models"+(hw&&hw.gpu?" · rated for "+hw.gpu:"");
   }
   if(!list.childElementCount)list.append(text("p","Nothing found. Try fewer filters.","muted"));
  }catch(err){if(!more)list.replaceChildren();list.append(text("p",err.message,"muted"));}
