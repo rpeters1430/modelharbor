@@ -25,16 +25,17 @@ async function showCivitaiVersions(item,target){
  const m=currentModel;target.replaceChildren(text("p","Loading versions…","muted"));
  try{
   const data=await apiRequest("/api/civitai/models/"+encodeURIComponent(item.id)+"?device="+encodeURIComponent(m.device)+"&path="+encodeURIComponent(m.path));
-  target.replaceChildren(text("p","Pick the file you have. ✓ means its SHA-256 is identical to your file.","muted"));
+  target.replaceChildren(text("p","Pick the file you have. ✓ marks a file that is yours: identical, or the same weights with different file info.","muted"));
   data.versions.forEach(v=>{
    target.append(text("strong",v.name+(v.base_model?" · "+v.base_model:"")+(v.published_at?" · "+v.published_at.slice(0,10):""),"version-name"));
    v.files.forEach(f=>{
-    const b=text("button",(f.exact?"✓ ":"")+f.name+" · "+f.type+" · "+fmt(f.size_bytes),"repo-action"+(f.exact?" exact":""));b.type="button";
+    const mine=f.exact||f.same_weights;
+    const b=text("button",(f.exact?"✓ Your file: ":f.same_weights?"✓ Same weights as your file: ":"")+f.name+" · "+f.type+" · "+fmt(f.size_bytes),"repo-action"+(mine?" exact":""));b.type="button";
     b.addEventListener("click",async()=>{
-     if(!f.exact&&!confirm("Your file's SHA-256 is different from "+f.name+".\n\nLink it anyway? It will be marked as linked by hand, and update checks will still work."))return;
+     if(!mine&&!confirm("This is NOT the same file as yours ("+fmt(f.size_bytes)+" vs your "+fmt(m.size_bytes)+").\n\nOnly link it if your file is a conversion of this one (fp8, GGUF…) that you made yourself. Link anyway?"))return;
      b.disabled=true;
      try{const r=await apiRequest("/api/civitai/link","POST",{device:m.device,path:m.path,model_id:data.id,version_id:v.id,file_id:f.id});
-      await refresh();showNotice((r.verified?"Linked (exact hash match): ":"Linked by hand: ")+m.name+" → "+data.name+" "+v.name);reopen();}
+      await refresh();showNotice((r.same_weights?"Linked (same weights): ":r.verified?"Linked (exact hash match): ":"Linked by hand: ")+m.name+" → "+data.name+" "+v.name);reopen();}
      catch(err){target.append(text("p",err.message,"muted"));b.disabled=false;}
     });
     target.append(b);
@@ -42,12 +43,34 @@ async function showCivitaiVersions(item,target){
   });
  }catch(err){target.replaceChildren(text("p",err.message,"muted"));}
 }
+const VERDICT_TEXT={exact:"✓ Contains your file (identical)",same_weights:"✓ Contains your file (same weights; only the file's info differs)",
+ same_size:"≈ Has a file the same size as yours, but with different contents (an edited copy?). Not a safe match."};
+// Civitai results judged against the user's file by fingerprint and size, so they never have to guess.
+async function checkCivitai(q,target){
+ const m=currentModel,data=await apiRequest("/api/civitai/check?"+new URLSearchParams({device:m.device,path:m.path,q}));
+ target.replaceChildren();
+ const found=data.models.flatMap(x=>x.files.filter(f=>f.verdict!=="same_size").map(f=>({x,f})));
+ if(found.length){
+  target.append(text("p","✓ Found your file on Civitai. Linking it is safe.","match-verified"));
+  found.forEach(({x,f})=>{const b=text("button","Link to "+x.name+" — "+f.version_name+(f.base_model?" · "+f.base_model:""),"primary");b.type="button";
+   b.addEventListener("click",async()=>{b.disabled=true;try{const r=await apiRequest("/api/civitai/link","POST",{device:m.device,path:m.path,model_id:x.id,version_id:f.version_id,file_id:f.file_id});
+    await refresh();showNotice((r.same_weights?"Linked (same weights): ":"Linked (exact hash match): ")+m.name+" → "+x.name+" "+f.version_name);reopen();}catch(err){target.append(text("p",err.message,"muted"));b.disabled=false;}});
+   target.append(b);});
+ }else target.append(text("p",data.models.length?"✗ Your file isn't in these results. All "+data.checked_files+" files in "+data.models.length+" models were compared with yours by fingerprint and size, and none of them is your file. It may be a deleted version, a re-upload, or from another site. Try a different search, or press “Mark as local only”.":"No models found. Try a shorter name.","match-none"));
+ data.models.forEach(x=>{
+  const row=document.createElement("a");row.className="provider-result";row.href=x.url;row.target="_blank";row.rel="noopener noreferrer";
+  row.append(text("strong",x.name),text("span",(VERDICT_TEXT[x.best]||"✗ Not your file"+(x.sizes.length?": its files are "+x.sizes.map(fmt).join(", ")+"; yours is "+fmt(m.size_bytes):""))+" · opens site ↗","model-sub"));
+  target.append(row);
+  if(!found.length){const b=text("button","Link anyway (only if I converted this model myself)","repo-action");b.type="button";const picker=text("div","","version-picker");b.addEventListener("click",()=>showCivitaiVersions(x,picker));target.append(b,picker);}
+ });
+}
 async function searchProvider(){
  const provider=$("provider").value, q=$("provider-query").value.trim(), target=$("provider-results");
  target.replaceChildren();
  if(q.length<3){target.append(text("p","Enter at least 3 characters.","muted"));return;}
- const button=$("provider-search");button.disabled=true;target.append(text("p","Searching public model listings…","muted"));
+ const button=$("provider-search");button.disabled=true;target.append(text("p",provider==="civitai"?"Searching Civitai and comparing every file with yours…":"Searching public model listings…","muted"));
  try{
+  if(provider==="civitai"){await checkCivitai(q,target);return;}
   const response=await fetch("/api/discovery/"+encodeURIComponent(provider)+"?q="+encodeURIComponent(q),{headers:{"X-ModelHarbor-Token":token},cache:"no-store"});
   if(!response.ok)throw Error("Search unavailable (HTTP "+response.status+")");
   const payload=await response.json();target.replaceChildren();
@@ -221,7 +244,7 @@ function renderLinkTools(m){
  box.append(b);
 }
 const CONVERSION_WORDS=/\b(fp8|fp16|fp32|bf16|fp4|nvfp4|mxfp4|e4m3fn|e5m2|scaled|int8|int4|nf4|svdq|gguf|q[2-8](?: k)?(?: [sml])?|q8 0|q4 [01]|q5 [01])\b/gi;
-function details(m){currentModel=m;$("detail-title").textContent=m.name;const dl=$("detail-fields");dl.replaceChildren();for(const [k,v] of Object.entries({Type:m.kind,Device:m.device,Size:fmt(m.size_bytes),Family:(m.family_guess||"Unknown")+(m.family_verified?" (from source)":" (unverified)"),...(m.source?{Source:providerName(m.source.provider)+" · "+m.source.model_name+(m.source.version_name?" — "+m.source.version_name:"")+(m.source.provider==="civitai"?(m.source.verified?" (exact hash match)":" (linked by hand, hash differs)"):"")}:{"Source":!m.sha256?"Waiting for the Windows agent to hash this file":m.kind.startsWith("ollama/")?"Not on the Ollama registry":m.source_checked?"Not found on Civitai":"Checking Civitai…"}),...(m.source&&m.source.base_model?{"Base model":m.source.base_model}:{}),...(m.source&&m.source.trained_words&&m.source.trained_words.length?{"Trigger words":m.source.trained_words.join(", ")}:{}),...(m.update?{Update:m.update.version_name}:{}),Duplicates:m.possible_duplicate?"Possible match — verify hashes":"No matching name and size",Folder:m.path.replace(/[\\/][^\\/]+$/,""),Path:m.path,...(m.sha256?{[m.kind.startsWith("ollama/")?"Digest":"SHA-256"]:m.sha256}:{}),...(selectedMatches.some(s=>s.device===m.device&&s.path===m.path)?{"Verified source":selectedMatches.filter(s=>s.device===m.device&&s.path===m.path).map(s=>"Hugging Face · "+s.repository+" / "+s.remote_path).join(", ")}:{})})){dl.append(text("dt",k),text("dd",v));}if(m.source)linkRow(dl,"Source page","Open on "+providerName(m.source.provider)+" ↗",m.source.url);if(m.update)linkRow(dl,"New version","Open "+m.update.version_name+" ↗",m.update.url);$("provider-query").value=m.name.replace(/\.(safetensors|ckpt|gguf|pt|pth|bin)$/i,"").replace(/[_-]+/g," ").replace(CONVERSION_WORDS,"").replace(/\s+/g," ").trim().slice(0,120);$("provider-results").replaceChildren();$("repo-files").replaceChildren();$("repo-status").textContent="";$("repo-filter").value="";renderDownload(m);renderLinkTools(m);if(!$("detail-dialog").open)$("detail-dialog").showModal();}
+function details(m){currentModel=m;$("detail-title").textContent=m.name;const dl=$("detail-fields");dl.replaceChildren();for(const [k,v] of Object.entries({Type:m.kind,Device:m.device,Size:fmt(m.size_bytes),Family:(m.family_guess||"Unknown")+(m.family_verified?" (from source)":" (unverified)"),...(m.source?{Source:providerName(m.source.provider)+" · "+m.source.model_name+(m.source.version_name?" — "+m.source.version_name:"")+(m.source.provider==="civitai"?(m.source.weights_match?" (same weights; file info differs)":m.source.verified?" (exact hash match)":" (linked by hand, hash differs)"):"")}:{"Source":!m.sha256?"Waiting for the Windows agent to hash this file":m.kind.startsWith("ollama/")?"Not on the Ollama registry":m.source_checked?"Not found on Civitai":"Checking Civitai…"}),...(m.source&&m.source.base_model?{"Base model":m.source.base_model}:{}),...(m.source&&m.source.trained_words&&m.source.trained_words.length?{"Trigger words":m.source.trained_words.join(", ")}:{}),...(m.update?{Update:m.update.version_name}:{}),Duplicates:m.possible_duplicate?"Possible match — verify hashes":"No matching name and size",Folder:m.path.replace(/[\\/][^\\/]+$/,""),Path:m.path,...(m.sha256?{[m.kind.startsWith("ollama/")?"Digest":"SHA-256"]:m.sha256}:{}),...(selectedMatches.some(s=>s.device===m.device&&s.path===m.path)?{"Verified source":selectedMatches.filter(s=>s.device===m.device&&s.path===m.path).map(s=>"Hugging Face · "+s.repository+" / "+s.remote_path).join(", ")}:{})})){dl.append(text("dt",k),text("dd",v));}if(m.source)linkRow(dl,"Source page","Open on "+providerName(m.source.provider)+" ↗",m.source.url);if(m.update)linkRow(dl,"New version","Open "+m.update.version_name+" ↗",m.update.url);$("provider-query").value=m.name.replace(/\.(safetensors|ckpt|gguf|pt|pth|bin)$/i,"").replace(/[_-]+/g," ").replace(CONVERSION_WORDS,"").replace(/\s+/g," ").trim().slice(0,120);$("provider-results").replaceChildren();$("repo-files").replaceChildren();$("repo-status").textContent="";$("repo-filter").value="";renderDownload(m);renderLinkTools(m);if(!$("detail-dialog").open)$("detail-dialog").showModal();}
 function options(id,values,label){const el=$(id),old=el.value;el.replaceChildren(new Option(label,""));values.forEach(v=>el.add(new Option(v,v)));el.value=values.includes(old)?old:"";}
 const ago=t=>{if(!t)return "never";const s=Math.max(0,Math.round(Date.now()/1000-t));return s<60?s+" s ago":s<3600?Math.round(s/60)+" min ago":s<86400?Math.round(s/3600)+" h ago":new Date(t*1000).toLocaleString();};
 const shortPath=p=>(p||"").split(/[\\/]/).slice(-2).join("\\");

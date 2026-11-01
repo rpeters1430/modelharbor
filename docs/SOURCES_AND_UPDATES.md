@@ -42,6 +42,20 @@ Set `"downloads_enabled": false` in `agent.json` to turn downloads off on that P
 
 ## Linking a model by hand
 
+### Same weights, edited file info
+
+A safetensors file stores its info (trigger words, training settings) in a header before the weights. Editing or stripping that header changes the file's SHA-256 but not the model. The Windows agent therefore also hashes the weights alone, which is Civitai's AutoV3, and files the full hash doesn't find are looked up by it. Such a match is shown as "same weights; file info differs" and counts as verified. Adding this hash makes the agent re-read each safetensors file once after updating.
+
+### Checking search results
+
+Searching Civitai under **Find model online** compares every file in the results with yours:
+
+- **✓ Found your file**: identical, or the same weights. Press the link button; this is safe.
+- **≈ Same size, different contents**: probably an edited or re-saved copy. Not a safe match.
+- **✗ Not your file**: the result lists that model's file sizes next to yours.
+
+When nothing matches, the dashboard says so. The file may be a deleted version, a re-upload, or from another site: try another search or press **Mark as local only**. **Link anyway** is only for a conversion you made yourself (see below).
+
 For a file the hash lookup didn't find, open it, search Civitai under **Find model online**, and press **Link to my file** on the right result. Pick the version and file you have: **✓** marks a file whose SHA-256 is identical to yours, which links as an exact match. Linking to a different file asks first and is shown as "linked by hand, hash differs". Update checks and downloads work either way, and downloads are still verified against the new file's published hash. **Unlink** removes the link, and the file is looked up by hash again.
 
 ## Browsing and downloading new models

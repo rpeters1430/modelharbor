@@ -11,7 +11,7 @@ import re
 import threading
 import time
 from urllib.error import HTTPError
-from urllib.parse import quote
+from urllib.parse import quote, urlencode
 from urllib.request import Request, urlopen
 
 LOG = logging.getLogger("modelharbor.sources")
@@ -33,8 +33,12 @@ def ensure_tables(db):
         if column not in columns:
             db.execute(f"ALTER TABLE civitai_files ADD COLUMN {column} TEXT")
     if "verified" not in columns:
-        # NULL: found by hash lookup. 0: linked by hand to a file with a different hash.
+        # NULL: exact hash. 2: same tensor data (AutoV3), only the embedded metadata differs.
+        # 0: linked by hand to a file with different contents (a conversion, for example).
         db.execute("ALTER TABLE civitai_files ADD COLUMN verified INTEGER")
+    if "weights_checked" not in columns:
+        # Set once the weights-only hash was tried too, so files get that lookup as soon as it is known.
+        db.execute("ALTER TABLE civitai_files ADD COLUMN weights_checked INTEGER")
     # Files the user marked as not on any site (own LoRAs, merges), so they leave the Unmatched list.
     db.execute("CREATE TABLE IF NOT EXISTS match_ignored (sha256 TEXT PRIMARY KEY, ignored_at INTEGER NOT NULL)")
     db.execute("""CREATE TABLE IF NOT EXISTS ollama_remote (
@@ -58,32 +62,45 @@ def civitai_url(model_id, version_id=None, nsfw=False):
     url = f"https://{CIVITAI_HOSTS[1] if nsfw else CIVITAI_HOSTS[0]}/models/{int(model_id)}"
     return url + (f"?modelVersionId={int(version_id)}" if version_id else "")
 
-def civitai_lookup(db, sha, get=fetch, now=None):
-    now = now or int(time.time())
-    data = None
+def _by_hash(digest, get):
     for host in CIVITAI_HOSTS:
-        body = get(f"https://{host}/api/v1/model-versions/by-hash/{sha}")
+        body = get(f"https://{host}/api/v1/model-versions/by-hash/{digest}")
         if body is not None:
             data = json.loads(body)
-            break
-    if not data or not isinstance(data.get("modelId"), int):
-        db.execute("""INSERT INTO civitai_files (sha256,found,checked_at) VALUES (?,0,?)
-            ON CONFLICT(sha256) DO UPDATE SET found=0,checked_at=excluded.checked_at""", (sha, now))
+            return data if isinstance(data.get("modelId"), int) else None
+    return None
+
+def _autov3(item):
+    return str((item.get("hashes") or {}).get("AutoV3") or "").lower()
+
+def civitai_lookup(db, sha, get=fetch, now=None, weights=None):
+    now = now or int(time.time())
+    data, verified = _by_hash(sha, get), None
+    matched = data and next((f for f in data.get("files") or [] if _file_sha(f) == sha), {})
+    if not data and weights:
+        # Same tensors with edited metadata: Civitai looks up its AutoV3 hash, the first 12 characters.
+        data, verified = _by_hash(weights[:12], get), 2
+        matched = data and next((f for f in data.get("files") or [] if _autov3(f) == weights[:12]), None)
+        if not matched:
+            data = None
+    if not data:
+        db.execute("""INSERT INTO civitai_files (sha256,found,checked_at,weights_checked) VALUES (?,0,?,?)
+            ON CONFLICT(sha256) DO UPDATE SET found=0,checked_at=excluded.checked_at,
+            weights_checked=excluded.weights_checked""", (sha, now, 1 if weights else None))
         return False
     model = data.get("model") or {}
     nsfw = bool(model.get("nsfw")) or int(data.get("nsfwLevel") or 0) > 3  # above PG-13
     words = [str(w)[:200] for w in data.get("trainedWords") or [] if w][:20]
-    # A version can hold several files (model, text encoder, VAE); remember which one this is.
-    matched = next((f for f in data.get("files") or [] if _file_sha(f) == sha), {})
+    # A version can hold several files (model, text encoder, VAE); `matched` is the one this is.
     db.execute("""INSERT INTO civitai_files (sha256,found,checked_at,model_id,version_id,model_name,
-        version_name,base_model,trained_words,published_at,nsfw,file_type) VALUES (?,1,?,?,?,?,?,?,?,?,?,?)
+        version_name,base_model,trained_words,published_at,nsfw,file_type,verified) VALUES (?,1,?,?,?,?,?,?,?,?,?,?,?)
         ON CONFLICT(sha256) DO UPDATE SET found=1,checked_at=excluded.checked_at,model_id=excluded.model_id,
         version_id=excluded.version_id,model_name=excluded.model_name,version_name=excluded.version_name,
         base_model=excluded.base_model,trained_words=excluded.trained_words,
-        published_at=excluded.published_at,nsfw=excluded.nsfw,file_type=excluded.file_type""",
+        published_at=excluded.published_at,nsfw=excluded.nsfw,file_type=excluded.file_type,verified=excluded.verified""",
         (sha, now, data["modelId"], data.get("id"), str(model.get("name") or "")[:250],
          str(data.get("name") or "")[:250], str(data.get("baseModel") or "")[:100] or None,
-         json.dumps(words), data.get("publishedAt"), int(nsfw), str(matched.get("type") or "")[:50] or None))
+         json.dumps(words), data.get("publishedAt"), int(nsfw), str(matched.get("type") or "")[:50] or None, verified))
     return True
 
 # Civitai labels the main weights inconsistently between versions of one model.
@@ -139,7 +156,44 @@ def _civitai_model(model_id, get):
     body = get(f"https://{CIVITAI_HOSTS[0]}/api/v1/models/{int(model_id)}")
     return (json.loads(body) or {}) if body else {}
 
-def civitai_versions(model_id, sha, get=fetch):
+VERDICT_RANK = {"exact": 0, "same_weights": 1, "same_size": 2}
+
+def _verdict(item, sha, weights, size):
+    """Whether a Civitai file is the local file: identical, same tensors, or only the same size."""
+    if sha and _file_sha(item) == sha:
+        return "exact"
+    if weights and _autov3(item) == weights[:12]:
+        return "same_weights"
+    file_size = int(float(item.get("sizeKB") or 0) * 1024)
+    return "same_size" if size and abs(file_size - size) <= 1024 else None  # sizeKB is rounded
+
+def civitai_check(query, sha, weights, size, get=fetch):
+    """Search Civitai and judge every file in the results against the local file."""
+    body = get(f"https://{CIVITAI_HOSTS[0]}/api/v1/models?" + urlencode({"query": query, "limit": 20, "nsfw": "true"}))
+    data = json.loads(body) if body else {}
+    models, checked = [], 0
+    for m in data.get("items") or []:
+        if not isinstance(m.get("id"), int):
+            continue
+        files, sizes = [], set()
+        for v in m.get("modelVersions") or []:
+            for f in v.get("files") or []:
+                if not isinstance(f.get("id"), int):
+                    continue
+                checked += 1
+                sizes.add(int(float(f.get("sizeKB") or 0) * 1024))
+                verdict = _verdict(f, sha, weights, size)
+                if verdict:
+                    files.append({"verdict": verdict, "version_id": v.get("id"), "version_name": str(v.get("name") or "")[:250],
+                                  "base_model": v.get("baseModel"), "file_id": f["id"], "file_name": str(f.get("name") or "")[:200]})
+        files.sort(key=lambda f: VERDICT_RANK[f["verdict"]])
+        models.append({"id": m["id"], "name": str(m.get("name") or "")[:250], "type": m.get("type"),
+                       "url": civitai_url(m["id"], None, bool(m.get("nsfw"))), "best": files[0]["verdict"] if files else None,
+                       "files": files, "sizes": sorted(sizes)[:6]})
+    models.sort(key=lambda m: VERDICT_RANK.get(m["best"], 9))
+    return {"checked_files": checked, "models": models}
+
+def civitai_versions(model_id, sha, get=fetch, weights=None):
     """A model's versions and files for the link picker, marking files whose hash equals ours."""
     data = _civitai_model(model_id, get)
     if not data.get("modelVersions"):
@@ -150,28 +204,29 @@ def civitai_versions(model_id, sha, get=fetch):
                           "published_at": v.get("publishedAt"),
                           "files": [{"id": f.get("id"), "name": str(f.get("name") or "")[:200], "type": f.get("type"),
                                      "primary": bool(f.get("primary")), "size_bytes": int(float(f.get("sizeKB") or 0) * 1024),
-                                     "exact": bool(sha) and _file_sha(f) == sha}
+                                     "exact": bool(sha) and _file_sha(f) == sha,
+                                     "same_weights": bool(weights) and _autov3(f) == weights[:12]}
                                     for f in v.get("files") or [] if isinstance(f.get("id"), int)]}
                          for v in data["modelVersions"] if isinstance(v.get("id"), int)]}
 
-def civitai_link(db, sha, model_id, version_id, file_id, get=fetch, now=None):
-    """Link a local file to a Civitai version/file chosen by the user. Exact only if the hashes match."""
+def civitai_link(db, sha, model_id, version_id, file_id, get=fetch, now=None, weights=None):
+    """Link a local file to a Civitai version/file chosen by the user. Verified if the file or its tensors match."""
     now = now or int(time.time())
     data = _civitai_model(model_id, get)
     version = next((v for v in data.get("modelVersions") or [] if v.get("id") == version_id), None)
     file = version and next((f for f in version.get("files") or [] if f.get("id") == file_id), None)
     if not file:
         return None
-    verified = _file_sha(file) == sha
+    verified = None if _file_sha(file) == sha else 2 if weights and _autov3(file) == weights[:12] else 0
     words = [str(w)[:200] for w in version.get("trainedWords") or [] if w][:20]
     db.execute("""INSERT OR REPLACE INTO civitai_files (sha256,found,checked_at,model_id,version_id,model_name,
         version_name,base_model,trained_words,published_at,nsfw,file_type,verified)
         VALUES (?,1,?,?,?,?,?,?,?,?,?,?,?)""",
         (sha, now, int(model_id), version_id, str(data.get("name") or "")[:250], str(version.get("name") or "")[:250],
          str(version.get("baseModel") or "")[:100] or None, json.dumps(words), version.get("publishedAt"),
-         int(bool(data.get("nsfw"))), str(file.get("type") or "")[:50] or None, None if verified else 0))
+         int(bool(data.get("nsfw"))), str(file.get("type") or "")[:50] or None, verified))
     civitai_latest(db, model_id, get, now, data.get("modelVersions") or [])
-    return {"verified": verified}
+    return {"verified": verified != 0, "same_weights": verified == 2}
 
 def civitai_unlink(db, sha):
     # Forget the link; the next pass looks the file up by hash again.
@@ -226,12 +281,14 @@ def huggingface_check(db, list_files, now=None):
 def run_pass(db, get=fetch, list_files=None, now=None, pause=0.5, limit=300):
     """One bounded round of lookups. Each write is committed so progress survives restarts."""
     now = now or int(time.time())
-    shas = [r[0] for r in db.execute("""SELECT DISTINCT m.sha256 FROM models m
+    pending = db.execute("""SELECT m.sha256, MAX(m.weights_sha256) FROM models m
         LEFT JOIN civitai_files c ON c.sha256=m.sha256
         WHERE m.sha256 IS NOT NULL AND m.kind NOT LIKE 'ollama/%'
-        AND (c.sha256 IS NULL OR (c.found=0 AND c.checked_at<?)) LIMIT ?""", (now - 7 * DAY, limit))]
-    for sha in shas:
-        civitai_lookup(db, sha, get, now)
+        AND (c.sha256 IS NULL OR (c.found=0 AND (c.checked_at<?
+             OR (m.weights_sha256 IS NOT NULL AND c.weights_checked IS NULL))))
+        GROUP BY m.sha256 LIMIT ?""", (now - 7 * DAY, limit)).fetchall()
+    for sha, weights in pending:
+        civitai_lookup(db, sha, get, now, weights)
         db.commit()
         time.sleep(pause)
     model_ids = [r[0] for r in db.execute("""SELECT DISTINCT model_id FROM civitai_files WHERE found=1
@@ -299,6 +356,7 @@ def annotate(db, records):
             record["source"] = {"provider": "civitai", "model_id": model_id, "version_id": version_id,
                 "model_name": model_name, "version_name": version_name, "base_model": base,
                 "trained_words": json.loads(words or "[]"), "nsfw": bool(nsfw), "verified": verified != 0,
+                "weights_match": verified == 2,
                 "url": civitai_url(model_id, version_id, bool(nsfw))}
             if latest_id and latest_id != version_id:
                 record["update"] = {"provider": "civitai", "version_id": latest_id, "version_name": latest_name,

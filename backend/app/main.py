@@ -15,7 +15,7 @@ from urllib.parse import quote
 from .hf_repository import list_model_files, validate_repo
 from . import browse, downloads
 from .sources import _civitai_model, _file_sha, fetch
-from .sources import annotate, civitai_link, civitai_unlink, civitai_versions, ensure_tables as ensure_source_tables, start_worker
+from .sources import annotate, civitai_check, civitai_link, civitai_unlink, civitai_versions, ensure_tables as ensure_source_tables, start_worker
 from .hash_matches import ensure_tables, queue_job, claim_job, finish_job, get_job, select_match, selected_for_inventory
 
 DB = Path(os.environ.get("MODELHARBOR_DB", "/data/modelharbor.sqlite3"))
@@ -57,6 +57,8 @@ class ModelRecord(BaseModel):
     file_id: str | None = Field(default=None, max_length=64)
     # File SHA-256 for ComfyUI files; registry manifest digest for Ollama models.
     sha256: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
+    # SHA-256 of a safetensors file's tensor data only (Civitai AutoV3), unchanged by metadata edits.
+    weights_sha256: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
 
 class Heartbeat(BaseModel):
     device: str = Field(min_length=1, max_length=100)
@@ -75,7 +77,7 @@ def connect():
         kind TEXT NOT NULL, size_bytes INTEGER NOT NULL, modified_ns INTEGER NOT NULL,
         PRIMARY KEY (device, path))""")
     columns = [row[1] for row in db.execute("PRAGMA table_info(models)")]
-    for column in ("file_id", "sha256"):
+    for column in ("file_id", "sha256", "weights_sha256"):
         if column not in columns:
             db.execute(f"ALTER TABLE models ADD COLUMN {column} TEXT")
     db.execute("""CREATE TABLE IF NOT EXISTS agent_heartbeats
@@ -115,8 +117,9 @@ def inventory(payload: Inventory, x_modelharbor_token: str | None = Header(defau
     with closing(connect()) as db:
         with db:
             db.execute("DELETE FROM models WHERE device=?", (payload.device,))
-            db.executemany("INSERT INTO models (device,path,name,kind,size_bytes,modified_ns,file_id,sha256) VALUES (?,?,?,?,?,?,?,?)",
-                [(m.device,m.path,m.name,m.kind,m.size_bytes,m.modified_ns,m.file_id,m.sha256) for m in payload.models])
+            db.executemany("""INSERT INTO models (device,path,name,kind,size_bytes,modified_ns,file_id,sha256,weights_sha256)
+                VALUES (?,?,?,?,?,?,?,?,?)""",
+                [(m.device,m.path,m.name,m.kind,m.size_bytes,m.modified_ns,m.file_id,m.sha256,m.weights_sha256) for m in payload.models])
     return {"device": payload.device, "count": len(payload.models)}
 
 @app.post("/api/agents/heartbeat")
@@ -326,20 +329,38 @@ class CivitaiLink(BaseModel):
     version_id: int | None = Field(default=None, ge=1)
     file_id: int | None = Field(default=None, ge=1)
 
-def _local_sha(db, device, path):
-    row = db.execute("SELECT sha256 FROM models WHERE device=? AND path=?", (device, path)).fetchone()
+def _local_hashes(db, device, path):
+    """(sha256, weights_sha256, size_bytes) of an inventory file."""
+    row = db.execute("SELECT sha256,weights_sha256,size_bytes FROM models WHERE device=? AND path=?", (device, path)).fetchone()
     if not row:
         raise HTTPException(404, "Model not found in inventory")
     if not row[0]:
         raise HTTPException(409, "This file has not been hashed yet; wait for the next Windows sync")
-    return row[0]
+    return row
+
+def _local_sha(db, device, path):
+    return _local_hashes(db, device, path)[0]
+
+@app.get("/api/civitai/check")
+def civitai_check_file(device: str, path: str, q: str, x_modelharbor_token: str | None = Header(default=None)):
+    """Search Civitai and say for every result whether it contains this exact file."""
+    authorize(x_modelharbor_token)
+    q = q.strip()
+    if not 3 <= len(q) <= 120:
+        raise HTTPException(422, "Search must contain 3–120 characters")
+    with closing(connect()) as db:
+        sha, weights, size = _local_hashes(db, device, path)
+    try:
+        return civitai_check(q, sha, weights, size)
+    except (OSError, ValueError) as exc:
+        raise HTTPException(502, "Civitai is unavailable right now") from exc
 
 @app.get("/api/civitai/models/{model_id}")
 def civitai_model_versions(model_id: int, device: str, path: str, x_modelharbor_token: str | None = Header(default=None)):
     authorize(x_modelharbor_token)
     with closing(connect()) as db:
-        sha = _local_sha(db, device, path)
-    result = civitai_versions(model_id, sha)
+        sha, weights, _ = _local_hashes(db, device, path)
+    result = civitai_versions(model_id, sha, weights=weights)
     if not result:
         raise HTTPException(404, "Civitai model not found")
     return result
@@ -351,8 +372,8 @@ def link_civitai(payload: CivitaiLink, x_modelharbor_token: str | None = Header(
         raise HTTPException(422, "Choose a model, version and file")
     with closing(connect()) as db:
         with db:
-            result = civitai_link(db, _local_sha(db, payload.device, payload.path),
-                                  payload.model_id, payload.version_id, payload.file_id)
+            sha, weights, _ = _local_hashes(db, payload.device, payload.path)
+            result = civitai_link(db, sha, payload.model_id, payload.version_id, payload.file_id, weights=weights)
     if not result:
         raise HTTPException(404, "That file is not part of the chosen Civitai version")
     return result
