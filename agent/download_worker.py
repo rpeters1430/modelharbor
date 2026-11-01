@@ -10,7 +10,7 @@ import requests
 from hash_worker import allowed_file
 from hash_cache import sha256_file
 
-ALLOWED_HOSTS = {"civitai.com", "civitai.red", "huggingface.co"}
+ALLOWED_HOSTS = {"civitai.com", "civitai.red", "huggingface.co", "modelscope.cn", "www.modelscope.cn"}
 SAFE_NAME = re.compile(r"^[\w .()+,-]{1,200}\.(?:safetensors|ckpt|pt|pth|bin|gguf|onnx)$")
 CHUNK = 8 * 1024 * 1024
 HEADROOM = 2 * 1024**3
@@ -21,11 +21,14 @@ NEW_FOLDERS = {"checkpoints", "loras", "embeddings", "vae", "controlnet", "upsca
 
 def auth_headers(host):
     # Keys live in the Windows user environment, never in the NAS database or config files.
-    token = os.environ.get("CIVITAI_API_TOKEN") if host.startswith("civitai.") else os.environ.get("HF_TOKEN")
+    name = "CIVITAI_API_TOKEN" if host.startswith("civitai.") else "HF_TOKEN" if host == "huggingface.co" else None
+    token = name and os.environ.get(name)
     return {"Authorization": "Bearer " + token} if token else {}
 
 def explain(status, host):
     if status in (401, 403):
+        if "modelscope" in host:
+            return f"{host} refused the download (HTTP {status}); the model may need you to accept its license on the site"
         name = "CIVITAI_API_TOKEN" if host.startswith("civitai.") else "HF_TOKEN"
         return f"{host} refused the download (HTTP {status}); set {name} in your Windows user environment"
     return f"{host} returned HTTP {status}"

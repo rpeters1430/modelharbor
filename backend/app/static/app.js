@@ -169,7 +169,7 @@ $("repo-filter").addEventListener("input",displayRepoFiles);
 const isUnmatched=m=>!!m.sha256&&!m.source&&!m.hard_link&&!m.kind.startsWith("ollama/")&&!m.match_ignored;
 function modelRow(m){const b=text("button","", "model");b.type="button";b.append(text("span","◈","glyph"));const info=text("span","","model-text");info.append(text("div",m.name,"model-name"),text("div",m.kind+" · "+m.device+" · "+fmt(m.size_bytes)+(m.possible_duplicate?" · Possible duplicate":"")+(m.hard_link?" · Hard link":"")+(m.source?" · ✓ "+providerName(m.source.provider):"")+(m.update?" · ⬆ Update":"")+(isUnmatched(m)?" · Unmatched":"")+(m.match_ignored?" · Local only":""),"model-sub"));b.append(info,text("span","›","chevron"));b.addEventListener("click",()=>details(m));return b;}
 function fill(target,items,empty){target.replaceChildren();if(!items.length)target.append(text("p",empty,"muted"));else items.forEach(m=>target.append(modelRow(m)));}
-const providerName=p=>({civitai:"Civitai",huggingface:"Hugging Face",ollama:"Ollama"})[p]||p;
+const providerName=p=>({civitai:"Civitai",huggingface:"Hugging Face",modelscope:"ModelScope",ollama:"Ollama"})[p]||p;
 function linkRow(dl,label,caption,url){const a=document.createElement("a");a.href=url;a.target="_blank";a.rel="noopener noreferrer";a.textContent=caption;const dd=document.createElement("dd");dd.append(a);dl.append(text("dt",label),dd);}
 function downloadStatus(j){
  if(!j)return "Saved next to the current file after its SHA-256 is checked. The old file stays until you choose to delete it.";
@@ -295,17 +295,18 @@ function civitaiCard(item){
  const link=document.createElement("a");link.href=item.url;link.target="_blank";link.rel="noopener noreferrer";link.textContent="Open on Civitai ↗";link.className="model-sub";
  info.append(toggle,link);card.append(info,files);return card;
 }
-function huggingfaceCard(repo){
- const card=text("div","","browse-card");const info=text("div","","browse-info");
- info.append(text("strong",repo.id),text("div","Hugging Face"+(repo.downloads!=null?" · ↓ "+Number(repo.downloads).toLocaleString():"")+(repo.likes?" · ♥ "+Number(repo.likes).toLocaleString():"")+(repo.created_at?" · "+repo.created_at.slice(0,10):""),"model-sub"));
+// A Hugging Face or ModelScope repository: both list files with a published SHA-256.
+function repoCard(repo){
+ const card=text("div","","browse-card");const info=text("div","","browse-info"),site=providerName(repo.provider);
+ info.append(text("strong",repo.id),text("div",site+(repo.downloads!=null?" · ↓ "+Number(repo.downloads).toLocaleString():"")+(repo.likes?" · ♥ "+Number(repo.likes).toLocaleString():"")+(repo.created_at?" · "+repo.created_at.slice(0,10):""),"model-sub"));
  const toggle=text("button","Show files","repo-action");toggle.type="button";const files=text("div","","browse-versions");files.hidden=true;
  const folder=document.createElement("select");folder.setAttribute("aria-label","Save into folder");["loras","checkpoints","diffusion_models","text_encoders","vae","embeddings","controlnet","upscale_models"].forEach(f=>folder.append(new Option("Save into "+f,f)));if(repo.folder)folder.value=repo.folder;
  toggle.addEventListener("click",async()=>{files.hidden=!files.hidden;if(files.hidden||files.childElementCount)return;files.append(text("p","Loading files…","muted"));
-  try{const listing=await apiRequest("/api/huggingface/repository?repo="+encodeURIComponent(repo.id));files.replaceChildren(folder);
+  try{const listing=await apiRequest("/api/"+repo.provider+"/repository?repo="+encodeURIComponent(repo.id));files.replaceChildren(folder);
    if(!listing.files.length)files.append(text("p","No model files in this repository.","muted"));
-   listing.files.forEach(f=>files.append(fileRow(f.path+(f.size_bytes?" · "+fmt(f.size_bytes):"")+(f.sha256?"":" · no published hash"),f.on_pc,"huggingface:"+repo.id+"/"+f.path,{provider:"huggingface",repository:repo.id,remote_path:f.path,get folder(){return folder.value;}})));}
+   listing.files.forEach(f=>files.append(fileRow(f.path+(f.size_bytes?" · "+fmt(f.size_bytes):"")+(f.sha256?"":" · no published hash"),f.on_pc,repo.provider+":"+repo.id+"/"+f.path,{provider:repo.provider,repository:repo.id,remote_path:f.path,get folder(){return folder.value;}})));}
   catch(err){files.replaceChildren(text("p",err.message,"muted"));}});
- const link=document.createElement("a");link.href=repo.url;link.target="_blank";link.rel="noopener noreferrer";link.textContent="Open on Hugging Face ↗";link.className="model-sub";
+ const link=document.createElement("a");link.href=repo.url;link.target="_blank";link.rel="noopener noreferrer";link.textContent="Open on "+site+" ↗";link.className="model-sub";
  info.append(toggle,link);card.append(info,files);return card;
 }
 async function browseSearch(more){
@@ -316,8 +317,16 @@ async function browseSearch(more){
   browseJobs=await apiRequest("/api/downloads").catch(()=>[]);
   if(provider==="huggingface"){
    const data=await apiRequest("/api/browse/huggingface?"+new URLSearchParams({q,type:$("browse-hf-type").value,sort:$("browse-hf-sort").value}));
-   list.replaceChildren(...data.items.map(huggingfaceCard));$("browse-more").hidden=true;
+   list.replaceChildren(...data.items.map(repoCard));$("browse-more").hidden=true;
    $("browse-results").textContent=data.items.length+" repositories";
+  }else if(provider==="modelscope"){
+   const params=new URLSearchParams({q,type:$("browse-ms-type").value,sort:$("browse-ms-sort").value});
+   if(more&&browseCursor)params.set("cursor",browseCursor);
+   const data=await apiRequest("/api/browse/modelscope?"+params);
+   if(!more)list.replaceChildren();
+   data.items.forEach(item=>list.append(repoCard(item)));
+   browseCursor=data.next_cursor;$("browse-more").hidden=!browseCursor;
+   $("browse-results").textContent=list.querySelectorAll(".browse-card").length+" repositories";
   }else{
    const params=new URLSearchParams({q,type:$("browse-type").value,base:$("browse-base").value,sort:$("browse-sort").value});
    if(more&&browseCursor)params.set("cursor",browseCursor);
@@ -334,7 +343,7 @@ async function browseSearch(more){
 $("browse-go").addEventListener("click",()=>browseSearch(false));
 $("browse-more").addEventListener("click",()=>browseSearch(true));
 $("browse-q").addEventListener("keydown",e=>{if(e.key==="Enter")browseSearch(false);});
-$("browse-provider").addEventListener("change",()=>{const hf=$("browse-provider").value==="huggingface";["browse-type","browse-base","browse-sort"].forEach(id=>$(id).hidden=hf);["browse-hf-type","browse-hf-sort"].forEach(id=>$(id).hidden=!hf);});
+$("browse-provider").addEventListener("change",()=>{const site=$("browse-provider").value;["browse-type","browse-base","browse-sort"].forEach(id=>$(id).hidden=site!=="civitai");["browse-hf-type","browse-hf-sort"].forEach(id=>$(id).hidden=site!=="huggingface");["browse-ms-type","browse-ms-sort"].forEach(id=>$(id).hidden=site!=="modelscope");});
 try{$("browse-mature").checked=localStorage.getItem("modelharbor_mature")==="1";}catch(_){}
 $("browse-mature").addEventListener("change",()=>{try{localStorage.setItem("modelharbor_mature",$("browse-mature").checked?"1":"0");}catch(_){}});
 function render(){

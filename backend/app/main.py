@@ -399,6 +399,27 @@ def browse_huggingface(q: str = "", type: str = "", sort: str = "Trending",
     except (OSError, ValueError) as exc:
         raise HTTPException(502, "Hugging Face is unavailable right now") from exc
 
+@app.get("/api/browse/modelscope")
+def browse_modelscope(q: str = "", type: str = "", sort: str = "Most Downloaded", cursor: str = "1",
+                      x_modelharbor_token: str | None = Header(default=None)):
+    authorize(x_modelharbor_token)
+    if not cursor.isdigit():
+        raise HTTPException(422, "Invalid page cursor")
+    try:
+        return browse.search_modelscope(q, type, sort, int(cursor))
+    except (OSError, ValueError) as exc:
+        raise HTTPException(502, "ModelScope is unavailable right now") from exc
+
+@app.get("/api/modelscope/repository")
+def modelscope_repository(repo: str, x_modelharbor_token: str | None = Header(default=None)):
+    authorize(x_modelharbor_token)
+    with closing(connect()) as db:
+        shas = browse.local_shas(db)
+    try:
+        return browse.mark_huggingface(browse.list_modelscope_files(repo), shas)
+    except (OSError, ValueError) as exc:
+        raise HTTPException(502, "ModelScope is unavailable right now") from exc
+
 @app.get("/api/browse/civitai")
 def browse_civitai(q: str = "", type: str = "", base: str = "", sort: str = "Most Downloaded", cursor: str = "",
                    x_modelharbor_token: str | None = Header(default=None)):
@@ -412,7 +433,7 @@ def browse_civitai(q: str = "", type: str = "", base: str = "", sort: str = "Mos
 
 class NewDownload(BaseModel):
     agent: str = Field(min_length=1, max_length=100)
-    provider: str = Field(pattern=r"^(civitai|huggingface)$")
+    provider: str = Field(pattern=r"^(civitai|huggingface|modelscope)$")
     model_id: int | None = Field(default=None, ge=1)
     version_id: int | None = Field(default=None, ge=1)
     file_id: int | None = Field(default=None, ge=1)
@@ -433,6 +454,17 @@ def new_download(payload: NewDownload, x_modelharbor_token: str | None = Header(
         args = (f"https://civitai.com/api/download/models/{payload.version_id}?fileId={payload.file_id}",
                 str(file.get("name") or ""), _file_sha(file), int(float(file.get("sizeKB") or 0) * 1024),
                 browse.folder_for(model.get("type"), file.get("type")), f"civitai:{payload.file_id}")
+    elif payload.provider == "modelscope":
+        repo = validate_repo(payload.repository or "")
+        try:
+            listing = browse.list_modelscope_files(repo)
+        except (OSError, ValueError) as exc:
+            raise HTTPException(502, "ModelScope is unavailable right now") from exc
+        item = next((f for f in listing["files"] if f["path"] == payload.remote_path), None)
+        if not item:
+            raise HTTPException(404, "File not found in that repository")
+        args = (browse.modelscope_url(repo, item["path"]), item["name"], item["sha256"], item["size_bytes"],
+                payload.folder or "loras", f"modelscope:{repo}/{item['path']}")
     else:
         repo = validate_repo(payload.repository or "")
         item = next((f for f in list_model_files(repo)["files"] if f["path"] == payload.remote_path), None)
