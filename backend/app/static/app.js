@@ -12,6 +12,29 @@ function showNotice(message){ $("notice").textContent=message; $("notice").hidde
 function setStatus(online){ $("status").textContent=online?"● Connected":"● Disconnected"; $("status").classList.toggle("online",online); }
 function openAuth(){ $("token").value=token; $("auth-dialog").showModal(); }
 function switchView(next){view=next;document.querySelectorAll(".tab").forEach(b=>b.classList.toggle("active",b.dataset.view===next));document.querySelectorAll(".view").forEach(e=>e.hidden=e.id!==next+"-view");$("heading").textContent=({overview:"Model overview",library:"Model library",devices:"Connected sources"})[next];}
+let currentModel=null;
+function reopen(){const fresh=models.find(x=>x.device===currentModel.device&&x.path===currentModel.path);if(fresh)details(fresh);}
+async function showCivitaiVersions(item,target){
+ const m=currentModel;target.replaceChildren(text("p","Loading versions…","muted"));
+ try{
+  const data=await apiRequest("/api/civitai/models/"+encodeURIComponent(item.id)+"?device="+encodeURIComponent(m.device)+"&path="+encodeURIComponent(m.path));
+  target.replaceChildren(text("p","Pick the file you have. ✓ means its SHA-256 is identical to your file.","muted"));
+  data.versions.forEach(v=>{
+   target.append(text("strong",v.name+(v.base_model?" · "+v.base_model:"")+(v.published_at?" · "+v.published_at.slice(0,10):""),"version-name"));
+   v.files.forEach(f=>{
+    const b=text("button",(f.exact?"✓ ":"")+f.name+" · "+f.type+" · "+fmt(f.size_bytes),"repo-action"+(f.exact?" exact":""));b.type="button";
+    b.addEventListener("click",async()=>{
+     if(!f.exact&&!confirm("Your file's SHA-256 is different from "+f.name+".\n\nLink it anyway? It will be marked as linked by hand, and update checks will still work."))return;
+     b.disabled=true;
+     try{const r=await apiRequest("/api/civitai/link","POST",{device:m.device,path:m.path,model_id:data.id,version_id:v.id,file_id:f.id});
+      await refresh();showNotice((r.verified?"Linked (exact hash match): ":"Linked by hand: ")+m.name+" → "+data.name+" "+v.name);reopen();}
+     catch(err){target.append(text("p",err.message,"muted"));b.disabled=false;}
+    });
+    target.append(b);
+   });
+  });
+ }catch(err){target.replaceChildren(text("p",err.message,"muted"));}
+}
 async function searchProvider(){
  const provider=$("provider").value, q=$("provider-query").value.trim(), target=$("provider-results");
  target.replaceChildren();
@@ -25,8 +48,9 @@ async function searchProvider(){
   payload.results.forEach(item=>{
    const a=document.createElement("a");a.className="provider-result";
    a.href=item.url;a.target="_blank";a.rel="noopener noreferrer";
-   a.append(text("strong",item.name),text("span",item.provider+" · Unverified candidate","model-sub"));
+   a.append(text("strong",item.name),text("span",item.provider+" · Unverified candidate · opens site ↗","model-sub"));
    target.append(a);
+   if(item.provider==="civitai"){const button=text("button","Link to my file","repo-action");button.type="button";const picker=text("div","","version-picker");button.addEventListener("click",()=>showCivitaiVersions(item,picker));target.append(button,picker);}
    if(item.provider==="huggingface"){const button=text("button","Browse repository files","repo-action");button.type="button";button.addEventListener("click",()=>{$("repo-name").value=item.id;browseRepository();});target.append(button);}
   });
  }catch(err){target.replaceChildren(text("p",err.message,"muted"));}
@@ -155,7 +179,13 @@ async function renderDownload(m){
  button.addEventListener("click",async()=>{button.disabled=true;try{show(await apiRequest("/api/downloads","POST",{device:m.device,path:m.path}));}catch(err){status.textContent=err.message;button.disabled=false;}});
  try{show((await apiRequest("/api/downloads")).find(x=>x.device===m.device&&x.path===m.path));}catch(_){show(null);}
 }
-function details(m){$("detail-title").textContent=m.name;const dl=$("detail-fields");dl.replaceChildren();for(const [k,v] of Object.entries({Type:m.kind,Device:m.device,Size:fmt(m.size_bytes),Family:(m.family_guess||"Unknown")+(m.family_verified?" (from source)":" (unverified)"),...(m.source?{Source:providerName(m.source.provider)+" · "+m.source.model_name+(m.source.version_name?" — "+m.source.version_name:"")}:{"Source":!m.sha256?"Waiting for the Windows agent to hash this file":m.kind.startsWith("ollama/")?"Not on the Ollama registry":m.source_checked?"Not found on Civitai":"Checking Civitai…"}),...(m.source&&m.source.base_model?{"Base model":m.source.base_model}:{}),...(m.source&&m.source.trained_words&&m.source.trained_words.length?{"Trigger words":m.source.trained_words.join(", ")}:{}),...(m.update?{Update:m.update.version_name}:{}),Duplicates:m.possible_duplicate?"Possible match — verify hashes":"No matching name and size",Folder:m.path.replace(/[\\/][^\\/]+$/,""),Path:m.path,...(m.sha256?{[m.kind.startsWith("ollama/")?"Digest":"SHA-256"]:m.sha256}:{}),...(selectedMatches.some(s=>s.device===m.device&&s.path===m.path)?{"Verified source":selectedMatches.filter(s=>s.device===m.device&&s.path===m.path).map(s=>"Hugging Face · "+s.repository+" / "+s.remote_path).join(", ")}:{})})){dl.append(text("dt",k),text("dd",v));}if(m.source)linkRow(dl,"Source page","Open on "+providerName(m.source.provider)+" ↗",m.source.url);if(m.update)linkRow(dl,"New version","Open "+m.update.version_name+" ↗",m.update.url);$("provider-query").value=m.name.replace(/\.(safetensors|ckpt|gguf|pt|pth|bin)$/i,"").replace(/[_-]+/g," ").slice(0,120);$("provider-results").replaceChildren();$("repo-files").replaceChildren();$("repo-status").textContent="";$("repo-filter").value="";renderDownload(m);$("detail-dialog").showModal();}
+function renderLinkTools(m){
+ const box=$("link-box");box.replaceChildren();if(!m.source||m.source.provider!=="civitai")return;
+ const b=text("button",m.source.verified?"Unlink and re-check by hash":"Unlink from Civitai","repo-action");b.type="button";
+ b.addEventListener("click",async()=>{b.disabled=true;try{await apiRequest("/api/civitai/unlink","POST",{device:m.device,path:m.path});await refresh();showNotice("Unlinked "+m.name);reopen();}catch(err){box.append(text("p",err.message,"muted"));b.disabled=false;}});
+ box.append(b);
+}
+function details(m){currentModel=m;$("detail-title").textContent=m.name;const dl=$("detail-fields");dl.replaceChildren();for(const [k,v] of Object.entries({Type:m.kind,Device:m.device,Size:fmt(m.size_bytes),Family:(m.family_guess||"Unknown")+(m.family_verified?" (from source)":" (unverified)"),...(m.source?{Source:providerName(m.source.provider)+" · "+m.source.model_name+(m.source.version_name?" — "+m.source.version_name:"")+(m.source.provider==="civitai"?(m.source.verified?" (exact hash match)":" (linked by hand, hash differs)"):"")}:{"Source":!m.sha256?"Waiting for the Windows agent to hash this file":m.kind.startsWith("ollama/")?"Not on the Ollama registry":m.source_checked?"Not found on Civitai":"Checking Civitai…"}),...(m.source&&m.source.base_model?{"Base model":m.source.base_model}:{}),...(m.source&&m.source.trained_words&&m.source.trained_words.length?{"Trigger words":m.source.trained_words.join(", ")}:{}),...(m.update?{Update:m.update.version_name}:{}),Duplicates:m.possible_duplicate?"Possible match — verify hashes":"No matching name and size",Folder:m.path.replace(/[\\/][^\\/]+$/,""),Path:m.path,...(m.sha256?{[m.kind.startsWith("ollama/")?"Digest":"SHA-256"]:m.sha256}:{}),...(selectedMatches.some(s=>s.device===m.device&&s.path===m.path)?{"Verified source":selectedMatches.filter(s=>s.device===m.device&&s.path===m.path).map(s=>"Hugging Face · "+s.repository+" / "+s.remote_path).join(", ")}:{})})){dl.append(text("dt",k),text("dd",v));}if(m.source)linkRow(dl,"Source page","Open on "+providerName(m.source.provider)+" ↗",m.source.url);if(m.update)linkRow(dl,"New version","Open "+m.update.version_name+" ↗",m.update.url);$("provider-query").value=m.name.replace(/\.(safetensors|ckpt|gguf|pt|pth|bin)$/i,"").replace(/[_-]+/g," ").slice(0,120);$("provider-results").replaceChildren();$("repo-files").replaceChildren();$("repo-status").textContent="";$("repo-filter").value="";renderDownload(m);renderLinkTools(m);if(!$("detail-dialog").open)$("detail-dialog").showModal();}
 function options(id,values,label){const el=$(id),old=el.value;el.replaceChildren(new Option(label,""));values.forEach(v=>el.add(new Option(v,v)));el.value=values.includes(old)?old:"";}
 function render(){
  $("count").textContent=models.length.toLocaleString();

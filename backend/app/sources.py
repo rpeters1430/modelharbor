@@ -32,6 +32,9 @@ def ensure_tables(db):
     for column in ("file_type", "latest_file"):
         if column not in columns:
             db.execute(f"ALTER TABLE civitai_files ADD COLUMN {column} TEXT")
+    if "verified" not in columns:
+        # NULL: found by hash lookup. 0: linked by hand to a file with a different hash.
+        db.execute("ALTER TABLE civitai_files ADD COLUMN verified INTEGER")
     db.execute("""CREATE TABLE IF NOT EXISTS ollama_remote (
         name TEXT PRIMARY KEY, remote_digest TEXT, checked_at INTEGER NOT NULL)""")
 
@@ -130,11 +133,53 @@ def newer_version(local_name, base, versions, file_type=None):
     # Numbering is inconsistent (V0.25 vs V0.4), so the latest upload wins among real successors.
     return max(candidates, key=lambda v: (v.get("publishedAt") or "", version_key(v["name"])[1]), default=None)
 
-def civitai_latest(db, model_id, get=fetch, now=None):
+def _civitai_model(model_id, get):
+    body = get(f"https://{CIVITAI_HOSTS[0]}/api/v1/models/{int(model_id)}")
+    return (json.loads(body) or {}) if body else {}
+
+def civitai_versions(model_id, sha, get=fetch):
+    """A model's versions and files for the link picker, marking files whose hash equals ours."""
+    data = _civitai_model(model_id, get)
+    if not data.get("modelVersions"):
+        return None
+    nsfw = bool(data.get("nsfw"))
+    return {"id": int(model_id), "name": str(data.get("name") or "")[:250], "url": civitai_url(model_id, None, nsfw),
+            "versions": [{"id": v.get("id"), "name": str(v.get("name") or "")[:250], "base_model": v.get("baseModel"),
+                          "published_at": v.get("publishedAt"),
+                          "files": [{"id": f.get("id"), "name": str(f.get("name") or "")[:200], "type": f.get("type"),
+                                     "primary": bool(f.get("primary")), "size_bytes": int(float(f.get("sizeKB") or 0) * 1024),
+                                     "exact": bool(sha) and _file_sha(f) == sha}
+                                    for f in v.get("files") or [] if isinstance(f.get("id"), int)]}
+                         for v in data["modelVersions"] if isinstance(v.get("id"), int)]}
+
+def civitai_link(db, sha, model_id, version_id, file_id, get=fetch, now=None):
+    """Link a local file to a Civitai version/file chosen by the user. Exact only if the hashes match."""
+    now = now or int(time.time())
+    data = _civitai_model(model_id, get)
+    version = next((v for v in data.get("modelVersions") or [] if v.get("id") == version_id), None)
+    file = version and next((f for f in version.get("files") or [] if f.get("id") == file_id), None)
+    if not file:
+        return None
+    verified = _file_sha(file) == sha
+    words = [str(w)[:200] for w in version.get("trainedWords") or [] if w][:20]
+    db.execute("""INSERT OR REPLACE INTO civitai_files (sha256,found,checked_at,model_id,version_id,model_name,
+        version_name,base_model,trained_words,published_at,nsfw,file_type,verified)
+        VALUES (?,1,?,?,?,?,?,?,?,?,?,?,?)""",
+        (sha, now, int(model_id), version_id, str(data.get("name") or "")[:250], str(version.get("name") or "")[:250],
+         str(version.get("baseModel") or "")[:100] or None, json.dumps(words), version.get("publishedAt"),
+         int(bool(data.get("nsfw"))), str(file.get("type") or "")[:50] or None, None if verified else 0))
+    civitai_latest(db, model_id, get, now, data.get("modelVersions") or [])
+    return {"verified": verified}
+
+def civitai_unlink(db, sha):
+    # Forget the link; the next pass looks the file up by hash again.
+    db.execute("DELETE FROM civitai_files WHERE sha256=?", (sha,))
+
+def civitai_latest(db, model_id, get=fetch, now=None, versions=None):
     """Record the newer version, if any, for every local file of this model."""
     now = now or int(time.time())
-    body = get(f"https://{CIVITAI_HOSTS[0]}/api/v1/models/{int(model_id)}")
-    versions = (json.loads(body) or {}).get("modelVersions", []) if body else []
+    if versions is None:
+        versions = _civitai_model(model_id, get).get("modelVersions", [])
     rows = db.execute("""SELECT sha256,base_model,version_name,file_type FROM civitai_files
         WHERE model_id=? AND found=1""", (model_id,)).fetchall()
     for sha, base, name, file_type in rows:
@@ -224,7 +269,7 @@ def _ollama_page(name):
 def annotate(db, records):
     """Attach source identity and update availability to inventory records."""
     civitai = {r[0]: r for r in db.execute("""SELECT sha256,model_id,version_id,model_name,version_name,
-        base_model,trained_words,published_at,nsfw,latest_version_id,latest_version_name,latest_published_at
+        base_model,trained_words,published_at,nsfw,latest_version_id,latest_version_name,latest_published_at,verified
         FROM civitai_files WHERE found=1""")}
     checked = {r[0] for r in db.execute("SELECT sha256 FROM civitai_files")}
     ollama = dict(db.execute("SELECT name,remote_digest FROM ollama_remote WHERE remote_digest IS NOT NULL"))
@@ -246,10 +291,10 @@ def annotate(db, records):
         row = civitai.get(sha)
         if row:
             (_, model_id, version_id, model_name, version_name, base, words, published,
-             nsfw, latest_id, latest_name, latest_published) = row
+             nsfw, latest_id, latest_name, latest_published, verified) = row
             record["source"] = {"provider": "civitai", "model_id": model_id, "version_id": version_id,
                 "model_name": model_name, "version_name": version_name, "base_model": base,
-                "trained_words": json.loads(words or "[]"), "nsfw": bool(nsfw),
+                "trained_words": json.loads(words or "[]"), "nsfw": bool(nsfw), "verified": verified != 0,
                 "url": civitai_url(model_id, version_id, bool(nsfw))}
             if latest_id and latest_id != version_id:
                 record["update"] = {"provider": "civitai", "version_id": latest_id, "version_name": latest_name,

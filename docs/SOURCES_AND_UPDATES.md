@@ -38,3 +38,7 @@ Some downloads require an account. Store keys in your Windows **user** environme
 Then restart the worker so it picks them up: `Stop-ScheduledTask "ModelHarbor Hash Worker"; Start-ScheduledTask "ModelHarbor Hash Worker"`. Hugging Face uses tokens, not browser cookies.
 
 Set `"downloads_enabled": false` in `agent.json` to turn downloads off on that PC.
+
+## Linking a model by hand
+
+For a file the hash lookup didn't find, open it, search Civitai under **Find model online**, and press **Link to my file** on the right result. Pick the version and file you have: **✓** marks a file whose SHA-256 is identical to yours, which links as an exact match. Linking to a different file asks first and is shown as "linked by hand, hash differs". Update checks and downloads work either way, and downloads are still verified against the new file's published hash. **Unlink** removes the link, and the file is looked up by hash again.

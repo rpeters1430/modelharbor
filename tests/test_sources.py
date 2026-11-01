@@ -137,3 +137,25 @@ def test_text_encoder_is_not_replaced_by_diffusion_model():
 def test_unknown_file_type_gets_no_update():
     from backend.app.sources import newer_version
     assert newer_version("V0.1", "B", [{"name": "V0.4", "baseModel": "B", "files": files("e" * 64)}], None) is None
+
+def test_manual_link_exact_and_unverified(db):
+    from backend.app.sources import civitai_link, civitai_unlink, civitai_versions
+    add(db, "C:/m/loras/cool.safetensors")
+    model = {"name": "Cool LoRA", "nsfw": False, "modelVersions": MODEL["modelVersions"]}
+    get = fake({"https://civitai.com/api/v1/models/7": model}, [])
+    picker = civitai_versions(7, SHA, get)
+    exact = [(v["name"], f["id"]) for v in picker["versions"] for f in v["files"] if f["exact"]]
+    assert exact == [("v1.0", 1)]
+    assert civitai_link(db, SHA, 7, 10, 1, get) == {"verified": True}
+    item = records(db)[0]
+    assert item["source"]["verified"] and item["update"]["version_name"] == "v2.0"  # update computed at once
+    # Linking to a file with another hash is kept, marked unverified, and still tracks updates.
+    assert civitai_link(db, SHA, 7, 13, 999, get) is None  # file 999 is not in version 13
+    model["modelVersions"][2]["files"] = files("f" * 64, "Model", 9)
+    assert civitai_link(db, SHA, 7, 10, 9, get) == {"verified": False}
+    item = records(db)[0]
+    assert item["source"]["verified"] is False and item["update"]["version_name"] == "v2.0"
+    run_pass(db, fake({}, []), pause=0)  # a manual link is not overwritten by the hash lookup
+    assert records(db)[0]["source"]["verified"] is False
+    civitai_unlink(db, SHA)
+    assert records(db)[0]["source"] is None
