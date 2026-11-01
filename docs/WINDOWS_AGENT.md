@@ -16,6 +16,7 @@ The agent reads file metadata from configured ComfyUI model directories and call
 The Windows scheduled task uses your user account. It does not require administrator privileges. When the PC is off, heartbeats stop and the dashboard will eventually show it as offline.
 
 ## Notes
+- The first sync after updating hashes every model file once (see `docs/SOURCES_AND_UPDATES.md`); later syncs only hash new or changed files.
 
 - Use the real port from your Dockhand stack (for example, 8099 if you mapped 8099:8096).
 - The server must be reachable from the Windows PC.

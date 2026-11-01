@@ -89,3 +89,10 @@ def test_selected_association_disappears_when_inventory_changes(db):
     assert len(selected_for_inventory(db))==1
     db.execute("UPDATE models SET modified_ns=9876")
     assert selected_for_inventory(db)==[]
+
+def test_inventory_hash_resolves_without_worker(db):
+    with patch("backend.app.hash_matches._remote_file",return_value=remote()):
+        good=queue_job(db,"pc:comfyui","C:/models/m.safetensors","owner/collection","m.safetensors",DIGEST)
+        bad=queue_job(db,"pc:comfyui","C:/models/m.safetensors","owner/collection","other.safetensors",OTHER)
+    assert (good["state"],bad["state"])==("verified","mismatch")
+    assert claim_job(db,"pc:comfyui") is None

@@ -10,6 +10,7 @@ import requests
 from scan import scan
 from ollama_scan import collect
 from hash_worker import process_one
+from hash_cache import fill_hashes
 
 LOG = logging.getLogger("modelharbor")
 DEFAULT_CONFIG = Path(os.environ.get("APPDATA", str(Path.home()))) / "ModelHarbor" / "agent.json"
@@ -53,6 +54,8 @@ def run_once(cfg, token, dry_run=False):
                 LOG.warning("ComfyUI models directory missing: %s", root)
                 continue
             comfy.extend(scan(Path(root), device + ":comfyui"))
+        if cfg.get("hash_models", True) and not dry_run:
+            fill_hashes(comfy, cfg.get("hash_cache") or DEFAULT_CONFIG.with_name("hashes.json"))
         ollama = None
         if cfg.get("ollama_enabled", True):
             try:

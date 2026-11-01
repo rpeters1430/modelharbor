@@ -16,12 +16,13 @@ def collect(session, base_url, device):
             continue
         details = item.get("details") or {}
         digest = item.get("digest") or ""
-        # Include digest in path to distinguish revisions and avoid filesystem assumptions.
         records.append({
             "device": device, "path": "ollama://" + name,
             "name": name, "kind": "ollama/" + str(details.get("family") or "unknown")[:50],
             "size_bytes": max(0, int(item.get("size") or 0)),
             "modified_ns": 0,
+            # Manifest digest; the server compares it with the registry to spot updates.
+            "sha256": digest if len(digest) == 64 else None,
         })
     return records
 

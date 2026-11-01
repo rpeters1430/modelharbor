@@ -5,21 +5,31 @@ from collections import defaultdict
 def physical_device(source):
     return source.rsplit(":", 1)[0] if source.endswith((":comfyui", ":ollama")) else source
 
+PATTERNS = (
+    (r"qwen", "Qwen"), (r"wan(?:2|_|-|\b)", "Wan"),
+    (r"flux|flux1", "FLUX"), (r"illustrious|noobai", "Illustrious"),
+    (r"pony", "Pony"), (r"sdxl|juggernautxl|realvisxl", "SDXL"),
+    (r"sd15|sd ?1[._-]?5|stable.?diffusion.?1[._-]?5", "SD 1.5"),
+)
+
+def _label(text):
+    for pattern, label in PATTERNS:
+        if re.search(pattern, text.lower()):
+            return label
+    return None
+
 def family(record):
-    name = (record.get("name") or "").lower()
+    """Best evidence first: Civitai base model, then the family folder, then the filename."""
     kind = (record.get("kind") or "").lower()
     if kind.startswith("ollama/"):
-        return kind.split("/", 1)[1] or "unknown"
-    patterns = (
-        (r"qwen", "Qwen"), (r"wan(?:2|_|-|\b)", "Wan"),
-        (r"flux|flux1", "FLUX"), (r"illustrious|noobai", "Illustrious"),
-        (r"pony", "Pony"), (r"sdxl|juggernautxl|realvisxl", "SDXL"),
-        (r"sd15|sd1[._-]?5|stable.?diffusion.?1[._-]?5", "SD 1.5"),
-    )
-    for pattern, label in patterns:
-        if re.search(pattern, name):
-            return label
-    return "Unknown"
+        return kind.split("/", 1)[1] or "unknown", False
+    base = (record.get("source") or {}).get("base_model") or ""
+    if base:
+        return _label(base) or base, True
+    for text in (*re.split(r"[\\/]", record.get("path") or "")[-3:-1], record.get("name") or ""):
+        if label := _label(text):
+            return label, False
+    return "Unknown", False
 
 def enrich(records):
     groups = defaultdict(set)
@@ -38,9 +48,10 @@ def enrich(records):
             groups[key].add(file_key or index)
     result = []
     for index, record in enumerate(records):
+        label, verified = family(record)
         copies = len(groups.get((record["name"].casefold(), record["size_bytes"]), ()))
         result.append({**record, "physical_device": physical_device(record["device"]),
-            "family_guess": family(record), "family_verified": False,
+            "family_guess": label, "family_verified": verified,
             "hard_link": index in hard_links,
             "possible_duplicate": copies > 1,
             "duplicate_group_size": copies if copies > 1 else 0})
