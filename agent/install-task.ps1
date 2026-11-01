@@ -1,5 +1,5 @@
 # Run from a Windows PowerShell prompt as the account that owns your models.
-# Requires Python on PATH. Task runs at logon and every 30 minutes.
+# Requires Python on PATH. Task runs at logon and every 30 minutes, indefinitely.
 $ErrorActionPreference = "Stop"
 $AgentDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $Script = Join-Path $AgentDir "modelharbor_agent.py"
@@ -12,8 +12,12 @@ $Python = (Get-Command python -ErrorAction Stop).Source
 $Persisted = [Environment]::GetEnvironmentVariable("MODELHARBOR_AGENT_TOKEN","User")
 if (-not $Persisted) { throw "Persist token with [Environment]::SetEnvironmentVariable('MODELHARBOR_AGENT_TOKEN', 'YOUR_SECRET', 'User') and sign out/in." }
 $Action = New-ScheduledTaskAction -Execute $Python -Argument ('"' + $Script + '" --config "' + $Config + '" --once') -WorkingDirectory $AgentDir
-$Trigger = New-ScheduledTaskTrigger -AtLogOn -User $env:USERNAME
-$Trigger.Repetition = New-CimInstance -ClientOnly -ClassName MSFT_TaskRepetitionPattern -Namespace Root/Microsoft/Windows/TaskScheduler -Property @{ Interval = 'PT30M'; Duration = 'P1D'; StopAtDurationEnd = $false }
+# A repetition on the logon trigger only starts at the next logon and stops after its duration,
+# so repeat from a one-time trigger with no end instead.
+$Trigger = @(
+    (New-ScheduledTaskTrigger -AtLogOn -User $env:USERNAME),
+    (New-ScheduledTaskTrigger -Once -At (Get-Date) -RepetitionInterval (New-TimeSpan -Minutes 30))
+)
 $Principal = New-ScheduledTaskPrincipal -UserId "$env:USERDOMAIN\$env:USERNAME" -LogonType Interactive -RunLevel Limited
 Register-ScheduledTask -TaskName "ModelHarbor Inventory Sync" -Action $Action -Trigger $Trigger -Principal $Principal -Description "Read-only ComfyUI and Ollama inventory sync" -Force
 Write-Host "Installed task: ModelHarbor Inventory Sync"
