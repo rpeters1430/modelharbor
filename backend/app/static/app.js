@@ -10,10 +10,30 @@ const text = (tag,value,cls) => { const e=document.createElement(tag); e.textCon
 function showNotice(message){ $("notice").textContent=message; $("notice").hidden=!message; }
 function setStatus(online){ $("status").textContent=online?"● Connected":"● Disconnected"; $("status").classList.toggle("online",online); }
 function openAuth(){ $("token").value=token; $("auth-dialog").showModal(); }
-function switchView(next){view=next;document.querySelectorAll(".tab").forEach(b=>b.classList.toggle("active",b.dataset.view===next));document.querySelectorAll(".view").forEach(e=>e.hidden=e.id!==next+"-view");$("heading").textContent=({overview:"Model overview",library:"Model library",devices:"Connected sources"})[next];}
+function switchView(next){view=next;async function searchProvider(){
+ const provider=$("provider").value, q=$("provider-query").value.trim(), target=$("provider-results");
+ target.replaceChildren();
+ if(q.length<3){target.append(text("p","Enter at least 3 characters.","muted"));return;}
+ const button=$("provider-search");button.disabled=true;target.append(text("p","Searching public model listings…","muted"));
+ try{
+  const response=await fetch("/api/discovery/"+encodeURIComponent(provider)+"?q="+encodeURIComponent(q),{headers:{"X-ModelHarbor-Token":token},cache:"no-store"});
+  if(!response.ok)throw Error("Search unavailable (HTTP "+response.status+")");
+  const payload=await response.json();target.replaceChildren();
+  if(!payload.results.length){target.append(text("p","No candidates found. Try a shorter model name.","muted"));return;}
+  payload.results.forEach(item=>{
+   const a=document.createElement("a");a.className="provider-result";
+   a.href=item.url;a.target="_blank";a.rel="noopener noreferrer";
+   a.append(text("strong",item.name),text("span",item.provider+" · Unverified candidate","model-sub"));
+   target.append(a);
+  });
+ }catch(err){target.replaceChildren(text("p",err.message,"muted"));}
+ finally{button.disabled=false;}
+}
+$("provider-search").addEventListener("click",searchProvider);
+document.querySelectorAll(".tab").forEach(b=>b.classList.toggle("active",b.dataset.view===next));document.querySelectorAll(".view").forEach(e=>e.hidden=e.id!==next+"-view");$("heading").textContent=({overview:"Model overview",library:"Model library",devices:"Connected sources"})[next];}
 function modelRow(m){const b=text("button","", "model");b.type="button";b.append(text("span","◈","glyph"));const info=text("span","","model-text");info.append(text("div",m.name,"model-name"),text("div",m.kind+" · "+m.device+" · "+fmt(m.size_bytes)+(m.possible_duplicate?" · Possible duplicate":"")+(m.hard_link?" · Hard link":""),"model-sub"));b.append(info,text("span","›","chevron"));b.addEventListener("click",()=>details(m));return b;}
 function fill(target,items,empty){target.replaceChildren();if(!items.length)target.append(text("p",empty,"muted"));else items.forEach(m=>target.append(modelRow(m)));}
-function details(m){$("detail-title").textContent=m.name;const dl=$("detail-fields");dl.replaceChildren();for(const [k,v] of Object.entries({Type:m.kind,Device:m.device,Size:fmt(m.size_bytes),Family:(m.family_guess||"Unknown")+" (unverified)",Duplicates:m.possible_duplicate?"Possible match — verify hashes":"No matching name and size",Path:m.path})){dl.append(text("dt",k),text("dd",v));}$("detail-dialog").showModal();}
+function details(m){$("detail-title").textContent=m.name;const dl=$("detail-fields");dl.replaceChildren();for(const [k,v] of Object.entries({Type:m.kind,Device:m.device,Size:fmt(m.size_bytes),Family:(m.family_guess||"Unknown")+" (unverified)",Duplicates:m.possible_duplicate?"Possible match — verify hashes":"No matching name and size",Path:m.path})){dl.append(text("dt",k),text("dd",v));}$("provider-query").value=m.name.replace(/\\.(safetensors|ckpt|gguf|pt|pth|bin)$/i,"").replace(/[_-]+/g," ").slice(0,120);$("provider-results").replaceChildren();$("detail-dialog").showModal();}
 function options(id,values,label){const el=$(id),old=el.value;el.replaceChildren(new Option(label,""));values.forEach(v=>el.add(new Option(v,v)));el.value=values.includes(old)?old:"";}
 function render(){
  $("count").textContent=models.length.toLocaleString();
