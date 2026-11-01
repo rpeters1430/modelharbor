@@ -453,7 +453,7 @@ def new_download(payload: NewDownload, x_modelharbor_token: str | None = Header(
             raise HTTPException(404, "That file is not part of the chosen Civitai version")
         args = (f"https://civitai.com/api/download/models/{payload.version_id}?fileId={payload.file_id}",
                 str(file.get("name") or ""), _file_sha(file), int(float(file.get("sizeKB") or 0) * 1024),
-                browse.folder_for(model.get("type"), file.get("type")), f"civitai:{payload.file_id}")
+                browse.folder_for(model.get("type"), file.get("type"), version.get("baseModel")), f"civitai:{payload.file_id}")
     elif payload.provider == "modelscope":
         repo = validate_repo(payload.repository or "")
         try:

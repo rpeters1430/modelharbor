@@ -14,6 +14,12 @@ FILE_FOLDERS = {"VAE": "vae", "Text Encoder": "text_encoders", "UNet": "diffusio
 TYPE_FOLDERS = {"Checkpoint": "checkpoints", "LORA": "loras", "LoCon": "loras", "DoRA": "loras",
                 "TextualInversion": "embeddings", "VAE": "vae", "Controlnet": "controlnet", "Upscaler": "upscale_models"}
 FOLDERS = sorted(set(FILE_FOLDERS.values()) | set(TYPE_FOLDERS.values()))
+# Family subfolders, named like the library's own (comfy-mobile reads a model's family from its folder).
+# Matched against the start of Civitai's base model name, so "Flux.1 Krea" is Flux, not Krea 2.
+FAMILY_FOLDERS = (("PonyV7", r"pony v7"), ("Pony", r"pony"), ("SD15", r"sd 1"), ("SD2", r"sd 2"),
+                  ("SDXL", r"sdxl|illustrious|noobai"), ("Krea2", r"krea 2"), ("Flux", r"flux"), ("Qwen", r"qwen"),
+                  ("Wan", r"wan"), ("LTX", r"ltx"), ("MOSS", r"moss"), ("ZImage", r"z ?image"))
+FAMILY_PARENTS = {"checkpoints", "loras", "diffusion_models", "controlnet"}
 CURSOR = re.compile(r"^[A-Za-z0-9|:._-]{1,200}$")
 MAX_VERSIONS = 8
 # Hugging Face listing filters. "lora" alone is mostly LLM adapters, so LoRAs are paired with a pipeline tag.
@@ -25,8 +31,14 @@ HF_SORTS = {"Trending": "trendingScore", "Most Downloaded": "downloads", "Most L
 def local_shas(db):
     return {r[0] for r in db.execute("SELECT DISTINCT sha256 FROM models WHERE sha256 IS NOT NULL")}
 
-def folder_for(model_type, file_type):
-    return FILE_FOLDERS.get(file_type) or TYPE_FOLDERS.get(model_type) or "checkpoints"
+def folder_for(model_type, file_type, base_model=None):
+    folder = FILE_FOLDERS.get(file_type) or TYPE_FOLDERS.get(model_type) or "checkpoints"
+    family = next((name for name, start in FAMILY_FOLDERS if re.match(start, (base_model or "").lower())), None)
+    return f"{folder}/{family}" if family and folder in FAMILY_PARENTS else folder
+
+def valid_folder(folder):
+    parent, _, family = (folder or "").partition("/")
+    return parent in FOLDERS and (not family or parent in FAMILY_PARENTS and family in dict(FAMILY_FOLDERS))
 
 # ModelScope's open API filters by task but has no LoRA tag or trending sort; search "lora" for LoRAs.
 MS_KINDS = {"": "text-to-image-synthesis", "image-to-image": "image-to-image",
@@ -132,7 +144,7 @@ def search_civitai(query, model_type, base_model, sort, cursor, shas, get=fetch)
                     continue
                 files.append({"id": f["id"], "name": str(f.get("name") or "")[:200], "type": f.get("type"),
                               "primary": bool(f.get("primary")), "size_bytes": int(float(f.get("sizeKB") or 0) * 1024),
-                              "on_pc": sha in shas, "folder": folder_for(m.get("type"), f.get("type"))})
+                              "on_pc": sha in shas, "folder": folder_for(m.get("type"), f.get("type"), v.get("baseModel"))})
             if any(f["on_pc"] for f in files) and installed is None:
                 installed = str(v.get("name") or "")
             versions.append({"id": v.get("id"), "name": str(v.get("name") or "")[:250], "base_model": v.get("baseModel"),

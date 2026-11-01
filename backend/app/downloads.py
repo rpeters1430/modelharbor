@@ -157,8 +157,8 @@ def _request_scan(db, agent):
 
 def create_new(db, agent, url, file_name, expected_sha, size_bytes, folder, source_ref, provider):
     """Queue a download of a model that is not on the PC yet, into a fixed ComfyUI folder."""
-    from .browse import FOLDERS
-    if folder not in FOLDERS or not SAFE_NAME.fullmatch(file_name or "") or not expected_sha:
+    from .browse import valid_folder
+    if not valid_folder(folder) or not SAFE_NAME.fullmatch(file_name or "") or not expected_sha:
         raise HTTPException(422, "Unsupported folder, unsafe file name or no published hash")
     existing = db.execute(f"SELECT {','.join(FIELDS)} FROM download_jobs WHERE source_ref=? AND agent=? AND state IN (?,?)",
                           (source_ref, agent, *ACTIVE)).fetchone()

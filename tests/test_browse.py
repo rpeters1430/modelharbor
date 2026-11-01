@@ -40,7 +40,7 @@ def test_search_marks_installed_versions_and_folders():
     assert (lora["installed_version"], lora["latest_installed"]) == ("v1", False)  # older version on the PC
     assert [f["on_pc"] for v in lora["versions"] for f in v["files"]] == [False, True]
     assert lora["image"] == {"url": "https://image.civitai.com/x.jpg", "nsfw_level": 1}
-    assert [f["folder"] for f in checkpoint["versions"][0]["files"]] == ["checkpoints", "vae"]
+    assert [f["folder"] for f in checkpoint["versions"][0]["files"]] == ["checkpoints/SDXL", "vae"]
     assert checkpoint["url"].startswith("https://civitai.red/") and checkpoint["installed_version"] is None
     assert result["next_cursor"] == "20|abc"
 
@@ -86,6 +86,18 @@ def test_modelscope_browse_and_files():
     assert browse.modelscope_url("a/b", "sub/w x.safetensors") == "https://modelscope.cn/models/a/b/resolve/master/sub/w%20x.safetensors"
     with pytest.raises(HTTPException):
         browse.list_modelscope_files("../etc", get)
+
+def test_family_folders_follow_the_base_model():
+    assert browse.folder_for("LORA", None, "SDXL 1.0") == "loras/SDXL"
+    assert browse.folder_for("LORA", None, "Illustrious") == "loras/SDXL"
+    assert browse.folder_for("Checkpoint", "Model", "SD 1.5") == "checkpoints/SD15"
+    assert browse.folder_for("Checkpoint", "UNet", "Krea 2 Turbo") == "diffusion_models/Krea2"
+    assert browse.folder_for("LORA", None, "Flux.1 Krea") == "loras/Flux"
+    assert browse.folder_for("LORA", None, "Pony V7") == "loras/PonyV7"
+    assert browse.folder_for("Checkpoint", "VAE", "SDXL 1.0") == "vae"  # no family folders for VAEs
+    assert browse.folder_for("LORA", None, "Other") == browse.folder_for("LORA", None, None) == "loras"
+    assert browse.valid_folder("loras/SDXL") and browse.valid_folder("vae")
+    assert not any(map(browse.valid_folder, ("vae/SDXL", "loras/../x", "loras/Nope", "nope", "")))
 
 def test_huggingface_listing_is_marked():
     listing = {"files": [{"path": "a.safetensors", "sha256": MINE}, {"path": "b.safetensors", "sha256": None}]}
@@ -134,3 +146,6 @@ def test_agent_saves_new_download_in_target_folder(tmp_path):
     assert Path(path) == tmp_path / "loras" / "cool_v2.safetensors" and Path(path).read_bytes() == b"weights"
     with pytest.raises(ValueError, match="folder is not allowed"):
         download_file(FakeSession(), {**job, "target_folder": "..", "file_name": "x.safetensors"}, [str(tmp_path)], lambda d: None)
+    for bad in ("loras/..", "loras/a/b", "vae2/SDXL"):
+        with pytest.raises(ValueError):
+            download_file(FakeSession(), {**job, "target_folder": bad, "file_name": "y.safetensors"}, [str(tmp_path)], lambda d: None)
