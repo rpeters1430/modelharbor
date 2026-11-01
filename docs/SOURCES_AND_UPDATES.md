@@ -21,7 +21,7 @@ Set `MODELHARBOR_SOURCE_CHECKS=0` on the container to turn off all outbound chec
 Open a model with **⬆ Update** in the dashboard and press **Download update**. Nothing downloads without that press.
 
 - The NAS decides exactly which file to fetch and the SHA-256 it must have: for Civitai, the file of the same kind (main weights, text encoder, VAE…) in the newer version; for Hugging Face, the changed file on `main`; for Ollama, the newer build of the same tag.
-- The Windows agent's background task (`ModelHarbor Hash Worker`) downloads it **next to the old file**, only from `civitai.com`, `civitai.red` or `huggingface.co`, after checking free disk space. The file is written as `.partial`, its SHA-256 is checked, and only then is it renamed. A mismatch deletes the partial file.
+- The Windows agent's background task (`ModelHarbor Hash Worker`) downloads it **next to the old file**, only from `civitai.com`, `civitai.red`, `huggingface.co` or `modelscope.cn`, after checking free disk space. The file is written as `.partial`, its SHA-256 is checked, and only then is it renamed. A mismatch deletes the partial file.
 - A download never overwrites anything. An existing file with the same name stops the download. Hugging Face copies get a hash suffix (`name.1a2b3c4d.safetensors`) because the upstream filename is unchanged.
 - Ollama updates run `ollama pull` for the same tag through the local Ollama API.
 - The new file appears in the dashboard after the next inventory sync.
@@ -46,7 +46,8 @@ For a file the hash lookup didn't find, open it, search Civitai under **Find mod
 
 ## Browsing and downloading new models
 
-The **Browse** tab searches Civitai (filter by type, base model and sort, with Load more) or Hugging Face (filter by image models, image LoRAs, image editing, text-to-video, image-to-video or video LoRAs; sort by trending, downloads, likes or newest). Leave the search empty on either site to list the top models for the filters.
+The **Browse** tab searches Civitai (filter by type, base model and sort, with Load more) or Hugging Face (filter by image models, image LoRAs, image editing, text-to-video, image-to-video or video LoRAs; sort by trending, downloads, likes or newest). Leave the search empty on any site to list the top models for the filters.
+- **ModelScope** (Alibaba's model hub, with official Qwen, Wan and Z-Image releases and many ComfyUI repackages) is browsed like Hugging Face: filter by image models, image editing, text-to-video or image-to-video, sort by downloads, likes or recently updated, with Load more. It has no LoRA filter, so search "lora". Files are matched by their published SHA-256 and downloaded from `modelscope.cn` only; no key is needed for public models. ModelScope is used for browsing and downloading only, not for identifying existing files or update checks.
 
 - Every file is compared with your inventory by **SHA-256**: **✓ On your PC** means you already have exactly that file. "Other version on your PC" means you have a different version of the model.
 - **Download** queues the file for your PC. The NAS takes the URL, file name and expected hash from the provider, never from the browser. The agent saves it into a fixed ComfyUI folder under your first configured models root and keeps it only if the hash matches:

@@ -64,6 +64,29 @@ def test_huggingface_browse_lists_top_without_query():
         with pytest.raises(HTTPException):
             browse.search_huggingface(*bad, get)
 
+def test_modelscope_browse_and_files():
+    urls = []
+    def get(url):
+        urls.append(url)
+        if "/openapi/" in url:
+            return json.dumps({"data": {"total_count": 31, "models": [{"id": "a/style_lora"}, {"id": "../x"}]}}).encode()
+        return json.dumps({"Data": {"Files": [
+            {"Type": "blob", "Path": "sub/w.safetensors", "Sha256": MINE.upper(), "Size": 5},
+            {"Type": "blob", "Path": "README.md", "Sha256": MINE}, {"Type": "tree", "Path": "sub"},
+            {"Type": "blob", "Path": "nohash.gguf", "Sha256": ""}]}}).encode()
+    page = browse.search_modelscope("", "", "Most Downloaded", 1, get)
+    assert [(i["id"], i["folder"]) for i in page["items"]] == [("a/style_lora", "loras")] and page["next_cursor"] == "2"
+    assert "filter.task=text-to-image-synthesis" in urls[0] and "search=" not in urls[0]
+    assert browse.search_modelscope("x", "", "Most Liked", 2, get)["next_cursor"] is None
+    for bad in (("x", "lora", "Most Liked", 1), ("x", "", "Trending", 1), ("x", "", "Most Liked", 0)):
+        with pytest.raises(HTTPException):
+            browse.search_modelscope(*bad, get)
+    files = browse.list_modelscope_files("a/style_lora", get)["files"]
+    assert [(f["path"], f["sha256"]) for f in files] == [("nohash.gguf", None), ("sub/w.safetensors", MINE)]
+    assert browse.modelscope_url("a/b", "sub/w x.safetensors") == "https://modelscope.cn/models/a/b/resolve/master/sub/w%20x.safetensors"
+    with pytest.raises(HTTPException):
+        browse.list_modelscope_files("../etc", get)
+
 def test_huggingface_listing_is_marked():
     listing = {"files": [{"path": "a.safetensors", "sha256": MINE}, {"path": "b.safetensors", "sha256": None}]}
     assert [f["on_pc"] for f in browse.mark_huggingface(listing, {MINE})["files"]] == [True, False]

@@ -1,9 +1,10 @@
-"""Browse Civitai and Hugging Face models and mark files already on a PC by exact SHA-256."""
+"""Browse Civitai, Hugging Face and ModelScope models and mark files already on a PC by exact SHA-256."""
 import json
 import re
-from urllib.parse import urlencode
+from urllib.parse import quote, urlencode
 from fastapi import HTTPException
 from .sources import CIVITAI_HOSTS, _file_sha, civitai_url, fetch
+from .hf_repository import _EXTENSIONS, validate_repo
 
 TYPES = ("Checkpoint", "LORA", "LoCon", "DoRA", "TextualInversion", "VAE", "Controlnet", "Upscaler")
 SORTS = ("Most Downloaded", "Highest Rated", "Newest")
@@ -26,6 +27,59 @@ def local_shas(db):
 
 def folder_for(model_type, file_type):
     return FILE_FOLDERS.get(file_type) or TYPE_FOLDERS.get(model_type) or "checkpoints"
+
+# ModelScope's open API filters by task but has no LoRA tag or trending sort; search "lora" for LoRAs.
+MS_KINDS = {"": "text-to-image-synthesis", "image-to-image": "image-to-image",
+            "text-to-video": "text-to-video-synthesis", "image-to-video": "image-to-video"}
+MS_SORTS = {"Most Downloaded": "downloads", "Most Liked": "likes", "Recently Updated": "last_modified"}
+MS_PAGE_SIZE = 30
+
+def search_modelscope(query, kind, sort, page, get=fetch):
+    """List ModelScope repositories; an empty query lists the top ones for the kind and sort."""
+    query = (query or "").strip()
+    if len(query) > 120:
+        raise HTTPException(422, "Search text too long")
+    if kind not in MS_KINDS or sort not in MS_SORTS or not 1 <= page <= 50:
+        raise HTTPException(422, "Unsupported filter")
+    params = {"filter.task": MS_KINDS[kind], "sort": MS_SORTS[sort], "page_size": MS_PAGE_SIZE, "page_number": page}
+    if query:
+        params["search"] = query
+    body = get("https://www.modelscope.cn/openapi/v1/models?" + urlencode(params))
+    data = (json.loads(body) if body else {}).get("data") or {}
+    items = []
+    for m in data.get("models") or []:
+        repo = str(m.get("id") or "")
+        try:
+            validate_repo(repo)
+        except HTTPException:
+            continue
+        items.append({"provider": "modelscope", "id": repo, "url": "https://modelscope.cn/models/" + repo,
+                      "downloads": m.get("downloads"), "likes": m.get("likes"), "created_at": m.get("created_at"),
+                      "folder": "loras" if "lora" in repo.casefold() else "checkpoints"})
+    more = page * MS_PAGE_SIZE < int(data.get("total_count") or 0) and len(items) > 0
+    return {"items": items, "next_cursor": str(page + 1) if more else None}
+
+def modelscope_url(repo, path):
+    return "https://modelscope.cn/models/" + quote(repo, safe="/") + "/resolve/master/" + quote(path, safe="/")
+
+def list_modelscope_files(repo, get=fetch):
+    """Model files in a ModelScope repository with their published SHA-256, in the Hugging Face listing's shape."""
+    repo = validate_repo(repo)
+    body = get(f"https://modelscope.cn/api/v1/models/{quote(repo, safe='/')}/repo/files?Revision=master&Recursive=true")
+    if not body:
+        raise HTTPException(404, "Repository not found on ModelScope")
+    files = []
+    for f in ((json.loads(body).get("Data") or {}).get("Files") or [])[:9000]:
+        path, sha = f.get("Path"), str(f.get("Sha256") or "").lower()
+        if f.get("Type") != "blob" or not isinstance(path, str) or not path.lower().endswith(_EXTENSIONS):
+            continue
+        size = f.get("Size")
+        files.append({"path": path, "name": path.rsplit("/", 1)[-1],
+                      "size_bytes": size if isinstance(size, int) and size >= 0 else None,
+                      "sha256": sha if re.fullmatch(r"[0-9a-f]{64}", sha) else None,
+                      "url": "https://modelscope.cn/models/" + quote(repo, safe="/") + "/file/view/master/" + quote(path, safe="/")})
+    files.sort(key=lambda x: x["path"].casefold())
+    return {"repository": repo, "url": "https://modelscope.cn/models/" + repo + "/files", "files": files}
 
 def search_huggingface(query, kind, sort, get=fetch):
     """List Hugging Face repositories; an empty query lists the top ones for the kind and sort."""
