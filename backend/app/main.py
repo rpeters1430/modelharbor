@@ -10,6 +10,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 from .intelligence import enrich
 from .providers import search as provider_search
+from .hf_repository import list_model_files
 
 DB = Path(os.environ.get("MODELHARBOR_DB", "/data/modelharbor.sqlite3"))
 TOKEN = os.environ.get("MODELHARBOR_AGENT_TOKEN", "")
@@ -112,3 +113,8 @@ def discover(provider: str, q: str, x_modelharbor_token: str | None = Header(def
     authorize(x_modelharbor_token)
     return {"provider": provider, "query": q, "verified": False,
             "results": provider_search(provider, q)}
+
+@app.get("/api/huggingface/repository")
+def huggingface_repository(repo: str, q: str = "", x_modelharbor_token: str | None = Header(default=None)):
+    authorize(x_modelharbor_token)
+    return list_model_files(repo, q)
