@@ -28,15 +28,15 @@ MANIFEST = b'{"schemaVersion":2}'
 def db():
     connection = sqlite3.connect(":memory:")
     connection.execute("""CREATE TABLE models (device TEXT, path TEXT, name TEXT, kind TEXT,
-        size_bytes INTEGER, modified_ns INTEGER, file_id TEXT, sha256 TEXT, PRIMARY KEY(device,path))""")
+        size_bytes INTEGER, modified_ns INTEGER, file_id TEXT, sha256 TEXT, weights_sha256 TEXT, PRIMARY KEY(device,path))""")
     ensure_hash_tables(connection)
     ensure_tables(connection)
     yield connection
     connection.close()
 
-def add(db, path, kind="lora", sha=SHA, name=None):
-    db.execute("INSERT INTO models VALUES (?,?,?,?,?,?,?,?)",
-               ("pc:comfyui", path, name or path.rsplit("/", 1)[-1], kind, 100, 1, None, sha))
+def add(db, path, kind="lora", sha=SHA, name=None, weights=None):
+    db.execute("INSERT INTO models VALUES (?,?,?,?,?,?,?,?,?)",
+               ("pc:comfyui", path, name or path.rsplit("/", 1)[-1], kind, 100, 1, None, sha, weights))
 
 def records(db):
     rows = db.execute("SELECT device,path,name,kind,size_bytes,modified_ns,file_id,sha256 FROM models").fetchall()
@@ -146,16 +146,50 @@ def test_manual_link_exact_and_unverified(db):
     picker = civitai_versions(7, SHA, get)
     exact = [(v["name"], f["id"]) for v in picker["versions"] for f in v["files"] if f["exact"]]
     assert exact == [("v1.0", 1)]
-    assert civitai_link(db, SHA, 7, 10, 1, get) == {"verified": True}
+    assert civitai_link(db, SHA, 7, 10, 1, get) == {"verified": True, "same_weights": False}
     item = records(db)[0]
     assert item["source"]["verified"] and item["update"]["version_name"] == "v2.0"  # update computed at once
     # Linking to a file with another hash is kept, marked unverified, and still tracks updates.
     assert civitai_link(db, SHA, 7, 13, 999, get) is None  # file 999 is not in version 13
     model["modelVersions"][2]["files"] = files("f" * 64, "Model", 9)
-    assert civitai_link(db, SHA, 7, 10, 9, get) == {"verified": False}
+    assert civitai_link(db, SHA, 7, 10, 9, get) == {"verified": False, "same_weights": False}
     item = records(db)[0]
     assert item["source"]["verified"] is False and item["update"]["version_name"] == "v2.0"
     run_pass(db, fake({}, []), pause=0)  # a manual link is not overwritten by the hash lookup
     assert records(db)[0]["source"]["verified"] is False
     civitai_unlink(db, SHA)
     assert records(db)[0]["source"] is None
+
+WEIGHTS = "d" * 64
+
+def test_edited_metadata_copy_is_found_by_weights_hash(db):
+    """A file whose embedded metadata changed has a new SHA-256 but the same tensors (Civitai AutoV3)."""
+    add(db, "loras/edited.safetensors", sha="e" * 64)
+    version = {**OLD, "files": [{**files(SHA)[0], "hashes": {"SHA256": SHA.upper(), "AutoV3": WEIGHTS[:12].upper()}}]}
+    asked = []
+    def get(url, accept="application/json"):
+        asked.append(url.rsplit("/", 1)[-1])
+        return json.dumps(version).encode() if url.endswith("/" + WEIGHTS[:12]) else None
+    run_pass(db, get, now=1000, pause=0)
+    assert "e" * 64 in asked and WEIGHTS[:12] not in asked  # weights hash not known yet
+    db.execute("UPDATE models SET weights_sha256=?", (WEIGHTS,))
+    run_pass(db, get, now=2000, pause=0)  # tried again as soon as the weights hash arrives
+    record = annotate(db, [{"device": "pc:comfyui", "path": "loras/edited.safetensors", "name": "edited.safetensors",
+                            "kind": "lora", "sha256": "e" * 64}])[0]
+    assert record["source"]["model_name"] == "Cool LoRA" and record["source"]["weights_match"]
+    asked.clear()
+    run_pass(db, get, now=3000, pause=0)
+    assert WEIGHTS[:12] not in asked and "e" * 64 not in asked  # found, so not looked up again
+
+def test_check_judges_every_search_result(db):
+    from backend.app.sources import civitai_check
+    def f(file_id, sha, kb, autov3=""):
+        return {"id": file_id, "name": f"f{file_id}.safetensors", "sizeKB": kb, "hashes": {"SHA256": sha.upper(), "AutoV3": autov3}}
+    page = {"items": [
+        {"id": 1, "name": "Other", "modelVersions": [{"id": 11, "name": "v1", "files": [f(1, "1" * 64, 900000)]}]},
+        {"id": 2, "name": "Same size", "modelVersions": [{"id": 21, "name": "v1", "files": [f(2, "2" * 64, 1.0)]}]},
+        {"id": 3, "name": "Mine", "modelVersions": [{"id": 31, "name": "v1", "files": [f(3, "3" * 64, 2.0, WEIGHTS[:12].upper())]}]}]}
+    result = civitai_check("cool", SHA, WEIGHTS, 1024, lambda url, accept=None: json.dumps(page).encode())
+    assert result["checked_files"] == 3
+    assert [(m["name"], m["best"]) for m in result["models"]] == [("Mine", "same_weights"), ("Same size", "same_size"), ("Other", None)]
+    assert result["models"][0]["files"][0]["file_id"] == 3 and result["models"][2]["sizes"] == [921600000]
