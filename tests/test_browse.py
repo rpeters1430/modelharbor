@@ -49,6 +49,21 @@ def test_search_rejects_bad_input():
         with pytest.raises(HTTPException):
             browse.search_civitai(*args, set(), lambda url, accept=None: b"{}")
 
+def test_huggingface_browse_lists_top_without_query():
+    urls = []
+    def get(url):
+        urls.append(url)
+        return json.dumps([{"id": "a/lora", "tags": ["lora"], "downloads": 5, "likes": 2},
+                           {"id": "b/model", "tags": []}, {"id": ""}]).encode()
+    items = browse.search_huggingface("", "lora", "Trending", get)["items"]
+    assert [(i["id"], i["folder"]) for i in items] == [("a/lora", "loras"), ("b/model", "checkpoints")]
+    assert "search=" not in urls[0] and "filter=lora" in urls[0] and "sort=trendingScore" in urls[0]
+    browse.search_huggingface("flux", "", "Newest", get)
+    assert "search=flux" in urls[1] and "sort=createdAt" in urls[1]
+    for bad in (("x", "nope", "Trending"), ("x", "", "Random"), ("x" * 121, "", "Trending")):
+        with pytest.raises(HTTPException):
+            browse.search_huggingface(*bad, get)
+
 def test_huggingface_listing_is_marked():
     listing = {"files": [{"path": "a.safetensors", "sha256": MINE}, {"path": "b.safetensors", "sha256": None}]}
     assert [f["on_pc"] for f in browse.mark_huggingface(listing, {MINE})["files"]] == [True, False]

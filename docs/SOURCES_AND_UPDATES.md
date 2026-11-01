@@ -46,7 +46,7 @@ For a file the hash lookup didn't find, open it, search Civitai under **Find mod
 
 ## Browsing and downloading new models
 
-The **Browse** tab searches Civitai (filter by type, base model and sort, with Load more) or Hugging Face repositories.
+The **Browse** tab searches Civitai (filter by type, base model and sort, with Load more) or Hugging Face (filter by image models, image LoRAs, image editing, text-to-video, image-to-video or video LoRAs; sort by trending, downloads, likes or newest). Leave the search empty on either site to list the top models for the filters.
 
 - Every file is compared with your inventory by **SHA-256**: **✓ On your PC** means you already have exactly that file. "Other version on your PC" means you have a different version of the model.
 - **Download** queues the file for your PC. The NAS takes the URL, file name and expected hash from the provider, never from the browser. The agent saves it into a fixed ComfyUI folder under your first configured models root and keeps it only if the hash matches:

@@ -1,4 +1,4 @@
-"""Browse Civitai models and mark files already on a PC by exact SHA-256."""
+"""Browse Civitai and Hugging Face models and mark files already on a PC by exact SHA-256."""
 import json
 import re
 from urllib.parse import urlencode
@@ -15,12 +15,39 @@ TYPE_FOLDERS = {"Checkpoint": "checkpoints", "LORA": "loras", "LoCon": "loras", 
 FOLDERS = sorted(set(FILE_FOLDERS.values()) | set(TYPE_FOLDERS.values()))
 CURSOR = re.compile(r"^[A-Za-z0-9|:._-]{1,200}$")
 MAX_VERSIONS = 8
+# Hugging Face listing filters. "lora" alone is mostly LLM adapters, so LoRAs are paired with a pipeline tag.
+HF_KINDS = {"": {"pipeline_tag": "text-to-image"}, "lora": {"pipeline_tag": "text-to-image", "filter": "lora"},
+            "image-to-image": {"pipeline_tag": "image-to-image"}, "text-to-video": {"pipeline_tag": "text-to-video"},
+            "image-to-video": {"pipeline_tag": "image-to-video"}, "video-lora": {"pipeline_tag": "image-to-video", "filter": "lora"}}
+HF_SORTS = {"Trending": "trendingScore", "Most Downloaded": "downloads", "Most Liked": "likes", "Newest": "createdAt"}
 
 def local_shas(db):
     return {r[0] for r in db.execute("SELECT DISTINCT sha256 FROM models WHERE sha256 IS NOT NULL")}
 
 def folder_for(model_type, file_type):
     return FILE_FOLDERS.get(file_type) or TYPE_FOLDERS.get(model_type) or "checkpoints"
+
+def search_huggingface(query, kind, sort, get=fetch):
+    """List Hugging Face repositories; an empty query lists the top ones for the kind and sort."""
+    query = (query or "").strip()
+    if len(query) > 120:
+        raise HTTPException(422, "Search text too long")
+    if kind not in HF_KINDS or sort not in HF_SORTS:
+        raise HTTPException(422, "Unsupported filter")
+    params = {**HF_KINDS[kind], "sort": HF_SORTS[sort], "direction": "-1", "limit": 30}
+    if query:
+        params["search"] = query
+    body = get("https://huggingface.co/api/models?" + urlencode(params))
+    items = []
+    for m in json.loads(body) if body else []:
+        repo = str(m.get("id") or "")
+        if not repo or len(repo) > 193:
+            continue
+        lora = "lora" in (m.get("tags") or [])
+        items.append({"provider": "huggingface", "id": repo, "url": "https://huggingface.co/" + repo,
+                      "downloads": m.get("downloads"), "likes": m.get("likes"), "created_at": m.get("createdAt"),
+                      "folder": "loras" if lora else "checkpoints"})
+    return {"items": items}
 
 def search_civitai(query, model_type, base_model, sort, cursor, shas, get=fetch):
     query = (query or "").strip()

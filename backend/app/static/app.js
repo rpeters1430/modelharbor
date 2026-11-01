@@ -297,9 +297,9 @@ function civitaiCard(item){
 }
 function huggingfaceCard(repo){
  const card=text("div","","browse-card");const info=text("div","","browse-info");
- info.append(text("strong",repo.id),text("div","Hugging Face"+(repo.downloads!=null?" · ↓ "+Number(repo.downloads).toLocaleString():""),"model-sub"));
+ info.append(text("strong",repo.id),text("div","Hugging Face"+(repo.downloads!=null?" · ↓ "+Number(repo.downloads).toLocaleString():"")+(repo.likes?" · ♥ "+Number(repo.likes).toLocaleString():"")+(repo.created_at?" · "+repo.created_at.slice(0,10):""),"model-sub"));
  const toggle=text("button","Show files","repo-action");toggle.type="button";const files=text("div","","browse-versions");files.hidden=true;
- const folder=document.createElement("select");folder.setAttribute("aria-label","Save into folder");["loras","checkpoints","diffusion_models","text_encoders","vae","embeddings","controlnet","upscale_models"].forEach(f=>folder.append(new Option("Save into "+f,f)));
+ const folder=document.createElement("select");folder.setAttribute("aria-label","Save into folder");["loras","checkpoints","diffusion_models","text_encoders","vae","embeddings","controlnet","upscale_models"].forEach(f=>folder.append(new Option("Save into "+f,f)));if(repo.folder)folder.value=repo.folder;
  toggle.addEventListener("click",async()=>{files.hidden=!files.hidden;if(files.hidden||files.childElementCount)return;files.append(text("p","Loading files…","muted"));
   try{const listing=await apiRequest("/api/huggingface/repository?repo="+encodeURIComponent(repo.id));files.replaceChildren(folder);
    if(!listing.files.length)files.append(text("p","No model files in this repository.","muted"));
@@ -315,10 +315,9 @@ async function browseSearch(more){
  try{
   browseJobs=await apiRequest("/api/downloads").catch(()=>[]);
   if(provider==="huggingface"){
-   if(q.length<3)throw Error("Enter at least 3 characters to search Hugging Face.");
-   const data=await apiRequest("/api/discovery/huggingface?q="+encodeURIComponent(q));
-   list.replaceChildren(...data.results.map(huggingfaceCard));$("browse-more").hidden=true;
-   $("browse-results").textContent=data.results.length+" repositories";
+   const data=await apiRequest("/api/browse/huggingface?"+new URLSearchParams({q,type:$("browse-hf-type").value,sort:$("browse-hf-sort").value}));
+   list.replaceChildren(...data.items.map(huggingfaceCard));$("browse-more").hidden=true;
+   $("browse-results").textContent=data.items.length+" repositories";
   }else{
    const params=new URLSearchParams({q,type:$("browse-type").value,base:$("browse-base").value,sort:$("browse-sort").value});
    if(more&&browseCursor)params.set("cursor",browseCursor);
@@ -335,7 +334,7 @@ async function browseSearch(more){
 $("browse-go").addEventListener("click",()=>browseSearch(false));
 $("browse-more").addEventListener("click",()=>browseSearch(true));
 $("browse-q").addEventListener("keydown",e=>{if(e.key==="Enter")browseSearch(false);});
-$("browse-provider").addEventListener("change",()=>{const hf=$("browse-provider").value==="huggingface";["browse-type","browse-base","browse-sort"].forEach(id=>$(id).hidden=hf);});
+$("browse-provider").addEventListener("change",()=>{const hf=$("browse-provider").value==="huggingface";["browse-type","browse-base","browse-sort"].forEach(id=>$(id).hidden=hf);["browse-hf-type","browse-hf-sort"].forEach(id=>$(id).hidden=!hf);});
 try{$("browse-mature").checked=localStorage.getItem("modelharbor_mature")==="1";}catch(_){}
 $("browse-mature").addEventListener("change",()=>{try{localStorage.setItem("modelharbor_mature",$("browse-mature").checked?"1":"0");}catch(_){}});
 function render(){
