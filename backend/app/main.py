@@ -79,6 +79,10 @@ def connect():
     db.execute("""CREATE TABLE IF NOT EXISTS agent_heartbeats
         (device TEXT PRIMARY KEY, last_seen INTEGER NOT NULL,
          comfyui_count INTEGER NOT NULL, ollama_count INTEGER)""")
+    db.execute("""CREATE TABLE IF NOT EXISTS agent_status (
+        device TEXT PRIMARY KEY, phase TEXT NOT NULL, done INTEGER, total INTEGER,
+        done_bytes INTEGER, total_bytes INTEGER, current TEXT, message TEXT,
+        started_at INTEGER, updated_at INTEGER, worker_seen INTEGER, scan_requested_at INTEGER)""")
     ensure_tables(db)
     ensure_source_tables(db)
     downloads.ensure_tables(db)
@@ -128,10 +132,74 @@ def heartbeat(payload: Heartbeat, x_modelharbor_token: str | None = Header(defau
 def agents(x_modelharbor_token: str | None = Header(default=None)):
     authorize(x_modelharbor_token)
     with closing(connect()) as db:
-        rows = db.execute("SELECT device,last_seen,comfyui_count,ollama_count FROM agent_heartbeats ORDER BY device").fetchall()
+        rows = db.execute("""SELECT h.device,h.last_seen,h.comfyui_count,h.ollama_count,
+            s.phase,s.done,s.total,s.done_bytes,s.total_bytes,s.current,s.message,s.started_at,s.updated_at,
+            s.worker_seen,s.scan_requested_at
+            FROM agent_heartbeats h LEFT JOIN agent_status s ON s.device=h.device ORDER BY h.device""").fetchall()
     now = int(time.time())
-    return [{"device": r[0], "last_seen": r[1], "online": now-r[1] <= 3900,
-             "comfyui_count":r[2], "ollama_count":r[3]} for r in rows]
+    result = []
+    for r in rows:
+        worker_seen = r[13] or 0
+        status = dict(zip(("phase", "done", "total", "done_bytes", "total_bytes", "current", "message",
+                           "started_at", "updated_at"), r[4:13])) if r[12] else None  # None until a sync reports
+        result.append({"device": r[0], "last_seen": r[1], "online": now - max(r[1], worker_seen) <= 3900,
+            "comfyui_count": r[2], "ollama_count": r[3], "status": status,
+            # The worker polls every ~20 s, so two minutes of silence means it is not running.
+            "worker_running": now - worker_seen <= 120, "worker_seen": worker_seen or None,
+            "scan_requested": bool(r[14])})
+    return result
+
+class AgentStatus(BaseModel):
+    device: str = Field(min_length=1, max_length=100)
+    phase: str = Field(pattern=r"^(scanning|hashing|uploading|idle|error)$")
+    done: int | None = Field(default=None, ge=0)
+    total: int | None = Field(default=None, ge=0)
+    done_bytes: int | None = Field(default=None, ge=0)
+    total_bytes: int | None = Field(default=None, ge=0)
+    current: str | None = Field(default=None, max_length=1024)
+    message: str | None = Field(default=None, max_length=300)
+
+@app.post("/api/agents/status")
+def agent_status(payload: AgentStatus, x_modelharbor_token: str | None = Header(default=None)):
+    authorize(x_modelharbor_token)
+    now = int(time.time())
+    with closing(connect()) as db:
+        with db:
+            db.execute("""INSERT INTO agent_status (device,phase,done,total,done_bytes,total_bytes,current,message,
+                started_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?) ON CONFLICT(device) DO UPDATE SET
+                phase=excluded.phase,done=excluded.done,total=excluded.total,done_bytes=excluded.done_bytes,
+                total_bytes=excluded.total_bytes,current=excluded.current,message=excluded.message,
+                started_at=CASE WHEN excluded.phase='scanning' AND agent_status.phase!='scanning'
+                    THEN excluded.started_at ELSE COALESCE(agent_status.started_at,excluded.started_at) END,
+                updated_at=excluded.updated_at""",
+                (payload.device, payload.phase, payload.done, payload.total, payload.done_bytes,
+                 payload.total_bytes, payload.current, payload.message, now, now))
+    return {"ok": True}
+
+@app.post("/api/agents/{device}/scan", status_code=202)
+def request_scan(device: str, x_modelharbor_token: str | None = Header(default=None)):
+    authorize(x_modelharbor_token)
+    with closing(connect()) as db:
+        with db:
+            if not db.execute("SELECT 1 FROM agent_heartbeats WHERE device=?", (device,)).fetchone():
+                raise HTTPException(404, "Unknown device")
+            db.execute("""INSERT INTO agent_status (device,phase,scan_requested_at) VALUES (?,'idle',?)
+                ON CONFLICT(device) DO UPDATE SET scan_requested_at=excluded.scan_requested_at""",
+                (device, int(time.time())))
+    return {"ok": True}
+
+@app.get("/api/agents/{device}/scan-request")
+def take_scan_request(device: str, x_modelharbor_token: str | None = Header(default=None)):
+    """Polled by the agent's background worker; also records that the worker is alive."""
+    authorize(x_modelharbor_token)
+    now = int(time.time())
+    with closing(connect()) as db:
+        with db:
+            row = db.execute("SELECT scan_requested_at FROM agent_status WHERE device=?", (device,)).fetchone()
+            db.execute("""INSERT INTO agent_status (device,phase,worker_seen) VALUES (?,'idle',?)
+                ON CONFLICT(device) DO UPDATE SET worker_seen=excluded.worker_seen,scan_requested_at=NULL""",
+                (device, now))
+    return {"scan": bool(row and row[0])}
 
 @app.get("/api/discovery/{provider}")
 def discover(provider: str, q: str, x_modelharbor_token: str | None = Header(default=None)):

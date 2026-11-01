@@ -15,6 +15,12 @@ The agent reads file metadata from configured ComfyUI model directories and call
 
 The Windows scheduled task uses your user account. It does not require administrator privileges. When the PC is off, heartbeats stop and the dashboard will eventually show it as offline.
 
+## Status and "Scan now"
+
+The dashboard's **Devices** tab shows each PC's live state: scanning folders, hashing new or changed files (file N of M, GB done, current file, with a progress bar), uploading, up to date (with when), or the last error. It also shows whether the background task (`ModelHarbor Hash Worker`) is running.
+
+**Scan now** asks that background task to start a sync. It checks for requests about every 20 seconds, so the scan starts shortly after. If the task isn't running, the request waits until it is. A scheduled sync and a requested one never run at the same time: whichever starts second is skipped.
+
 ## Notes
 - The first sync after updating hashes every model file once (see `docs/SOURCES_AND_UPDATES.md`); later syncs only hash new or changed files.
 
