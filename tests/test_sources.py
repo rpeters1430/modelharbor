@@ -83,7 +83,7 @@ def test_unknown_hash_is_not_retried_every_pass(db):
     run_pass(db, fake({}, calls), pause=0, now=1_000_000)
     run_pass(db, fake({}, calls), pause=0, now=1_000_100)
     assert len(calls) == 2  # both hosts once, then cached as not found
-    assert records(db)[0]["source"] is None
+    assert records(db)[0]["source"] is None and records(db)[0]["source_checked"] is True
 
 def test_ollama_update_from_manifest_digest(db):
     current = hashlib.sha256(MANIFEST).hexdigest()

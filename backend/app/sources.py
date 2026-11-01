@@ -226,12 +226,14 @@ def annotate(db, records):
     civitai = {r[0]: r for r in db.execute("""SELECT sha256,model_id,version_id,model_name,version_name,
         base_model,trained_words,published_at,nsfw,latest_version_id,latest_version_name,latest_published_at
         FROM civitai_files WHERE found=1""")}
+    checked = {r[0] for r in db.execute("SELECT sha256 FROM civitai_files")}
     ollama = dict(db.execute("SELECT name,remote_digest FROM ollama_remote WHERE remote_digest IS NOT NULL"))
     hf = {(r[0], r[1]): r for r in db.execute("""SELECT s.device,s.path,s.repository,s.remote_path,s.sha256,s.latest_sha
         FROM selected_matches s JOIN models m ON s.device=m.device AND s.path=m.path
         AND s.local_size=m.size_bytes AND s.local_modified_ns=m.modified_ns""")}
     for record in records:
         record["source"] = record["update"] = None
+        record["source_checked"] = record.get("sha256") in checked
         sha = record.get("sha256")
         if record["kind"].startswith("ollama/"):
             remote = ollama.get(record["name"])
