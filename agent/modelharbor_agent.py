@@ -9,6 +9,7 @@ from pathlib import Path
 import requests
 from scan import scan
 from ollama_scan import collect
+from hash_worker import process_one
 
 LOG = logging.getLogger("modelharbor")
 DEFAULT_CONFIG = Path(os.environ.get("APPDATA", str(Path.home()))) / "ModelHarbor" / "agent.json"
@@ -78,10 +79,29 @@ def run_once(cfg, token, dry_run=False):
                   "ollama_count": len(ollama) if ollama is not None else None}, timeout=20)
         response.raise_for_status()
 
+
+def run_hash_worker(cfg, token):
+    """Independent, read-only worker. Does not trigger inventory uploads."""
+    if not cfg.get("hash_verification_enabled", True):
+        LOG.info("Hash verification worker disabled in config")
+        return
+    device=(cfg.get("device") or socket.gethostname())+":comfyui"
+    roots=cfg.get("comfyui_models_dirs", []) or discover_roots()
+    interval=max(10,int(cfg.get("hash_poll_seconds",20)))
+    server=cfg["server"]
+    with requests.Session() as session:
+        while True:
+            try:
+                process_one(session,server,token,device,roots)
+            except (requests.RequestException,OSError,ValueError) as exc:
+                LOG.warning("Hash job poll failed; retrying: %s",exc)
+            time.sleep(interval)
+
 def main():
     p = argparse.ArgumentParser(description="ModelHarbor background inventory sync")
     p.add_argument("--config", type=Path, default=DEFAULT_CONFIG)
     p.add_argument("--once", action="store_true")
+    p.add_argument("--hash-worker", action="store_true", help="Poll for approved SHA-256 verification jobs; runs continuously")
     p.add_argument("--dry-run", action="store_true")
     args = p.parse_args()
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
@@ -89,6 +109,11 @@ def main():
     token = os.environ.get("MODELHARBOR_AGENT_TOKEN", "")
     if not args.dry_run and not token:
         p.error("MODELHARBOR_AGENT_TOKEN must be set in the Windows environment")
+    if args.hash_worker:
+        if args.dry_run or args.once:
+            p.error("--hash-worker runs continuously and cannot use --once or --dry-run")
+        run_hash_worker(cfg,token)
+        return
     interval = max(300, int(cfg.get("sync_interval_seconds", 1800)))
     while True:
         try:
