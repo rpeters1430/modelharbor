@@ -11,6 +11,7 @@ from scan import scan
 from ollama_scan import collect
 from hash_worker import process_one
 from hash_cache import fill_hashes
+import download_worker
 
 LOG = logging.getLogger("modelharbor")
 DEFAULT_CONFIG = Path(os.environ.get("APPDATA", str(Path.home()))) / "ModelHarbor" / "agent.json"
@@ -84,7 +85,7 @@ def run_once(cfg, token, dry_run=False):
 
 
 def run_hash_worker(cfg, token):
-    """Independent, read-only worker. Does not trigger inventory uploads."""
+    """Continuous worker for dashboard requests: hash checks and approved update downloads."""
     if not cfg.get("hash_verification_enabled", True):
         LOG.info("Hash verification worker disabled in config")
         return
@@ -98,6 +99,12 @@ def run_hash_worker(cfg, token):
                 process_one(session,server,token,device,roots)
             except (requests.RequestException,OSError,ValueError) as exc:
                 LOG.warning("Hash job poll failed; retrying: %s",exc)
+            if cfg.get("downloads_enabled", True):
+                try:
+                    download_worker.process_one(session,server,token,device.rsplit(":",1)[0],roots,
+                                                cfg.get("ollama_url","http://127.0.0.1:11434"))
+                except (requests.RequestException,OSError,ValueError) as exc:
+                    LOG.warning("Download poll failed; retrying: %s",exc)
             time.sleep(interval)
 
 def main():

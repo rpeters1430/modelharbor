@@ -16,7 +16,7 @@ def test_collection_lists_multiple_individual_loras():
     _cache.clear()
     page = [
         {"type":"file","path":"Alpha_01.safetensors","size":145000000,
-         "lfs":{"sha256":"a"*64}},
+         "lfs":{"oid":"a"*64,"size":145000000,"pointerSize":132}},  # real Hub shape
         {"type":"file","path":"sub/Beta_02.safetensors","size":145000000},
         {"type":"file","path":"README.md","size":123},
         {"type":"directory","path":"sub"},

@@ -8,12 +8,20 @@ from backend.app.intelligence import enrich
 from backend.app.sources import annotate, ensure_tables, run_pass
 
 SHA = "a" * 64
+
+def files(digest, file_type="Model", file_id=1, name="cool.safetensors"):
+    return [{"id": file_id, "type": file_type, "primary": True, "name": name, "sizeKB": 1.0,
+             "hashes": {"SHA256": digest.upper()}}]
+
 OLD = {"id": 10, "modelId": 7, "name": "v1.0", "baseModel": "Pony", "publishedAt": "2025-01-01T00:00:00Z",
-       "trainedWords": ["trigger"], "nsfwLevel": 1, "model": {"name": "Cool LoRA", "nsfw": False}}
+       "trainedWords": ["trigger"], "nsfwLevel": 1, "model": {"name": "Cool LoRA", "nsfw": False},
+       "files": files(SHA)}
 MODEL = {"modelVersions": [
-    {"id": 12, "name": "v2.0", "baseModel": "Pony", "publishedAt": "2025-06-01T00:00:00Z"},
-    {"id": 13, "name": "Illustrious v1", "baseModel": "Illustrious", "publishedAt": "2025-09-01T00:00:00Z"},
-    {"id": 10, "name": "v1.0", "baseModel": "Pony", "publishedAt": "2025-01-01T00:00:00Z"}]}
+    {"id": 12, "name": "v2.0", "baseModel": "Pony", "publishedAt": "2025-06-01T00:00:00Z",
+     "files": files("b" * 64, "UNet", 120, "cool_v2.safetensors")},
+    {"id": 13, "name": "Illustrious v1", "baseModel": "Illustrious", "publishedAt": "2025-09-01T00:00:00Z",
+     "files": files("c" * 64)},
+    {"id": 10, "name": "v1.0", "baseModel": "Pony", "publishedAt": "2025-01-01T00:00:00Z", "files": files(SHA)}]}
 MANIFEST = b'{"schemaVersion":2}'
 
 @pytest.fixture
@@ -52,6 +60,9 @@ def test_civitai_identity_and_same_base_update(db):
     assert item["source"]["url"] == "https://civitai.com/models/7?modelVersionId=10"
     # The newer Illustrious version is a variant; the Pony v2.0 is the update.
     assert item["update"]["version_name"] == "v2.0" and item["update"]["version_id"] == 12
+    # "Model" and "UNet" are both the main weights; the exact file and hash to fetch are recorded.
+    stored = json.loads(db.execute("SELECT latest_file FROM civitai_files").fetchone()[0])
+    assert stored == {"id": 120, "name": "cool_v2.safetensors", "sha256": "b" * 64, "size_bytes": 1024}
     assert (item["family_guess"], item["family_verified"]) == ("Pony", True)
 
 def test_falls_back_to_civitai_red_and_links_mature_models_there(db):
@@ -104,13 +115,25 @@ def test_family_folder_beats_filename(db):
 
 def test_variants_are_not_updates():
     from backend.app.sources import newer_version
-    versions = lambda *names: [{"id": i, "name": n, "baseModel": "SDXL 1.0"} for i, n in enumerate(names)]
-    assert newer_version("V0.1", "SDXL 1.0", versions("V0.1", "V0.4"))["name"] == "V0.4"
-    dated = [{"name": "V0.25", "baseModel": "B", "publishedAt": "2025-01-01"}, {"name": "V0.4", "baseModel": "B", "publishedAt": "2025-05-01"}]
-    assert newer_version("V0.1", "B", dated)["name"] == "V0.4"
-    assert newer_version("Turbo v1.0", "SDXL 1.0", versions("Turbo v3.0", "Turbo v2.0"))["name"] == "Turbo v3.0"
+    versions = lambda *names: [{"id": i, "name": n, "baseModel": "SDXL 1.0", "files": files("e" * 64)}
+                               for i, n in enumerate(names)]
+    assert newer_version("V0.1", "SDXL 1.0", versions("V0.1", "V0.4"), "Model")["name"] == "V0.4"
+    dated = [{"name": "V0.25", "baseModel": "B", "publishedAt": "2025-01-01", "files": files("e" * 64)},
+             {"name": "V0.4", "baseModel": "B", "publishedAt": "2025-05-01", "files": files("e" * 64)}]
+    assert newer_version("V0.1", "B", dated, "Model")["name"] == "V0.4"
+    assert newer_version("Turbo v1.0", "SDXL 1.0", versions("Turbo v3.0", "Turbo v2.0"), "Model")["name"] == "Turbo v3.0"
     for local, other in (("v7.0", "v6.0 - Inpainting"), ("v7.0 Photo XL", "v7.0 Photo XL DMD"),
                          ("4 Steps", "8 Steps"), ("v1.5 fp8", "v1.5 INT8"), ("v2.1", "v2.1 Turbo"),
                          ("Base", "SFT"), ("v1.0", "v1.0-inpainting")):
-        assert newer_version(local, "SDXL 1.0", versions(local, other)) is None, (local, other)
-    assert newer_version("v1.0", "Pony", versions("v2.0")) is None  # other base model
+        assert newer_version(local, "SDXL 1.0", versions(local, other), "Model") is None, (local, other)
+    assert newer_version("v1.0", "Pony", versions("v2.0"), "Model") is None  # other base model
+
+def test_text_encoder_is_not_replaced_by_diffusion_model():
+    from backend.app.sources import newer_version
+    v3 = {"name": "Turbo v3.0", "baseModel": "Krea 2", "files": files("e" * 64, "Model")}
+    assert newer_version("Turbo v1.0", "Krea 2", [v3], "Text Encoder") is None
+    assert newer_version("Turbo v1.0", "Krea 2", [v3], "Diffusion Model")["name"] == "Turbo v3.0"
+
+def test_unknown_file_type_gets_no_update():
+    from backend.app.sources import newer_version
+    assert newer_version("V0.1", "B", [{"name": "V0.4", "baseModel": "B", "files": files("e" * 64)}], None) is None

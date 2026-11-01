@@ -108,7 +108,8 @@ def list_model_files(repo, query=""):
         if needle and needle not in path.casefold() and needle not in path.rsplit("/", 1)[-1].casefold().replace("_", " "):
             continue
         lfs = item.get("lfs") or {}
-        digest = lfs.get("sha256") if isinstance(lfs, dict) else None
+        # The Hub reports the LFS SHA-256 as "oid"; "sha256" is kept for older responses.
+        digest = (lfs.get("oid") or lfs.get("sha256")) if isinstance(lfs, dict) else None
         if not isinstance(digest, str) or not re.fullmatch(r"[0-9a-fA-F]{64}", digest):
             digest = None
         size = item.get("size")

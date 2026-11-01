@@ -11,7 +11,7 @@ Self-hosted, mobile-friendly AI model inventory dashboard for **ComfyUI** and **
 - Ollama model inventory scanner (if merged from its separate PR).
 - Multi-platform Docker image published to GitHub Container Registry (GHCR).
 
-> **Current scope:** Inventory dashboard with exact SHA-256 source identification (Civitai, Hugging Face) and update checks (Civitai, Ollama, Hugging Face). See [docs/SOURCES_AND_UPDATES.md](docs/SOURCES_AND_UPDATES.md). Downloads are a future milestone.
+> **Current scope:** Inventory dashboard with exact SHA-256 source identification (Civitai, Hugging Face) and update checks (Civitai, Ollama, Hugging Face). See [docs/SOURCES_AND_UPDATES.md](docs/SOURCES_AND_UPDATES.md). Approved updates can be downloaded next to the old file after a SHA-256 check.
 
 ## Docker Compose — UGREEN NAS / Dockhand
 

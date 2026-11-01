@@ -20,3 +20,5 @@
 .verify-controls button{min-width:130px}
 .match-verified{color:#8cf0bf;font-size:12px;font-weight:650;overflow-wrap:anywhere}
 @media(max-width:550px){.verify-controls{grid-template-columns:1fr}.verify-controls button{min-height:44px}}
+
+.download-box{display:grid;gap:8px;margin:4px 0 18px}.download-box:empty{display:none}.download-box p{margin:0;font-size:13px;overflow-wrap:anywhere}

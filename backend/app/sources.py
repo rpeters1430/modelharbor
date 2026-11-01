@@ -28,6 +28,10 @@ def ensure_tables(db):
         base_model TEXT, trained_words TEXT, published_at TEXT, nsfw INTEGER,
         latest_version_id INTEGER, latest_version_name TEXT, latest_published_at TEXT,
         latest_checked_at INTEGER)""")
+    columns = [row[1] for row in db.execute("PRAGMA table_info(civitai_files)")]
+    for column in ("file_type", "latest_file"):
+        if column not in columns:
+            db.execute(f"ALTER TABLE civitai_files ADD COLUMN {column} TEXT")
     db.execute("""CREATE TABLE IF NOT EXISTS ollama_remote (
         name TEXT PRIMARY KEY, remote_digest TEXT, checked_at INTEGER NOT NULL)""")
 
@@ -64,16 +68,36 @@ def civitai_lookup(db, sha, get=fetch, now=None):
     model = data.get("model") or {}
     nsfw = bool(model.get("nsfw")) or int(data.get("nsfwLevel") or 0) > 3  # above PG-13
     words = [str(w)[:200] for w in data.get("trainedWords") or [] if w][:20]
+    # A version can hold several files (model, text encoder, VAE); remember which one this is.
+    matched = next((f for f in data.get("files") or [] if _file_sha(f) == sha), {})
     db.execute("""INSERT INTO civitai_files (sha256,found,checked_at,model_id,version_id,model_name,
-        version_name,base_model,trained_words,published_at,nsfw) VALUES (?,1,?,?,?,?,?,?,?,?,?)
+        version_name,base_model,trained_words,published_at,nsfw,file_type) VALUES (?,1,?,?,?,?,?,?,?,?,?,?)
         ON CONFLICT(sha256) DO UPDATE SET found=1,checked_at=excluded.checked_at,model_id=excluded.model_id,
         version_id=excluded.version_id,model_name=excluded.model_name,version_name=excluded.version_name,
         base_model=excluded.base_model,trained_words=excluded.trained_words,
-        published_at=excluded.published_at,nsfw=excluded.nsfw""",
+        published_at=excluded.published_at,nsfw=excluded.nsfw,file_type=excluded.file_type""",
         (sha, now, data["modelId"], data.get("id"), str(model.get("name") or "")[:250],
          str(data.get("name") or "")[:250], str(data.get("baseModel") or "")[:100] or None,
-         json.dumps(words), data.get("publishedAt"), int(nsfw)))
+         json.dumps(words), data.get("publishedAt"), int(nsfw), str(matched.get("type") or "")[:50] or None))
     return True
+
+# Civitai labels the main weights inconsistently between versions of one model.
+MAIN_FILE_TYPES = {"Model", "UNet", "Diffusion Model", "Checkpoint", "Pruned Model"}
+
+def _file_sha(item):
+    digest = str(((item or {}).get("hashes") or {}).get("SHA256") or "").lower()
+    return digest if re.fullmatch(r"[0-9a-f]{64}", digest) else None
+
+def _file_group(file_type):
+    return "main" if file_type in MAIN_FILE_TYPES else file_type
+
+def matching_file(version, file_type):
+    """The file in a newer version that replaces the local one, preferring the primary file."""
+    if not file_type:
+        return None  # Civitai didn't say which of its files ours is, so don't guess a replacement
+    files = [f for f in version.get("files") or [] if _file_group(f.get("type")) == _file_group(file_type)
+             and _file_sha(f) and isinstance(f.get("id"), int)]
+    return max(files, key=lambda f: bool(f.get("primary")), default=None)
 
 VERSION = re.compile(r"(?<![a-z0-9])v?(\d+(?:\.\d+)+)|(?<![a-z0-9])v(\d+)(?![a-z0-9])")
 
@@ -87,11 +111,12 @@ def version_key(name):
     label = re.sub(r"[^a-z0-9]+", " ", VERSION.sub(" ", text)).strip()
     return label, number
 
-def newer_version(local_name, base, versions):
+def newer_version(local_name, base, versions, file_type=None):
     """Newest version that is the same variant with a higher number, e.g. "Turbo v1.0" -> "Turbo v3.0".
 
     Civitai also lists variants (inpainting, DMD, INT8, high/low noise, other base models) as
-    versions, so the newest upload is not necessarily an update.
+    versions, so the newest upload is not necessarily an update. The newer version must also
+    contain the same kind of file (a text encoder is not replaced by a diffusion model).
     """
     local = version_key(local_name)
     if not local:
@@ -100,7 +125,7 @@ def newer_version(local_name, base, versions):
     for v in versions:
         key = version_key(v.get("name"))
         if (key and key[0] == local[0] and key[1] > local[1] and v.get("baseModel") == base
-                and v.get("status", "Published") == "Published"):
+                and v.get("status", "Published") == "Published" and matching_file(v, file_type)):
             candidates.append(v)
     # Numbering is inconsistent (V0.25 vs V0.4), so the latest upload wins among real successors.
     return max(candidates, key=lambda v: (v.get("publishedAt") or "", version_key(v["name"])[1]), default=None)
@@ -110,14 +135,18 @@ def civitai_latest(db, model_id, get=fetch, now=None):
     now = now or int(time.time())
     body = get(f"https://{CIVITAI_HOSTS[0]}/api/v1/models/{int(model_id)}")
     versions = (json.loads(body) or {}).get("modelVersions", []) if body else []
-    rows = db.execute("SELECT sha256,base_model,version_name FROM civitai_files WHERE model_id=? AND found=1",
-                      (model_id,)).fetchall()
-    for sha, base, name in rows:
-        latest = newer_version(name, base, versions)
+    rows = db.execute("""SELECT sha256,base_model,version_name,file_type FROM civitai_files
+        WHERE model_id=? AND found=1""", (model_id,)).fetchall()
+    for sha, base, name, file_type in rows:
+        latest = newer_version(name, base, versions, file_type)
+        item = latest and matching_file(latest, file_type)
+        # Exactly what the agent should download and the hash it must have.
+        file = item and json.dumps({"id": item["id"], "name": str(item.get("name") or "")[:200],
+            "sha256": _file_sha(item), "size_bytes": int(float(item.get("sizeKB") or 0) * 1024)})
         db.execute("""UPDATE civitai_files SET latest_version_id=?,latest_version_name=?,
-            latest_published_at=?,latest_checked_at=? WHERE sha256=?""",
+            latest_published_at=?,latest_checked_at=?,latest_file=? WHERE sha256=?""",
             (latest and latest.get("id"), latest and str(latest.get("name") or "")[:250],
-             latest and latest.get("publishedAt"), now, sha))
+             latest and latest.get("publishedAt"), now, file, sha))
 
 def ollama_check(db, name, get=fetch, now=None):
     now = now or int(time.time())
