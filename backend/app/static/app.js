@@ -3,6 +3,7 @@
 const $ = id => document.getElementById(id);
 let models = [];
 let agents = [];
+let selectedMatches = [];
 let token = sessionStorage.getItem("modelharbor_token") || "";
 let view = "overview";
 const fmt = n => { if (!Number.isFinite(n)) return "—"; if (n === 0) return "0 B"; const u = ["B","KB","MB","GB","TB","PB"]; const i = Math.min(Math.floor(Math.log(n)/Math.log(1000)),u.length-1); return (n/Math.pow(1000,i)).toFixed(i ? 1 : 0)+" "+u[i]; };
@@ -25,8 +26,8 @@ async function searchProvider(){
    const a=document.createElement("a");a.className="provider-result";
    a.href=item.url;a.target="_blank";a.rel="noopener noreferrer";
    a.append(text("strong",item.name),text("span",item.provider+" · Unverified candidate","model-sub"));
-   if(item.provider==="huggingface"){const button=text("button","Browse repository files","repo-action");button.type="button";button.addEventListener("click",e=>{e.preventDefault();$("repo-name").value=item.id;browseRepository();});target.append(button);}
    target.append(a);
+   if(item.provider==="huggingface"){const button=text("button","Browse repository files","repo-action");button.type="button";button.addEventListener("click",()=>{$("repo-name").value=item.id;browseRepository();});target.append(button);}
   });
  }catch(err){target.replaceChildren(text("p",err.message,"muted"));}
  finally{button.disabled=false;}
@@ -35,17 +36,77 @@ async function searchProvider(){
 $("provider-search").addEventListener("click",searchProvider);
 
 let repoListing=null;
+function selectedRemote(file){
+ return selectedMatches.filter(s=>repoListing&&s.repository===repoListing.repository&&s.remote_path===file.path);
+}
+async function apiRequest(path,method="GET",body){
+ const response=await fetch(path,{method,headers:{"X-ModelHarbor-Token":token,...(body?{"Content-Type":"application/json"}:{})},
+  body:body?JSON.stringify(body):undefined,cache:"no-store"});
+ if(!response.ok){let detail="HTTP "+response.status;try{const data=await response.json();if(typeof data.detail==="string")detail=data.detail;}catch(_){}
+  throw Error(detail);}
+ return response.json();
+}
+async function requestVerification(file,local,status,button,controls){
+ button.disabled=true;status.textContent="Verification queued; Windows hash worker will read the selected file…";
+ try{
+  const job=await apiRequest("/api/hash-jobs","POST",{
+   device:local.device,path:local.path,repository:repoListing.repository,remote_path:file.path
+  });
+  async function poll(){
+   if(!document.getElementById("detail-dialog").open)return;
+   try{
+    const current=await apiRequest("/api/hash-jobs/"+encodeURIComponent(job.id));
+    if(current.state==="queued"||current.state==="running"){
+     status.textContent=current.state==="running"?"Computing SHA-256 on Windows…":"Waiting for Windows hash worker…";
+     window.setTimeout(poll,5000);return;
+    }
+    if(current.state==="verified"){
+     status.textContent="SHA-256 verified — exact bytes match. Confirm to associate this file.";
+     const confirm=text("button","Select verified match","primary");confirm.type="button";
+     controls.append(confirm);
+     confirm.onclick=async()=>{
+      confirm.disabled=true;
+      try{
+       const chosen=await apiRequest("/api/hash-jobs/"+encodeURIComponent(job.id)+"/select","POST");
+       selectedMatches=selectedMatches.filter(s=>!(s.device===chosen.device&&s.path===chosen.path));
+       selectedMatches.push(chosen);
+       displayRepoFiles();
+      }catch(err){status.textContent="Could not select match: "+err.message;confirm.disabled=false;}
+     };
+    }else{
+     status.textContent=current.state==="mismatch"?"SHA-256 mismatch. These files are not identical.":current.state==="stale"?"Local file inventory changed. Refresh and verify again.":"Verification failed: "+(current.error||"Unknown error");
+     button.disabled=false;
+    }
+   }catch(err){status.textContent="Status lookup failed: "+err.message;button.disabled=false;}
+  }
+  poll();
+ }catch(err){status.textContent="Verification could not start: "+err.message;button.disabled=false;}
+}
 function repoFileRow(file){
  const card=text("div","","repo-file");
- const name=text("strong",file.name,"repo-filename");
- const secondary=text("span",file.path+" · "+fmt(file.size_bytes),"model-sub");
- const local=models.filter(m=>m.name.toLowerCase()===file.name.toLowerCase()&&m.kind!=="ollama");
- const sameSize=local.some(m=>Number(m.size_bytes)===file.size_bytes);
- const badge=text("span",sameSize?"Filename + size match (unverified)":local.length?"Filename match (unverified)":"Not matched by filename",sameSize?"match-possible":"model-sub");
- const link=document.createElement("a");link.href=file.url;link.target="_blank";link.rel="noopener noreferrer";link.textContent="View file ↗";link.className="repo-link";
- card.append(name,secondary,badge);
- if(file.sha256)card.append(text("span","Remote SHA-256: "+file.sha256,"model-sub"));
- card.append(link);
+ card.append(text("strong",file.name,"repo-filename"),
+   text("span",file.path+" · "+fmt(file.size_bytes),"model-sub"));
+ const chosen=selectedRemote(file);
+ if(chosen.length){
+  card.append(text("span","✓ Selected exact match: "+chosen.map(s=>s.device+" · "+s.path).join(", "),"match-verified"));
+ }
+ const candidates=models.filter(m=>m.name.toLowerCase()===file.name.toLowerCase()&&m.kind!=="ollama"&&Number(m.size_bytes)===file.size_bytes);
+ const byName=models.filter(m=>m.name.toLowerCase()===file.name.toLowerCase()&&m.kind!=="ollama");
+ card.append(text("span",candidates.length?"Filename + size match (unverified)":byName.length?"Filename match; size differs":"Not matched by filename",candidates.length?"match-possible":"model-sub"));
+ if(file.sha256)card.append(text("span","Remote SHA-256 available","model-sub"));
+ const link=document.createElement("a");link.href=file.url;link.target="_blank";link.rel="noopener noreferrer";
+ link.textContent="View file ↗";link.className="repo-link";card.append(link);
+ if(candidates.length && file.sha256){
+  const controls=text("div","","verify-controls");
+  const picker=document.createElement("select");picker.setAttribute("aria-label","Choose local file to verify");
+  candidates.forEach((m,i)=>picker.add(new Option(m.device+" · "+m.path,i)));
+  const verify=text("button","Verify SHA-256","primary");verify.type="button";
+  const status=text("p","","muted");status.setAttribute("role","status");
+  verify.onclick=()=>requestVerification(file,candidates[Number(picker.value)],status,verify,controls);
+  controls.append(picker,verify);card.append(controls,status);
+ }else if(candidates.length && !file.sha256){
+  card.append(text("span","No authoritative remote SHA-256 available. Verification unavailable.","model-sub"));
+ }
  return card;
 }
 function displayRepoFiles(){
@@ -103,7 +164,7 @@ function filter(){
  fill($("library"),subset.slice(0,500),"No matching models.");
  if(subset.length>500)$("library").append(text("p","Showing first 500 results. Narrow your filters to see more.","muted"));
 }
-async function refresh(){if(!token){openAuth();return;} $("refresh").disabled=true;try{const response=await fetch("/api/models",{headers:{"X-ModelHarbor-Token":token},cache:"no-store"});if(response.status===401){token="";sessionStorage.removeItem("modelharbor_token");setStatus(false);showNotice("Token rejected. Enter your configured API token.");openAuth();return;}if(!response.ok)throw Error("Server returned HTTP "+response.status);const data=await response.json();if(!Array.isArray(data))throw Error("Unexpected inventory response");models=data;try{const agentsResponse=await fetch("/api/agents",{headers:{"X-ModelHarbor-Token":token},cache:"no-store"});agents=agentsResponse.ok?await agentsResponse.json():[];}catch(_){agents=[];}setStatus(true);showNotice("");render();}catch(err){setStatus(false);showNotice("Unable to load inventory: "+err.message);}finally{$("refresh").disabled=false;}}
+async function refresh(){if(!token){openAuth();return;} $("refresh").disabled=true;try{const response=await fetch("/api/models",{headers:{"X-ModelHarbor-Token":token},cache:"no-store"});if(response.status===401){token="";sessionStorage.removeItem("modelharbor_token");setStatus(false);showNotice("Token rejected. Enter your configured API token.");openAuth();return;}if(!response.ok)throw Error("Server returned HTTP "+response.status);const data=await response.json();if(!Array.isArray(data))throw Error("Unexpected inventory response");models=data;try{selectedMatches=await apiRequest("/api/selected-matches");}catch(_){selectedMatches=[];}try{const agentsResponse=await fetch("/api/agents",{headers:{"X-ModelHarbor-Token":token},cache:"no-store"});agents=agentsResponse.ok?await agentsResponse.json():[];}catch(_){agents=[];}setStatus(true);showNotice("");render();}catch(err){setStatus(false);showNotice("Unable to load inventory: "+err.message);}finally{$("refresh").disabled=false;}}
 document.querySelectorAll(".tab").forEach(b=>b.addEventListener("click",()=>switchView(b.dataset.view)));
 document.querySelectorAll("[data-go]").forEach(b=>b.addEventListener("click",()=>switchView(b.dataset.go)));
 ["search","kind","device","family","folder","sort","duplicates"].forEach(id=>$(id).addEventListener(id==="search"?"input":"change",filter));
