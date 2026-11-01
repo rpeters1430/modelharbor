@@ -12,6 +12,7 @@ from hash_cache import sha256_file
 
 ALLOWED_HOSTS = {"civitai.com", "civitai.red", "huggingface.co", "modelscope.cn", "www.modelscope.cn"}
 SAFE_NAME = re.compile(r"^[\w .()+,-]{1,200}\.(?:safetensors|ckpt|pt|pth|bin|gguf|onnx)$")
+FAMILY = re.compile(r"^[A-Za-z0-9]{1,20}$")
 CHUNK = 8 * 1024 * 1024
 HEADROOM = 2 * 1024**3
 PROGRESS_SECONDS = 15
@@ -36,10 +37,12 @@ def explain(status, host):
 def download_file(session, job, roots, report_progress):
     """Return (sha256, final_path). Raises ValueError with a readable reason."""
     if job.get("target_folder"):
-        if job["target_folder"] not in NEW_FOLDERS or not roots:
+        # A fixed ComfyUI folder, optionally with one family subfolder ("loras/SDXL").
+        parent, _, family = job["target_folder"].partition("/")
+        if parent not in NEW_FOLDERS or family and not FAMILY.fullmatch(family) or not roots:
             raise ValueError("Download folder is not allowed")
-        directory = Path(roots[0]).resolve(strict=True) / job["target_folder"]
-        directory.mkdir(exist_ok=True)
+        directory = Path(roots[0]).resolve(strict=True) / parent / family
+        directory.mkdir(parents=True, exist_ok=True)
     else:
         directory = allowed_file(job["path"], roots).parent
     name = job["file_name"]

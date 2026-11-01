@@ -52,10 +52,15 @@ The **Browse** tab searches Civitai (filter by type, base model and sort, with L
 - Every file is compared with your inventory by **SHA-256**: **✓ On your PC** means you already have exactly that file. "Other version on your PC" means you have a different version of the model.
 - **Download** queues the file for your PC. The NAS takes the URL, file name and expected hash from the provider, never from the browser. The agent saves it into a fixed ComfyUI folder under your first configured models root and keeps it only if the hash matches:
   - Civitai: by file type, then model type. LoRA/LyCORIS → `loras`, Checkpoint → `checkpoints`, UNet/Diffusion Model → `diffusion_models`, Text Encoder → `text_encoders`, VAE → `vae`, Embedding → `embeddings`, ControlNet → `controlnet`, Upscaler → `upscale_models`.
-  - Hugging Face: the folder you pick on the card (default `loras`).
+  - Civitai files for a known base model go into a family subfolder named like your library's own, so ComfyUI and comfy-mobile group them: `SD15`, `SD2`, `SDXL` (also Illustrious and NoobAI), `Pony`, `PonyV7`, `Krea2`, `Flux`, `Qwen`, `Wan`, `LTX`, `MOSS`, `ZImage`. This applies under `checkpoints`, `loras`, `diffusion_models` and `controlnet`, for example `loras/SDXL`.
+  - Hugging Face and ModelScope: the folder you pick on the card (default `loras`).
 - A finished download requests a rescan, so the card and library show it as on your PC.
 - With more than one PC connected, a **Download to** picker chooses which one.
 - Mature preview images are hidden unless **Show mature previews** is ticked. That setting is remembered per browser.
+
+### Converted files
+
+A file you converted yourself (fp8, GGUF, a different precision) has a different SHA-256 from anything on the site, so the hash lookup can't find it. Open it, search under **Find model online** (the search box drops conversion words like `fp8` or `Q4_K_M` from the name so the original turns up), and press **Link to my file** on the original. It is remembered by your file's hash as "linked by hand, hash differs", and update checks work. An update downloads the original format, so convert it again before deleting your old file.
 
 ## Unmatched files
 
