@@ -29,3 +29,8 @@ def test_inventory_upgrades_old_database(tmp_path, monkeypatch):
     assert client.post("/api/inventory", json={"device": "pc:comfyui", "models": [bad]}, headers=headers).status_code == 422
     [row] = client.get("/api/models", headers=headers).json()
     assert row["sha256"] == "a" * 64 and row["source"] is None and row["update"] is None
+
+def test_dashboard_files_are_revalidated():
+    client = TestClient(app)
+    assert client.get("/").headers["cache-control"] == "no-cache"
+    assert client.get("/static/app.js").headers["cache-control"] == "no-cache"

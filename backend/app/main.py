@@ -29,6 +29,14 @@ app = FastAPI(title="ModelHarbor", version="0.1.0", lifespan=lifespan)
 STATIC = Path(__file__).parent / "static"
 app.mount("/static", StaticFiles(directory=STATIC), name="static")
 
+@app.middleware("http")
+async def revalidate_dashboard(request, call_next):
+    response = await call_next(request)
+    # Browsers otherwise keep running an old dashboard after an image update; ETags keep this cheap.
+    if request.url.path == "/" or request.url.path.startswith("/static/"):
+        response.headers["Cache-Control"] = "no-cache"
+    return response
+
 @app.get("/", include_in_schema=False)
 def dashboard():
     return FileResponse(STATIC / "index.html")
