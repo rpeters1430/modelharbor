@@ -41,6 +41,8 @@ def queue_job(db, device, path, repository, remote_path):
     remote = _remote_file(repository, remote_path)
     if remote["sha256"] is None or remote["size_bytes"] is None:
         raise HTTPException(422, "Provider has no SHA-256 and size for this file")
+    if not device.endswith(":comfyui"):
+        raise HTTPException(422,"Only ComfyUI inventory files can be hashed")
     row = _inventory_row(db, device, path)
     if not row or row[2] == "ollama":
         raise HTTPException(404, "Local model not found")
