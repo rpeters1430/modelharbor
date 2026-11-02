@@ -39,6 +39,10 @@ def ensure_tables(db):
     if "weights_checked" not in columns:
         # Set once the weights-only hash was tried too, so files get that lookup as soon as it is known.
         db.execute("ALTER TABLE civitai_files ADD COLUMN weights_checked INTEGER")
+    if "lora_weight" not in columns:
+        # Median LoRA strength in the version's example images; weight_checked marks rows already looked at.
+        db.execute("ALTER TABLE civitai_files ADD COLUMN lora_weight REAL")
+        db.execute("ALTER TABLE civitai_files ADD COLUMN weight_checked INTEGER")
     # Files the user marked as not on any site (own LoRAs, merges), so they leave the Unmatched list.
     db.execute("CREATE TABLE IF NOT EXISTS match_ignored (sha256 TEXT PRIMARY KEY, ignored_at INTEGER NOT NULL)")
     db.execute("""CREATE TABLE IF NOT EXISTS ollama_remote (
@@ -73,6 +77,45 @@ def _by_hash(digest, get):
 def _autov3(item):
     return str((item.get("hashes") or {}).get("AutoV3") or "").lower()
 
+def _key(text):
+    return re.sub(r"[^a-z0-9]", "", str(text).lower())
+
+def example_weight(version):
+    """Median strength this LoRA was used at in the version's example images, or None.
+
+    Images credit resources either by version id (civitaiResources) or by the name the creator's UI used
+    (resources, or a <lora:name:weight> tag in the prompt), so names are matched loosely against the files."""
+    names = {_key(f.get("name", "").rsplit(".", 1)[0]) for f in version.get("files") or []}
+    names.add(_key((version.get("model") or {}).get("name", "")))
+    names.discard("")
+    found = []
+    for image in version.get("images") or []:
+        meta = image.get("meta") if isinstance(image, dict) else None
+        if not isinstance(meta, dict):
+            continue
+        weight = next((r.get("weight") for r in meta.get("civitaiResources") or []
+                       if isinstance(r, dict) and r.get("modelVersionId") == version.get("id")), None)
+        loras = [r for r in meta.get("resources") or [] if isinstance(r, dict) and r.get("type") == "lora"]
+        if weight is None:
+            weight = next((r.get("weight") for r in loras if _key(r.get("name")) in names), None)
+        if weight is None:
+            tags = re.findall(r"<lora:([^:>]+):([0-9.]+)>", str(meta.get("prompt") or ""))
+            weight = next((w for n, w in tags if _key(n) in names), None)
+        if weight is None and len(loras) == 1:
+            weight = loras[0].get("weight")  # the only LoRA in the image is this one
+        try:
+            weight = float(weight)
+        except (TypeError, ValueError):
+            continue
+        if 0 < weight <= 2:
+            found.append(weight)
+    if not found:
+        return None
+    found.sort()
+    middle = len(found) // 2
+    median = found[middle] if len(found) % 2 else (found[middle - 1] + found[middle]) / 2
+    return round(median * 20) / 20
+
 def civitai_lookup(db, sha, get=fetch, now=None, weights=None):
     now = now or int(time.time())
     data, verified = _by_hash(sha, get), None
@@ -93,14 +136,17 @@ def civitai_lookup(db, sha, get=fetch, now=None, weights=None):
     words = [str(w)[:200] for w in data.get("trainedWords") or [] if w][:20]
     # A version can hold several files (model, text encoder, VAE); `matched` is the one this is.
     db.execute("""INSERT INTO civitai_files (sha256,found,checked_at,model_id,version_id,model_name,
-        version_name,base_model,trained_words,published_at,nsfw,file_type,verified) VALUES (?,1,?,?,?,?,?,?,?,?,?,?,?)
+        version_name,base_model,trained_words,published_at,nsfw,file_type,verified,lora_weight,weight_checked)
+        VALUES (?,1,?,?,?,?,?,?,?,?,?,?,?,?,1)
         ON CONFLICT(sha256) DO UPDATE SET found=1,checked_at=excluded.checked_at,model_id=excluded.model_id,
         version_id=excluded.version_id,model_name=excluded.model_name,version_name=excluded.version_name,
         base_model=excluded.base_model,trained_words=excluded.trained_words,
-        published_at=excluded.published_at,nsfw=excluded.nsfw,file_type=excluded.file_type,verified=excluded.verified""",
+        published_at=excluded.published_at,nsfw=excluded.nsfw,file_type=excluded.file_type,verified=excluded.verified,
+        lora_weight=excluded.lora_weight,weight_checked=1""",
         (sha, now, data["modelId"], data.get("id"), str(model.get("name") or "")[:250],
          str(data.get("name") or "")[:250], str(data.get("baseModel") or "")[:100] or None,
-         json.dumps(words), data.get("publishedAt"), int(nsfw), str(matched.get("type") or "")[:50] or None, verified))
+         json.dumps(words), data.get("publishedAt"), int(nsfw), str(matched.get("type") or "")[:50] or None, verified,
+         example_weight(data)))
     return True
 
 # Civitai labels the main weights inconsistently between versions of one model.
@@ -220,11 +266,12 @@ def civitai_link(db, sha, model_id, version_id, file_id, get=fetch, now=None, we
     verified = None if _file_sha(file) == sha else 2 if weights and _autov3(file) == weights[:12] else 0
     words = [str(w)[:200] for w in version.get("trainedWords") or [] if w][:20]
     db.execute("""INSERT OR REPLACE INTO civitai_files (sha256,found,checked_at,model_id,version_id,model_name,
-        version_name,base_model,trained_words,published_at,nsfw,file_type,verified)
-        VALUES (?,1,?,?,?,?,?,?,?,?,?,?,?)""",
+        version_name,base_model,trained_words,published_at,nsfw,file_type,verified,lora_weight,weight_checked)
+        VALUES (?,1,?,?,?,?,?,?,?,?,?,?,?,?,1)""",
         (sha, now, int(model_id), version_id, str(data.get("name") or "")[:250], str(version.get("name") or "")[:250],
          str(version.get("baseModel") or "")[:100] or None, json.dumps(words), version.get("publishedAt"),
-         int(bool(data.get("nsfw"))), str(file.get("type") or "")[:50] or None, verified))
+         int(bool(data.get("nsfw"))), str(file.get("type") or "")[:50] or None, verified,
+         example_weight({**version, "model": {"name": data.get("name")}})))
     civitai_latest(db, model_id, get, now, data.get("modelVersions") or [])
     return {"verified": verified != 0, "same_weights": verified == 2}
 
@@ -291,6 +338,17 @@ def run_pass(db, get=fetch, list_files=None, now=None, pause=0.5, limit=300):
         civitai_lookup(db, sha, get, now, weights)
         db.commit()
         time.sleep(pause)
+    # LoRAs identified before example weights were recorded: read their version once.
+    backfill = db.execute("""SELECT DISTINCT c.sha256, c.version_id FROM civitai_files c JOIN models m ON m.sha256=c.sha256
+        WHERE c.found=1 AND c.weight_checked IS NULL AND c.version_id IS NOT NULL AND m.kind LIKE '%lora%'
+        LIMIT ?""", (limit,)).fetchall()
+    for sha, version_id in backfill:
+        body = next((b for b in (get(f"https://{h}/api/v1/model-versions/{int(version_id)}") for h in CIVITAI_HOSTS)
+                     if b is not None), None)
+        weight = example_weight(json.loads(body)) if body else None
+        db.execute("UPDATE civitai_files SET lora_weight=?,weight_checked=1 WHERE sha256=?", (weight, sha))
+        db.commit()
+        time.sleep(pause)
     model_ids = [r[0] for r in db.execute("""SELECT DISTINCT model_id FROM civitai_files WHERE found=1
         AND (latest_checked_at IS NULL OR latest_checked_at<?) LIMIT ?""", (now - DAY, limit))]
     for model_id in model_ids:
@@ -328,8 +386,8 @@ def _ollama_page(name):
 def annotate(db, records):
     """Attach source identity and update availability to inventory records."""
     civitai = {r[0]: r for r in db.execute("""SELECT sha256,model_id,version_id,model_name,version_name,
-        base_model,trained_words,published_at,nsfw,latest_version_id,latest_version_name,latest_published_at,verified
-        FROM civitai_files WHERE found=1""")}
+        base_model,trained_words,published_at,nsfw,latest_version_id,latest_version_name,latest_published_at,verified,
+        lora_weight FROM civitai_files WHERE found=1""")}
     checked = {r[0] for r in db.execute("SELECT sha256 FROM civitai_files")}
     ignored = {r[0] for r in db.execute("SELECT sha256 FROM match_ignored")}
     ollama = dict(db.execute("SELECT name,remote_digest FROM ollama_remote WHERE remote_digest IS NOT NULL"))
@@ -352,11 +410,11 @@ def annotate(db, records):
         row = civitai.get(sha)
         if row:
             (_, model_id, version_id, model_name, version_name, base, words, published,
-             nsfw, latest_id, latest_name, latest_published, verified) = row
+             nsfw, latest_id, latest_name, latest_published, verified, weight) = row
             record["source"] = {"provider": "civitai", "model_id": model_id, "version_id": version_id,
                 "model_name": model_name, "version_name": version_name, "base_model": base,
                 "trained_words": json.loads(words or "[]"), "nsfw": bool(nsfw), "verified": verified != 0,
-                "weights_match": verified == 2,
+                "weights_match": verified == 2, "weight": weight,
                 "url": civitai_url(model_id, version_id, bool(nsfw))}
             if latest_id and latest_id != version_id:
                 record["update"] = {"provider": "civitai", "version_id": latest_id, "version_name": latest_name,
