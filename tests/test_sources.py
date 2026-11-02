@@ -193,3 +193,35 @@ def test_check_judges_every_search_result(db):
     assert result["checked_files"] == 3
     assert [(m["name"], m["best"]) for m in result["models"]] == [("Mine", "same_weights"), ("Same size", "same_size"), ("Other", None)]
     assert result["models"][0]["files"][0]["file_id"] == 3 and result["models"][2]["sizes"] == [921600000]
+
+def test_example_weight_from_creator_images():
+    from backend.app.sources import example_weight
+    def image(meta):
+        return {"meta": meta}
+    version = {"id": 10, "model": {"name": "Perfect Eyes XL"}, "files": [{"name": "PerfectEyesXL.safetensors"}], "images": [
+        image({"resources": [{"name": "PerfectEyesXL", "type": "lora", "weight": 1}, {"name": "dreamshaper", "type": "model"}]}),
+        image({"resources": [{"name": "other", "type": "lora", "weight": 0.2}, {"name": "perfect_eyes_xl", "type": "lora", "weight": 0.7}]}),
+        image({"prompt": "eyes <lora:PerfectEyesXL:0.8>, <lora:other:0.3>"}),
+        image({"civitaiResources": [{"type": "lora", "weight": 0.9, "modelVersionId": 10}]}),
+        image({"resources": [{"name": "unrelated", "type": "lora", "weight": 0.1}, {"name": "x", "type": "lora", "weight": 0.5}]}),
+        image(None)]}
+    assert example_weight(version) == 0.85  # median of 0.7, 0.8, 0.9, 1.0
+    assert example_weight({"id": 1, "images": [image({"resources": [{"name": "?", "type": "lora", "weight": 0.6}]})]}) == 0.6
+    assert example_weight({"id": 1, "images": []}) is None
+
+def test_weight_recorded_on_lookup_and_backfilled(db):
+    add(db, "C:/m/loras/SDXL/cool.safetensors")
+    with_images = {**OLD, "images": [{"meta": {"resources": [{"name": "cool", "type": "lora", "weight": 0.6}]}}]}
+    run_pass(db, fake({f"https://civitai.com/api/v1/model-versions/by-hash/{SHA}": with_images,
+                       "https://civitai.com/api/v1/models/7": MODEL}, []), pause=0)
+    assert records(db)[0]["source"]["weight"] == 0.6
+    # A row stored before weights were recorded is read once from its version.
+    db.execute("UPDATE civitai_files SET lora_weight=NULL, weight_checked=NULL")
+    calls = []
+    get = fake({"https://civitai.com/api/v1/model-versions/10": {**with_images, "images": [
+        {"meta": {"prompt": "<lora:cool:0.75>"}}]}}, calls)
+    run_pass(db, get, now=10**10, pause=0)
+    assert records(db)[0]["source"]["weight"] == 0.75
+    calls.clear()
+    run_pass(db, get, now=10**10, pause=0)
+    assert not any("model-versions/10" in c for c in calls)
