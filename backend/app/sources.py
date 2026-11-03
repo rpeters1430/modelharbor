@@ -430,4 +430,23 @@ def annotate(db, records):
             record["source"] = {"provider": "huggingface", "model_name": repo, "version_name": remote_path, "base_model": base_m, "trained_words": tw_list, "url": url}
             if latest and latest != digest:
                 record["update"] = {"provider": "huggingface", "version_name": "File changed on main", "url": url}
+        local_tw = record.get("trigger_words")
+        if isinstance(local_tw, str) and local_tw.startswith("["):
+            try:
+                local_tw = json.loads(local_tw)
+            except Exception:
+                local_tw = [local_tw]
+        elif isinstance(local_tw, str) and local_tw:
+            local_tw = [local_tw]
+        if record["source"]:
+            if not record["source"].get("trained_words") and local_tw:
+                record["source"]["trained_words"] = local_tw
+            if not record["source"].get("base_model") and record.get("base_model_guess"):
+                record["source"]["base_model"] = record["base_model_guess"]
+        elif local_tw or record.get("base_model_guess"):
+            record["local_meta"] = {
+                "trained_words": local_tw or [],
+                "base_model": record.get("base_model_guess"),
+                "title": record.get("meta_title")
+            }
     return records

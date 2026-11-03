@@ -15,6 +15,7 @@ from .providers import search as provider_search
 from urllib.parse import quote
 from .hf_repository import list_model_files, validate_repo
 from .hf_inspect import inspect_huggingface
+from .suggest_matches import suggest_matches, link_huggingface
 from . import browse, deletes, downloads, fit
 from .sources import _civitai_model, _file_sha, fetch
 from .sources import annotate, civitai_check, civitai_link, civitai_unlink, civitai_versions, ensure_tables as ensure_source_tables, start_worker
@@ -61,6 +62,9 @@ class ModelRecord(BaseModel):
     sha256: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
     # SHA-256 of a safetensors file's tensor data only (Civitai AutoV3), unchanged by metadata edits.
     weights_sha256: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
+    trigger_words: list[str] | str | None = None
+    base_model_guess: str | None = Field(default=None, max_length=100)
+    meta_title: str | None = Field(default=None, max_length=250)
 
 class Hardware(BaseModel):
     gpu: str | None = Field(default=None, max_length=120)
@@ -86,7 +90,7 @@ def connect():
         kind TEXT NOT NULL, size_bytes INTEGER NOT NULL, modified_ns INTEGER NOT NULL,
         PRIMARY KEY (device, path))""")
     columns = [row[1] for row in db.execute("PRAGMA table_info(models)")]
-    for column in ("file_id", "sha256", "weights_sha256"):
+    for column in ("file_id", "sha256", "weights_sha256", "trigger_words", "base_model_guess", "meta_title"):
         if column not in columns:
             db.execute(f"ALTER TABLE models ADD COLUMN {column} TEXT")
     db.execute("""CREATE TABLE IF NOT EXISTS agent_heartbeats
@@ -113,7 +117,7 @@ def health():
 def models(x_modelharbor_token: str | None = Header(default=None)):
     authorize(x_modelharbor_token)
     with closing(connect()) as db:
-        fields = ("device","path","name","kind","size_bytes","modified_ns","file_id","sha256")
+        fields = ("device","path","name","kind","size_bytes","modified_ns","file_id","sha256","trigger_words","base_model_guess","meta_title")
         rows = db.execute(f"SELECT {','.join(fields)} FROM models ORDER BY device,kind,name").fetchall()
         return enrich(annotate(db, [dict(zip(fields, row)) for row in rows]))
 
@@ -129,9 +133,9 @@ def inventory(payload: Inventory, x_modelharbor_token: str | None = Header(defau
     with closing(connect()) as db:
         with db:
             db.execute("DELETE FROM models WHERE device=?", (payload.device,))
-            db.executemany("""INSERT INTO models (device,path,name,kind,size_bytes,modified_ns,file_id,sha256,weights_sha256)
-                VALUES (?,?,?,?,?,?,?,?,?)""",
-                [(m.device,m.path,m.name,m.kind,m.size_bytes,m.modified_ns,m.file_id,m.sha256,m.weights_sha256) for m in payload.models])
+            db.executemany("""INSERT INTO models (device,path,name,kind,size_bytes,modified_ns,file_id,sha256,weights_sha256,trigger_words,base_model_guess,meta_title)
+                VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
+                [(m.device,m.path,m.name,m.kind,m.size_bytes,m.modified_ns,m.file_id,m.sha256,m.weights_sha256,json.dumps(m.trigger_words) if isinstance(m.trigger_words, list) else m.trigger_words,m.base_model_guess,m.meta_title) for m in payload.models])
             db.execute("""UPDATE selected_matches SET local_size=(SELECT size_bytes FROM models WHERE models.device=selected_matches.device AND models.path=selected_matches.path), local_modified_ns=(SELECT modified_ns FROM models WHERE models.device=selected_matches.device AND models.path=selected_matches.path) WHERE EXISTS (SELECT 1 FROM models WHERE models.device=selected_matches.device AND models.path=selected_matches.path)""")
     return {"device": payload.device, "count": len(payload.models)}
 
@@ -421,6 +425,25 @@ def unlink_civitai(payload: CivitaiLink, x_modelharbor_token: str | None = Heade
         with db:
             civitai_unlink(db, _local_sha(db, payload.device, payload.path))
     return {"ok": True}
+
+class HuggingFaceLink(BaseModel):
+    device: str = Field(min_length=1, max_length=100)
+    path: str = Field(min_length=1, max_length=4096)
+    repository: str = Field(min_length=3, max_length=193)
+    remote_path: str = Field(min_length=1, max_length=1024)
+
+@app.post("/api/huggingface/link")
+def link_hf_model(payload: HuggingFaceLink, x_modelharbor_token: str | None = Header(default=None)):
+    authorize(x_modelharbor_token)
+    with closing(connect()) as db:
+        with db:
+            return link_huggingface(db, payload.device, payload.path, payload.repository, payload.remote_path)
+
+@app.get("/api/models/suggest-match")
+def suggest_model_match(device: str, path: str, x_modelharbor_token: str | None = Header(default=None)):
+    authorize(x_modelharbor_token)
+    with closing(connect()) as db:
+        return suggest_matches(db, device, path)
 
 class CleanupResult(BaseModel):
     agent: str = Field(min_length=1, max_length=100)

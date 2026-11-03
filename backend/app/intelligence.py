@@ -10,6 +10,8 @@ PATTERNS = (
     (r"flux|flux1", "FLUX"), (r"illustrious|noobai", "Illustrious"),
     (r"pony", "Pony"), (r"sdxl|juggernautxl|realvisxl", "SDXL"),
     (r"sd15|sd ?1[._-]?5|stable.?diffusion.?1[._-]?5", "SD 1.5"),
+    (r"sd3|sd ?3(\.5)?|stable.?diffusion.?3", "SD 3"),
+    (r"moss", "MOSS"), (r"hunyuan", "Hunyuan"), (r"ltx", "LTX"),
 )
 
 def _label(text):
@@ -23,7 +25,7 @@ def family(record):
     kind = (record.get("kind") or "").lower()
     if kind.startswith("ollama/"):
         return kind.split("/", 1)[1] or "unknown", False
-    base = (record.get("source") or {}).get("base_model") or ""
+    base = (record.get("source") or {}).get("base_model") or (record.get("local_meta") or {}).get("base_model") or record.get("base_model_guess") or ""
     if base:
         return _label(base) or base, True
     for text in (*re.split(r"[\\/]", record.get("path") or "")[-3:-1], record.get("name") or ""):

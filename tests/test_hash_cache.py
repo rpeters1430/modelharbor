@@ -60,3 +60,21 @@ def test_old_cache_entries_get_the_weights_hash_once(tmp_path):
     fill_hashes(rows, cache, hasher)
     fill_hashes([record("m.safetensors"), record("m.ckpt")], cache, hasher)
     assert calls == ["m.safetensors"] and rows[0]["weights_sha256"] == "c" * 64 and "weights_sha256" not in rows[1]
+
+def test_extract_safetensors_metadata(tmp_path):
+    from agent.hash_cache import extract_safetensors_metadata, parse_embedded_meta
+    header = json.dumps({
+        "__metadata__": {
+            "modelspec.trigger_phrase": "moss style",
+            "ss_base_model_version": "sd_xl_base_1.0",
+            "modelspec.title": "Moss Concept"
+        }
+    }).encode("utf-8")
+    file_path = tmp_path / "model.safetensors"
+    file_path.write_bytes(struct.pack("<Q", len(header)) + header + b"fake_weights")
+    meta = extract_safetensors_metadata(file_path)
+    assert meta["modelspec.trigger_phrase"] == "moss style"
+    triggers, base, title = parse_embedded_meta(meta)
+    assert triggers == ["moss style"]
+    assert base == "sd_xl_base_1.0"
+    assert title == "Moss Concept"

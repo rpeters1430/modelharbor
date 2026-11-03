@@ -91,11 +91,22 @@ When a version or repository offers the same model in several precisions (fp16, 
 
 Open a ComfyUI file and press **Delete from <PC>…**. The confirmation lists every path. Copies that are hard links of the same file (a family folder next to the loose file) are deleted together, because deleting only one would free no space. The agent re-checks the SHA-256 first and deletes nothing if the file changed. Preview images and `.metadata.json`/`.civitai.info` files with the same name go too. Set `"deletes_enabled": false` in `agent.json` to turn this off on a PC.
 
-## Unmatched files
+## Unmatched files and auto-matching
 
 The overview's **N to match →** (under "files identified") opens the library filtered to **Unmatched only**: hashed ComfyUI files no site has identified yet. For each one, open it and either:
 
 - search under **Find model online** and use **Link to my file** (Civitai) or **Browse Hugging Face collection** to match it, or
 - press **Mark as local only** for your own LoRAs and merges that are on no site. They are tagged "Local only" and leave the list; **Show in Unmatched again** undoes it.
 
+- **Embedded safetensors metadata:** During scans, the Windows agent inspects safetensors headers for `modelspec.trigger_phrase`, `ss_trained_words`, `ss_tag_frequency`, base model version hints, and titles without loading heavy weights. Trigger words and base models are automatically populated in the model details even before online matching.
+- **Reverse match suggestions:** When opening any unmatched model, ModelHarbor automatically searches Civitai and Hugging Face for matching candidates. High-confidence candidates (exact hash matches, same-weight conversions, or name matches) appear under **⚡ Suggested online matches** with a 1-click **Link to this model** button for Civitai or Hugging Face.
+- **Auto-match wizard button:** In the Library view when filtered to unmatched models, **⚡ Auto-match candidates** lets you step through remaining unmatched files quickly.
+
 Links and local-only marks are stored by the file's SHA-256, so they survive rescans, renames and moves.
+
+## LoRA prompt tools, companion warnings & download tray
+
+- **1-Click LoRA Prompt & Trigger Copy:** Model detail dialogs for LoRAs include quick copy buttons for `<lora:name:1.0>`, `<lora:name:1.0>, triggers...`, and full trigger phrases. In addition, individual trigger words appear as clickable chips that copy each word on click with instant visual feedback.
+- **Companion / Prerequisite Model Warnings:** When inspecting or viewing a LoRA, LyCORIS, or ControlNet that requires a specific base model family (such as `MOSS`, `Flux`, `Wan`, `SDXL`), ModelHarbor checks your installed checkpoints and diffusion models. If you don't have the base model installed, an alert appears with a 1-click button to jump directly to Browse for compatible checkpoints.
+- **Compatible with Installed Models Filter:** In the Browse tab, ticking **Compatible with installed base models** filters Civitai and Hugging Face listings to show only models matching the base architectures you currently have on your PC.
+- **Active Download Queue Tray:** A docked download tray at the bottom right displays real-time progress for active, queued, and completed downloads with progress bars and verified destination paths.

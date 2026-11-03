@@ -50,6 +50,73 @@ def file_hashes(path):
                 weights.update(memoryview(chunk)[cut:])
     return full.hexdigest(), weights and weights.hexdigest()
 
+def extract_safetensors_metadata(path):
+    """Safely read embedded __metadata__ from a safetensors file without reading tensor weights."""
+    if not str(path).lower().endswith(".safetensors"):
+        return {}
+    try:
+        with open(path, "rb") as stream:
+            head = stream.read(8)
+            if len(head) < 8:
+                return {}
+            size = struct.unpack("<Q", head)[0]
+            if not (2 < size < 15_000_000):
+                return {}
+            header_json = stream.read(size).decode("utf-8", errors="ignore")
+            meta = json.loads(header_json).get("__metadata__", {})
+            return meta if isinstance(meta, dict) else {}
+    except Exception:
+        return {}
+
+def parse_embedded_meta(meta):
+    """Parse trigger words, base model hint, and title from safetensors __metadata__."""
+    if not meta:
+        return None, None, None
+    trigger_words = []
+    if meta.get("modelspec.trigger_phrase"):
+        tp = str(meta["modelspec.trigger_phrase"]).strip()
+        if tp:
+            trigger_words.append(tp)
+    tw_raw = meta.get("ss_trained_words")
+    if tw_raw:
+        try:
+            parsed = json.loads(tw_raw) if isinstance(tw_raw, str) else tw_raw
+            if isinstance(parsed, list):
+                for w in parsed:
+                    w = str(w).strip()
+                    if w and w not in trigger_words:
+                        trigger_words.append(w)
+        except Exception:
+            pass
+    tag_freq = meta.get("ss_tag_frequency")
+    if tag_freq and not trigger_words:
+        try:
+            freq_dict = json.loads(tag_freq) if isinstance(tag_freq, str) else tag_freq
+            if isinstance(freq_dict, dict):
+                tags = []
+                for subdict in freq_dict.values():
+                    if isinstance(subdict, dict):
+                        for tag, count in sorted(subdict.items(), key=lambda x: x[1], reverse=True)[:5]:
+                            tag = str(tag).strip()
+                            if tag and tag not in tags and not tag.isdigit():
+                                tags.append(tag)
+                trigger_words.extend(tags[:4])
+        except Exception:
+            pass
+
+    base_model = None
+    for k in ("modelspec.architecture", "ss_base_model_version", "ss_sd_model_name", "ss_v2"):
+        val = meta.get(k)
+        if val:
+            base_model = str(val)[:100]
+            break
+
+    title = meta.get("modelspec.title") or meta.get("ss_output_name")
+    if title:
+        title = str(title)[:250]
+
+    return (trigger_words or None), base_model, title
+
 def fill_hashes(records, cache_path, hasher=file_hashes, progress=None):
     """Add "sha256" (and "weights_sha256" for safetensors) to each record. Hard links are hashed once.
 
@@ -79,7 +146,9 @@ def fill_hashes(records, cache_path, hasher=file_hashes, progress=None):
             done_bytes += record["size_bytes"]
             try:
                 result = hasher(record["path"])
-                entry = stamp(record) + list(result if isinstance(result, tuple) else (result, None))
+                meta = extract_safetensors_metadata(record["path"])
+                tw, base_m, title = parse_embedded_meta(meta)
+                entry = stamp(record) + list(result if isinstance(result, tuple) else (result, None)) + [tw, base_m, title]
             except OSError as exc:
                 LOG.warning("Could not hash %s: %s", record["path"], exc)
                 continue
@@ -91,6 +160,12 @@ def fill_hashes(records, cache_path, hasher=file_hashes, progress=None):
         record["sha256"] = entry[2]
         if len(entry) > 3 and entry[3]:
             record["weights_sha256"] = entry[3]
+        if len(entry) > 4 and entry[4]:
+            record["trigger_words"] = entry[4]
+        if len(entry) > 5 and entry[5]:
+            record["base_model_guess"] = entry[5]
+        if len(entry) > 6 and entry[6]:
+            record["meta_title"] = entry[6]
     if hashed:
         LOG.info("Hashed %d new or changed model files", hashed)
     save(cache_path, fresh)  # drops entries for files that no longer exist
