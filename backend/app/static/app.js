@@ -318,7 +318,19 @@ async function renderSuggestedMatches(m){
   const data=await apiRequest("/api/models/suggest-match?"+new URLSearchParams({device:m.device,path:m.path}));
   box.replaceChildren();
   const cv=data.civitai||[],hf=data.huggingface||[];
-  if(!cv.length&&!hf.length){box.hidden=true;return;}
+  if(!cv.length&&!hf.length){
+   box.replaceChildren(text("p","No automatic online match found for this file. You can search manually below, or mark it as local only.","muted"));
+   const localBtn=text("button","Mark as local only (not on any site)","repo-action");localBtn.type="button";
+   localBtn.onclick=async()=>{
+    localBtn.disabled=true;
+    try{
+     await apiRequest("/api/match-ignore","POST",{device:m.device,path:m.path,ignored:true});
+     await refresh();showNotice("Marked local only: "+m.name);reopen();
+    }catch(err){localBtn.disabled=false;}
+   };
+   box.append(localBtn);
+   return;
+  }
   const h4=document.createElement("h4");h4.textContent="⚡ Suggested online matches ("+(cv.length+hf.length)+")";box.append(h4);
   cv.forEach(c=>{
    const card=text("div","","suggest-match-card"),info=text("div","","suggest-match-info");
@@ -386,7 +398,15 @@ function details(m){
  }
  if(m.source)linkRow(dl,"Source page","Open on "+providerName(m.source.provider)+" ↗",m.source.url);
  if(m.update)linkRow(dl,"New version","Open "+m.update.version_name+" ↗",m.update.url);
- $("provider-query").value=m.name.replace(/\.(safetensors|ckpt|gguf|pt|pth|bin)$/i,"").replace(/[_-]+/g," ").replace(CONVERSION_WORDS,"").replace(/\s+/g," ").trim().slice(0,120);
+ const cleanName = m.name.replace(/\.(safetensors|ckpt|gguf|pt|pth|bin|onnx)$/i,"").replace(/[_-]+/g," ").replace(CONVERSION_WORDS,"").replace(/\s+/g," ").trim();
+ let prefill = cleanName;
+ if(!prefill || ["model", "weights", "diffusion", "unet", "clip", "tagger"].includes(prefill.toLowerCase())){
+  const parts = m.path.replace(/\\/g,"/").split("/");
+  if(parts.length >= 2){
+   prefill = parts[parts.length - 2].replace(/\.(safetensors|ckpt|gguf|pt|pth|bin|onnx)$/i,"").replace(/[_-]+/g," ").replace(CONVERSION_WORDS,"").replace(/\s+/g," ").trim();
+  }
+ }
+ $("provider-query").value = (prefill || m.name).slice(0, 120);
  $("provider-results").replaceChildren();$("repo-files").replaceChildren();$("repo-status").textContent="";$("repo-filter").value="";
  renderDownload(m);renderLinkTools(m);renderDelete(m);
  if(!$("detail-dialog").open)$("detail-dialog").showModal();
@@ -638,11 +658,106 @@ $("refresh").onclick=refresh;$("settings").onclick=openAuth;
 $("auth-form").addEventListener("submit",e=>{e.preventDefault();token=$("token").value.trim();saveToken(token,$("remember").checked);$("auth-dialog").close();refresh();});
 $("cancel-auth").onclick=()=>$("auth-dialog").close();
 $("close-detail").onclick=$("detail-done").onclick=()=>$("detail-dialog").close();
-$("auto-match-btn").addEventListener("click",()=>{
- const next=models.find(isUnmatched);
- if(next)details(next);
- else showNotice("All models are matched or marked local only!");
-});
+$("close-automatch").onclick=$("automatch-done").onclick=()=>{ $("automatch-dialog").close(); refresh(); };
+$("auto-match-btn").addEventListener("click",openAutoMatchWizard);
+async function openAutoMatchWizard(){
+ const unmatchedModels=models.filter(isUnmatched);
+ if(!unmatchedModels.length){showNotice("All models are already matched or marked local only!");return;}
+ $("automatch-dialog").showModal();
+ const status=$("automatch-status"),content=$("automatch-content");
+ content.replaceChildren();
+ status.textContent="Scanning "+unmatchedModels.length+" unmatched model"+(unmatchedModels.length===1?"":"s")+" against Civitai & Hugging Face…";
+ const matched=[],noMatch=[];
+ for(let i=0;i<unmatchedModels.length;i++){
+  const m=unmatchedModels[i];
+  status.textContent="Checking "+(i+1)+" of "+unmatchedModels.length+": "+m.name+"…";
+  try{
+   const res=await apiRequest("/api/models/suggest-match?"+new URLSearchParams({device:m.device,path:m.path}));
+   const cv=res.civitai||[],hf=res.huggingface||[];
+   if(cv.length||hf.length){matched.push({model:m,civitai:cv,huggingface:hf});}
+   else{noMatch.push(m);}
+  }catch(_){noMatch.push(m);}
+ }
+ status.textContent="Scan complete: "+matched.length+" match candidate"+(matched.length===1?"":"s")+" found · "+noMatch.length+" local utility/untracked file"+(noMatch.length===1?"":"s")+".";
+ renderAutoMatchContent(matched,noMatch);
+}
+function renderAutoMatchContent(matched,noMatch){
+ const content=$("automatch-content");content.replaceChildren();
+ if(matched.length){
+  const sec=text("div","","automatch-section"),bar=text("div","","automatch-actions-bar");
+  bar.append(text("strong","Found online match candidates ("+matched.length+")"));
+  const hasExact=matched.some(item=>(item.civitai&&item.civitai.some(c=>c.verdict==="exact"||c.match_type==="exact"))||(item.huggingface&&item.huggingface.some(h=>h.verdict==="exact"||h.match_type==="exact")));
+  if(hasExact){
+   const linkAllBtn=text("button","⚡ Link all exact matches","primary");linkAllBtn.type="button";
+   linkAllBtn.onclick=async()=>{
+    linkAllBtn.disabled=true;
+    for(const item of matched){
+     const m=item.model;
+     const exactCv=item.civitai&&item.civitai.find(c=>c.verdict==="exact"||c.match_type==="exact");
+     const exactHf=item.huggingface&&item.huggingface.find(h=>h.verdict==="exact"||h.match_type==="exact");
+     try{
+      if(exactCv){await apiRequest("/api/civitai/link","POST",{device:m.device,path:m.path,model_id:exactCv.model_id,version_id:exactCv.version_id,file_id:exactCv.file_id});}
+      else if(exactHf){await apiRequest("/api/huggingface/link","POST",{device:m.device,path:m.path,repository:exactHf.repository,remote_path:exactHf.remote_path,sha256:exactHf.sha256,base_model:exactHf.base_model,trigger_words:exactHf.trigger_words});}
+     }catch(_){}
+    }
+    await refresh();openAutoMatchWizard();
+   };
+   bar.append(linkAllBtn);
+  }
+  sec.append(bar);
+  matched.forEach(item=>{
+   const m=item.model,row=text("div","","automatch-card"),left=text("div","","automatch-left");
+   left.append(text("strong",m.name),text("small",m.kind+" · "+fmt(m.size_bytes)+" · "+m.path,"model-sub"));
+   const topCandidate=(item.civitai&&item.civitai[0])||(item.huggingface&&item.huggingface[0]);
+   if(topCandidate){
+    const prov=topCandidate.provider==="civitai"?"Civitai":"Hugging Face";
+    const candTitle=topCandidate.model_name||topCandidate.name||topCandidate.repository;
+    const vName=topCandidate.version_name?" ("+topCandidate.version_name+")":topCandidate.remote_path?" / "+topCandidate.remote_path:"";
+    const badge=(topCandidate.verdict==="exact"||topCandidate.match_type==="exact")?"✓ Exact hash match":(topCandidate.verdict==="same_weights"||topCandidate.match_type==="same_weights")?"✓ Same model weights":"Name match";
+    left.append(text("span","Candidate: "+prov+" · "+candTitle+vName+" ("+badge+")","match-possible"));
+   }
+   const actions=text("div","","suggest-match-actions"),linkBtn=text("button","Link","primary");linkBtn.type="button";
+   linkBtn.onclick=async()=>{
+    linkBtn.disabled=true;
+    try{
+     if(topCandidate.provider==="civitai"){
+      await apiRequest("/api/civitai/link","POST",{device:m.device,path:m.path,model_id:topCandidate.model_id,version_id:topCandidate.version_id,file_id:topCandidate.file_id});
+     }else{
+      await apiRequest("/api/huggingface/link","POST",{device:m.device,path:m.path,repository:topCandidate.repository,remote_path:topCandidate.remote_path,sha256:topCandidate.sha256,base_model:topCandidate.base_model,trigger_words:topCandidate.trigger_words});
+     }
+     linkBtn.textContent="✓ Linked";linkBtn.classList.remove("primary");linkBtn.classList.add("repo-action");
+    }catch(err){linkBtn.textContent="Error";linkBtn.disabled=false;}
+   };
+   actions.append(linkBtn);row.append(left,actions);sec.append(row);
+  });
+  content.append(sec);
+ }
+ if(noMatch.length){
+  const sec=text("div","","automatch-section"),bar=text("div","","automatch-actions-bar");
+  bar.append(text("strong","Local utilities or untracked models ("+noMatch.length+")"));
+  const markAllBtn=text("button","Mark all "+noMatch.length+" as local only","repo-action");markAllBtn.type="button";
+  markAllBtn.onclick=async()=>{
+   markAllBtn.disabled=true;
+   for(const m of noMatch){
+    try{await apiRequest("/api/match-ignore","POST",{device:m.device,path:m.path,ignored:true});}catch(_){}
+   }
+   await refresh();openAutoMatchWizard();
+  };
+  bar.append(markAllBtn);sec.append(bar);
+  noMatch.forEach(m=>{
+   const row=text("div","","automatch-nomatch-row"),info=text("div","","suggest-match-info");
+   info.append(text("strong",m.name),text("small",m.kind+" · "+m.path,"model-sub"));
+   const btn=text("button","Mark local only","repo-action");btn.type="button";
+   btn.onclick=async()=>{
+    btn.disabled=true;
+    try{await apiRequest("/api/match-ignore","POST",{device:m.device,path:m.path,ignored:true});btn.textContent="✓ Local only";}
+    catch(_){btn.disabled=false;}
+   };
+   row.append(info,btn);sec.append(row);
+  });
+  content.append(sec);
+ }
+}
 let allDownloads=[];
 function renderDownloadTray(){
  const tray=$("download-tray");if(!tray)return;

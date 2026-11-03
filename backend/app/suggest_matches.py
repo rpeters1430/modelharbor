@@ -12,14 +12,28 @@ SUFFIX_CLEAN = re.compile(
     r"[-_](?:v\d+(?:\.\d+)?|fp8|bf16|fp16|fp32|pruned|comfyui|comfy|diffusers)(?=[-_]|$)",
     re.IGNORECASE,
 )
+GENERIC_STEMS = {
+    "model", "weights", "diffusion_pytorch_model", "unet", "text_encoder",
+    "vae", "clip", "tagger", "booru", "onnx", "model_fp16", "model_bf16",
+}
 
-def clean_search_query(filename: str, meta_title: str | None = None) -> str:
+def clean_search_query(filename: str, meta_title: str | None = None, full_path: str | None = None) -> str:
     """Derive a clean search query from a model file name or embedded metadata title."""
     if meta_title and len(meta_title.strip()) >= 3:
         return meta_title.strip()[:100]
     base = EXT_CLEAN.sub("", filename or "")
     base = SUFFIX_CLEAN.sub("", base)
     cleaned = re.sub(r"[-_.]+", " ", base).strip()
+    cleaned_lower = cleaned.lower()
+    if (len(cleaned) < 3 or cleaned_lower in GENERIC_STEMS) and full_path:
+        parts = full_path.replace("\\", "/").rstrip("/").split("/")
+        if len(parts) >= 2:
+            parent = parts[-2]
+            parent_base = EXT_CLEAN.sub("", parent)
+            parent_base = SUFFIX_CLEAN.sub("", parent_base)
+            parent_cleaned = re.sub(r"[-_.]+", " ", parent_base).strip()
+            if len(parent_cleaned) >= 3 and parent_cleaned.lower() not in GENERIC_STEMS:
+                return parent_cleaned[:100]
     return cleaned[:100] if len(cleaned) >= 3 else filename[:100]
 
 def suggest_matches(db, device: str, path: str, get=fetch) -> dict:
@@ -32,7 +46,7 @@ def suggest_matches(db, device: str, path: str, get=fetch) -> dict:
         raise HTTPException(404, "Model not found in inventory")
 
     name, size, sha, weights, title = row
-    query = clean_search_query(name, title)
+    query = clean_search_query(name, title, full_path=path)
 
     # 1. Civitai suggestions
     civitai_results = []
@@ -44,12 +58,14 @@ def suggest_matches(db, device: str, path: str, get=fetch) -> dict:
                     civitai_results.append({
                         "provider": "civitai",
                         "model_id": m["id"],
+                        "name": m["name"],
                         "model_name": m["name"],
                         "version_id": f.get("version_id"),
                         "version_name": f.get("version_name"),
                         "file_id": f.get("file_id"),
                         "file_name": f.get("file_name"),
                         "verdict": f.get("verdict"),
+                        "match_type": f.get("verdict"),
                         "base_model": f.get("base_model"),
                         "url": m["url"],
                     })
@@ -92,11 +108,14 @@ def suggest_matches(db, device: str, path: str, get=fetch) -> dict:
                     hf_results.append({
                         "provider": "huggingface",
                         "repository": repo_id,
+                        "name": repo_id,
+                        "model_name": repo_id,
                         "remote_path": f["path"],
                         "file_name": f["name"],
                         "size_bytes": f.get("size_bytes"),
                         "sha256": f.get("sha256"),
                         "verdict": verdict,
+                        "match_type": verdict,
                         "url": f.get("url"),
                     })
         except Exception:

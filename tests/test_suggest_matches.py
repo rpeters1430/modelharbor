@@ -15,6 +15,7 @@ def test_clean_search_query():
     assert clean_search_query("my-model-pruned-bf16.safetensors") == "my model"
     assert clean_search_query("Moss-image-lora-comfyui.safetensors") == "Moss image lora"
     assert clean_search_query("short.safetensors", meta_title="Real Cyberpunk") == "Real Cyberpunk"
+    assert clean_search_query("model_fp16.onnx", full_path="C:/models/booru_tagger/pixai-tagger-v1.0-fp16/model_fp16.onnx") == "pixai tagger"
 
 def test_suggest_matches_civitai_and_hf(tmp_path):
     connection = sqlite3.connect(":memory:")
