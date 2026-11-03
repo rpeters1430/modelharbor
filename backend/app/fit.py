@@ -15,6 +15,23 @@ VARIANT = re.compile(r"(?<![a-z0-9])(fp8|fp16|fp32|bf16|f16|f32|fp4|nvfp4|mxfp4|
                      r"mxfp8|fp8mixed|mixed|convrot|w4a8|w8a8|w4a16|pruned|full|emaonly|q[2-8](?:_k)?(?:_[sml])?|q8_0|q[45]_[01])(?![a-z0-9])", re.I)
 
 
+# Names that already say 8-bit or smaller: a user's own conversion, or nothing left to convert.
+COMPACT = re.compile(r"(?<![a-z0-9])(fp8\w*|e4m3fn|e5m2|scaled|int[48]\w*|convrot|nf4|fp4|nvfp4|mxfp[48]|w4a\d+|w8a8|"
+                     r"q[2-8](?:_k)?(?:_[sml])?|q8_0|q[45]_[01])(?![a-z0-9])", re.I)
+
+
+def name_stem(name):
+    """File name without extension and precision words: "Model_v40_int8_convrot.safetensors" -> "model_v40"."""
+    return re.sub(r"[\s._-]+", "_", VARIANT.sub("", name.rsplit(".", 1)[0].lower())).strip("_")
+
+
+def conversion_of(local, remote):
+    """Whether the local file looks like the user's own 8-bit conversion of the remote one. Civitai glues the
+    version name onto file names ("x3" -> "x3BF16INT8NVFP4"), so the local name only has to start the remote's."""
+    stem = name_stem(local)
+    return bool(COMPACT.search(local)) and len(stem) >= 8 and name_stem(remote).startswith(stem)
+
+
 def _gb(n):
     return f"{n / GB:.0f} GB"
 

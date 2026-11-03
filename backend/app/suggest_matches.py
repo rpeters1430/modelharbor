@@ -5,6 +5,7 @@ import time
 from urllib.parse import quote, urlencode
 from fastapi import HTTPException
 from .hf_repository import list_model_files, validate_repo
+from .fit import COMPACT, VARIANT
 from .sources import civitai_check, fetch
 
 EXT_CLEAN = re.compile(r"\.(?:safetensors|ckpt|pt|pth|bin|gguf|onnx)$", re.IGNORECASE)
@@ -22,8 +23,10 @@ def clean_search_query(filename: str, meta_title: str | None = None, full_path: 
     if meta_title and len(meta_title.strip()) >= 3:
         return meta_title.strip()[:100]
     base = EXT_CLEAN.sub("", filename or "")
-    base = SUFFIX_CLEAN.sub("", base)
-    cleaned = re.sub(r"[-_.]+", " ", base).strip()
+    base = SUFFIX_CLEAN.sub("", VARIANT.sub("", base))  # int8_convrot, fp8_scaled... name a precision, not a model
+    # Civitai file names are camel-cased model names ("krea2Sickrealism"); its search wants the words.
+    base = re.sub(r"(?<=[a-z])(?=[A-Z])|(?<=[A-Z])(?=[A-Z][a-z])", " ", base)
+    cleaned = re.sub(r"[-_.\s]+", " ", base).strip()
     cleaned_lower = cleaned.lower()
     if (len(cleaned) < 3 or cleaned_lower in GENERIC_STEMS) and full_path:
         parts = full_path.replace("\\", "/").rstrip("/").split("/")
@@ -52,7 +55,10 @@ def suggest_matches(db, device: str, path: str, get=fetch) -> dict:
     civitai_results = []
     if len(query) >= 3:
         try:
-            cv = civitai_check(query, sha, weights, size, get=get)
+            cv = civitai_check(query, sha, weights, size, get=get, name=name)
+            words = query.split()
+            if not any(m.get("best") for m in cv.get("models") or []) and len(words) > 2:
+                cv = civitai_check(" ".join(words[:2]), sha, weights, size, get=get, name=name)
             for m in cv.get("models") or []:
                 for f in m.get("files") or []:
                     civitai_results.append({
@@ -121,8 +127,14 @@ def suggest_matches(db, device: str, path: str, get=fetch) -> dict:
         except Exception:
             pass
 
-    VERDICT_ORDER = {"exact": 0, "same_weights": 1, "same_name": 2, "same_size": 3}
-    civitai_results.sort(key=lambda x: VERDICT_ORDER.get(x["verdict"], 9))
+    VERDICT_ORDER = {"exact": 0, "same_weights": 1, "converted": 2, "same_name": 3, "same_size": 4}
+    # A version's int4, GGUF and bf16 files all look like the original of a conversion: offer the version once,
+    # linked to its full-precision file.
+    civitai_results.sort(key=lambda x: (VERDICT_ORDER.get(x["verdict"], 9), bool(COMPACT.search(x["file_name"] or "")),
+                                       not (x["file_name"] or "").endswith(".safetensors")))
+    seen = set()
+    civitai_results = [x for x in civitai_results if x["verdict"] != "converted"
+                       or (x["version_id"] not in seen and not seen.add(x["version_id"]))]
     hf_results.sort(key=lambda x: VERDICT_ORDER.get(x["verdict"], 9))
 
     return {

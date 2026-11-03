@@ -21,6 +21,17 @@ The dashboard's **Devices** tab shows each PC's live state: scanning folders, ha
 
 **Scan now** asks that background task to start a sync. It checks for requests about every 20 seconds, so the scan starts shortly after. If the task isn't running, the request waits until it is. A scheduled sync and a requested one never run at the same time: whichever starts second is skipped.
 
+## Converting models that do not fit the GPU
+
+The dashboard's **Convert** tab lists 16- and 32-bit diffusion models and text encoders that are bigger than the PC's VRAM (less 2 GB for ComfyUI's working memory). **Convert** asks the background task to write a copy in ComfyUI's `int8_convrot` format next to the original, named `<name>_int8_convrot.safetensors` (a `bf16`/`fp16`/`fp32` in the name is replaced). It is about half the size and loads in ComfyUI like any model.
+
+- The conversion runs `agent/convert_int8.py` with **ComfyUI's own Python**, which already has torch, safetensors and ComfyUI's quantizer (`comfy_kitchen`). The agent finds ComfyUI Desktop's and the portable build's Python on its own; otherwise set `"convert_python": "C:\path\to\ComfyUI\.venv\Scripts\python.exe"` in `agent.json`. `"converts_enabled": false` turns conversions off.
+- Only linear weights inside the transformer blocks are quantized; embeddings, heads and norms keep their precision, as in the official `int8_convrot` releases. Every layer is checked after quantizing, and the model is left alone if any layer loses more than 5% precision.
+- The original is re-hashed first and never changed. The copy inherits the original's Civitai or Hugging Face link, so its family, trigger words and update alerts carry over. When you are happy with it, **Delete original** frees the space.
+- It runs at low priority on the CPU, so ComfyUI stays usable; a 12B model takes a few minutes and needs free RAM of about the model's size. The background task does not pick up other jobs (downloads, deletes) until it finishes.
+
+Files you converted yourself (named `…_int8_convrot`, `…_fp8`, etc.) are not on any site byte for byte, so they are not matched automatically. Open one in the Library: ModelHarbor searches Civitai for the model it was made from and offers **Looks like your conversion of this file**, which links it in one tap (shown as linked by hand, not as a verified match).
+
 ## Notes
 - The first sync after updating hashes every model file once (see `docs/SOURCES_AND_UPDATES.md`); later syncs only hash new or changed files.
 

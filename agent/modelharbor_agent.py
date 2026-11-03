@@ -13,6 +13,7 @@ from hash_worker import process_one
 from hash_cache import fill_hashes
 from hardware import detect as detect_hardware
 import download_worker
+import convert_worker
 from status import NullReporter, Reporter, acquire_lock, release_lock
 
 LOG = logging.getLogger("modelharbor")
@@ -148,6 +149,11 @@ def run_hash_worker(cfg, token):
                     download_worker.process_delete(session,server,token,agent,roots)
                 except (requests.RequestException,OSError,ValueError) as exc:
                     LOG.warning("Delete poll failed; retrying: %s",exc)
+            if cfg.get("converts_enabled", True):
+                try:
+                    convert_worker.process_convert(session,server,token,agent,roots,cfg)
+                except (requests.RequestException,OSError,ValueError) as exc:
+                    LOG.warning("Conversion poll failed; retrying: %s",exc)
             time.sleep(interval)
 
 def main():
