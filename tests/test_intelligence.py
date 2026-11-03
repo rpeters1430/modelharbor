@@ -32,3 +32,11 @@ def test_hard_links_are_one_file():
     assert [x["hard_link"] for x in rows]==[False,True]
     c=record("x.safetensors","D:/x.safetensors"); c["file_id"]="2:7"
     assert all(x["possible_duplicate"] for x in enrich([a,b,c]))
+
+def test_krea2_and_zimage_families():
+    guess=lambda name,path:family(record(name,path))[0]
+    assert guess("krea2_turbo_fp8.safetensors","C:/m/diffusion_models/krea2_turbo_fp8.safetensors")=="Krea 2"
+    assert guess("muse.safetensors","C:/m/diffusion_models/Krea2/muse.safetensors")=="Krea 2"
+    assert guess("flux1-krea-dev.safetensors","C:/m/diffusion_models/flux1-krea-dev.safetensors")=="FLUX"
+    assert guess("z_image_turbo_bf16.safetensors","C:/m/diffusion_models/z_image_turbo_bf16.safetensors")=="Z-Image"
+    assert family({**record("a.safetensors","a"),"source":{"base_model":"Krea 2 Turbo"}})==("Krea 2",True)
