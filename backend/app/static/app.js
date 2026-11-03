@@ -283,7 +283,7 @@ function getTriggerWords(m){
 function getInstalledFamilies(){
  const res=new Set();
  models.forEach(m=>{
-  if(m.kind==="checkpoint"||m.kind==="diffusion_models"||m.kind.startsWith("ollama/")){
+  if(m.kind==="checkpoint"||m.kind==="diffusion"||m.kind.startsWith("ollama/")){
    if(m.family_guess&&m.family_guess!=="Unknown")res.add(m.family_guess.toLowerCase());
   }
  });

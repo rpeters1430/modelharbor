@@ -6,7 +6,8 @@ def physical_device(source):
     return source.rsplit(":", 1)[0] if source.endswith((":comfyui", ":ollama")) else source
 
 PATTERNS = (
-    (r"qwen", "Qwen"), (r"wan(?:2|_|-|\b)", "Wan"),
+    (r"krea.?2", "Krea 2"),  # before FLUX, which "Flux.1 Krea" belongs to
+    (r"z.?image", "Z-Image"), (r"qwen", "Qwen"), (r"wan(?:2|_|-|\b)", "Wan"),
     (r"flux|flux1", "FLUX"), (r"illustrious|noobai", "Illustrious"),
     (r"pony", "Pony"), (r"sdxl|juggernautxl|realvisxl", "SDXL"),
     (r"sd15|sd ?1[._-]?5|stable.?diffusion.?1[._-]?5", "SD 1.5"),
