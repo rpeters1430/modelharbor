@@ -78,3 +78,25 @@ def test_extract_safetensors_metadata(tmp_path):
     assert triggers == ["moss style"]
     assert base == "sd_xl_base_1.0"
     assert title == "Moss Concept"
+
+def test_fill_hashes_backfills_embedded_meta_without_rehash(tmp_path):
+    cache = tmp_path / "hashes.json"
+    header = json.dumps({
+        "__metadata__": {
+            "modelspec.trigger_phrase": "cyberpunk style",
+            "modelspec.title": "Cyber"
+        }
+    }).encode("utf-8")
+    file_path = tmp_path / "m.safetensors"
+    file_path.write_bytes(struct.pack("<Q", len(header)) + header + b"fake_weights")
+    stat = file_path.stat()
+    cache.write_text(json.dumps({str(file_path): [stat.st_size, stat.st_mtime_ns, "a" * 64, "w" * 64]}))
+    calls = []
+    def hasher(path):
+        calls.append(path)
+        return "a" * 64, "w" * 64
+    rows = [record(str(file_path), None, stat.st_size, stat.st_mtime_ns)]
+    fill_hashes(rows, cache, hasher)
+    assert calls == []
+    assert rows[0]["trigger_words"] == ["cyberpunk style"]
+    assert rows[0]["meta_title"] == "Cyber"

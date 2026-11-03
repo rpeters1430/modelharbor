@@ -156,6 +156,13 @@ def fill_hashes(records, cache_path, hasher=file_hashes, progress=None):
             if hashed % 20 == 0:
                 # Keep progress if a long first run is interrupted.
                 save(cache_path, {**cache, **fresh, k: entry})
+        elif len(entry) < 7 and str(record["path"]).lower().endswith(".safetensors"):
+            try:
+                meta = extract_safetensors_metadata(record["path"])
+                tw, base_m, title = parse_embedded_meta(meta)
+                entry = (entry[:4] if len(entry) >= 4 else entry[:3] + [None]) + [tw, base_m, title]
+            except Exception:
+                pass
         fresh[k] = entry
         record["sha256"] = entry[2]
         if len(entry) > 3 and entry[3]:
