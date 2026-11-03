@@ -18,9 +18,9 @@ const text = (tag,value,cls) => { const e=document.createElement(tag); e.textCon
 function showNotice(message){ $("notice").textContent=message; $("notice").hidden=!message; }
 function setStatus(online){ $("status").textContent=online?"● Connected":"● Disconnected"; $("status").classList.toggle("online",online); }
 function openAuth(){ $("token").value=token; $("auth-dialog").showModal(); }
-const VIEWS=["overview","library","browse","devices"];
+const VIEWS=["overview","library","browse","convert","devices"];
 // The tab lives in the URL hash so Back returns to the previous tab instead of closing the installed app.
-function switchView(next){view=next;if(location.hash.slice(1)!==next)location.hash=next;document.querySelector(".stats").hidden=next!=="overview";document.querySelectorAll(".tab").forEach(b=>b.classList.toggle("active",b.dataset.view===next));document.querySelectorAll(".view").forEach(e=>e.hidden=e.id!==next+"-view");$("heading").textContent=({overview:"Model overview",library:"Model library",browse:"Browse models",devices:"Connected sources"})[next];}
+function switchView(next){view=next;if(location.hash.slice(1)!==next)location.hash=next;document.querySelector(".stats").hidden=next!=="overview";document.querySelectorAll(".tab").forEach(b=>b.classList.toggle("active",b.dataset.view===next));document.querySelectorAll(".view").forEach(e=>e.hidden=e.id!==next+"-view");$("heading").textContent=({overview:"Model overview",library:"Model library",browse:"Browse models",convert:"Convert models",devices:"Connected sources"})[next];}
 let currentModel=null;
 function reopen(){const fresh=models.find(x=>x.device===currentModel.device&&x.path===currentModel.path);if(fresh)details(fresh);}
 async function showCivitaiVersions(item,target){
@@ -314,7 +314,8 @@ function renderCompanionWarning(m){
 }
 async function renderSuggestedMatches(m){
  const box=$("suggest-matches-box");box.replaceChildren();box.hidden=true;
- if(!isUnmatched(m))return;
+ // Local-only files named like a conversion (int8, fp8…) are often the user's own copy of a published model.
+ if(!isUnmatched(m)&&!(m.match_ignored&&!m.source&&COMPACT_NAME.test(m.name)))return;
  box.hidden=false;box.append(text("p","Searching for match candidates on Civitai & Hugging Face…","muted"));
  try{
   const data=await apiRequest("/api/models/suggest-match?"+new URLSearchParams({device:m.device,path:m.path}));
@@ -336,7 +337,7 @@ async function renderSuggestedMatches(m){
   const h4=document.createElement("h4");h4.textContent="⚡ Suggested online matches ("+(cv.length+hf.length)+")";box.append(h4);
   cv.forEach(c=>{
    const card=text("div","","suggest-match-card"),info=text("div","","suggest-match-info");
-   info.append(text("strong","Civitai · "+c.name+" ("+c.version_name+")"),text("small",(c.match_type==="exact"?"✓ Exact SHA-256 match":c.match_type==="same_weights"?"✓ Same model weights":"Name match")+(c.base_model?" · "+c.base_model:"")));
+   info.append(text("strong","Civitai · "+c.name+" ("+c.version_name+")"),text("small",(c.match_type==="exact"?"✓ Exact SHA-256 match":c.match_type==="same_weights"?"✓ Same model weights":c.match_type==="converted"?"Looks like your conversion of this file (same name, different precision)":"Name match")+(c.base_model?" · "+c.base_model:"")));
    const linkBtn=text("button","Link to this model","primary");linkBtn.type="button";
    linkBtn.onclick=async()=>{
     linkBtn.disabled=true;
@@ -653,7 +654,7 @@ function filter(){
  fill($("library"),subset.slice(0,500),"No matching models.");
  if(subset.length>500)$("library").append(text("p","Showing first 500 results. Narrow your filters to see more.","muted"));
 }
-async function refresh(){if(!token){openAuth();return;} $("refresh").disabled=true;try{const response=await fetch("/api/models",{headers:{"X-ModelHarbor-Token":token},cache:"no-store"});if(response.status===401){token="";saveToken("");setStatus(false);showNotice("Token rejected. Enter your configured API token.");openAuth();return;}if(!response.ok)throw Error("Server returned HTTP "+response.status);const data=await response.json();if(!Array.isArray(data))throw Error("Unexpected inventory response");models=data;try{selectedMatches=await apiRequest("/api/selected-matches");}catch(_){selectedMatches=[];}try{const agentsResponse=await fetch("/api/agents",{headers:{"X-ModelHarbor-Token":token},cache:"no-store"});agents=agentsResponse.ok?await agentsResponse.json():[];}catch(_){agents=[];}setStatus(true);showNotice("");render();pollDownloads();}catch(err){setStatus(false);showNotice("Unable to load inventory: "+err.message);}finally{$("refresh").disabled=false;}}
+async function refresh(){if(!token){openAuth();return;} $("refresh").disabled=true;try{const response=await fetch("/api/models",{headers:{"X-ModelHarbor-Token":token},cache:"no-store"});if(response.status===401){token="";saveToken("");setStatus(false);showNotice("Token rejected. Enter your configured API token.");openAuth();return;}if(!response.ok)throw Error("Server returned HTTP "+response.status);const data=await response.json();if(!Array.isArray(data))throw Error("Unexpected inventory response");models=data;try{selectedMatches=await apiRequest("/api/selected-matches");}catch(_){selectedMatches=[];}try{const agentsResponse=await fetch("/api/agents",{headers:{"X-ModelHarbor-Token":token},cache:"no-store"});agents=agentsResponse.ok?await agentsResponse.json():[];}catch(_){agents=[];}setStatus(true);showNotice("");render();pollDownloads();loadConverts();}catch(err){setStatus(false);showNotice("Unable to load inventory: "+err.message);}finally{$("refresh").disabled=false;}}
 document.querySelectorAll(".tab").forEach(b=>b.addEventListener("click",()=>switchView(b.dataset.view)));
 window.addEventListener("hashchange",()=>{const v=location.hash.slice(1)||"overview";if(VIEWS.includes(v)&&v!==view)switchView(v);});
 if(VIEWS.includes(location.hash.slice(1)))switchView(location.hash.slice(1));
@@ -765,6 +766,67 @@ function renderAutoMatchContent(matched,noMatch){
   content.append(sec);
  }
 }
+let converts=[],convertsLoaded=false;
+// Names that already say 8-bit or smaller (keep in step with fit.COMPACT).
+const COMPACT_NAME=/(?<![a-z0-9])(fp8\w*|e4m3fn|e5m2|scaled|int[48]\w*|convrot|nf4|fp4|nvfp4|mxfp[48]|w4a\d+|w8a8|q[2-8](?:_k)?(?:_[sml])?|q8_0|q[45]_[01])(?![a-z0-9])/i;
+const GiB=1024**3;
+function vramFor(device){const a=agents.find(x=>x.device===device.replace(/:comfyui$/,""));return (a&&a.hardware&&a.hardware.vram_bytes)||0;}
+function convertCandidates(){
+ const started=new Set(converts.filter(j=>j.state!=="failed").map(j=>j.sha256));
+ // Same 2 GB headroom as the download fit check: ComfyUI also needs room for activations.
+ return models.filter(m=>m.device.endsWith(":comfyui")&&(m.kind==="diffusion"||m.kind==="text_encoder")&&/\.safetensors$/i.test(m.name)
+  &&m.sha256&&!m.hard_link&&!COMPACT_NAME.test(m.name)&&!started.has(m.sha256)&&vramFor(m.device)&&m.size_bytes>vramFor(m.device)-2*GiB)
+  .sort((a,b)=>b.size_bytes-a.size_bytes);
+}
+async function loadConverts(){
+ const before=converts.filter(j=>j.state==="done").length,first=!convertsLoaded;
+ try{converts=await apiRequest("/api/converts");}catch(_){return;}
+ convertsLoaded=true;renderConvert();
+ // The PC rescans and hashes the new file before it shows in the library.
+ if(!first&&converts.filter(j=>j.state==="done").length>before)setTimeout(refresh,60000);
+}
+function renderConvert(){
+ const hw=agents.filter(a=>a.hardware&&a.hardware.vram_bytes).map(a=>a.device+": "+(a.hardware.gpu||"GPU")+" · "+(a.hardware.vram_bytes/GiB).toFixed(0)+" GB VRAM");
+ $("convert-hw").textContent=hw.join(" · ")||"Waiting for the PC agent to report its GPU.";
+ const list=$("convert-list");list.replaceChildren();
+ const items=convertCandidates();
+ if(!items.length)list.append(text("p",hw.length?"Every 16- and 32-bit diffusion model and text encoder fits in your VRAM.":"","muted"));
+ items.forEach(m=>{
+  const vram=vramFor(m.device),after=m.size_bytes/2,row=text("div","","model convert-row"),info=text("span","","model-text");
+  info.append(text("div",m.name,"model-name"),text("div",m.kind+" · "+fmt(m.size_bytes)+" → about "+fmt(after)+" · "+(after<=vram-2*GiB?"fits in your VRAM after converting":"still bigger than your VRAM, but less to offload"),"model-sub"));
+  const b=text("button","Convert","primary");b.type="button";
+  b.addEventListener("click",async()=>{
+   if(!confirm("Convert "+m.name+" to int8_convrot on "+m.device.replace(/:comfyui$/,"")+"?\n\nA new file of about "+fmt(after)+" is written next to it; the original is not changed. It takes a few minutes and runs at low priority."))return;
+   b.disabled=true;
+   try{await apiRequest("/api/converts","POST",{device:m.device,path:m.path});await loadConverts();}catch(err){showNotice("Conversion not started: "+err.message);b.disabled=false;}
+  });
+  row.append(text("span","⇣","glyph"),info,b);list.append(row);
+ });
+ const jobs=$("convert-jobs");jobs.replaceChildren();
+ if(!converts.length)jobs.append(text("p","No conversions yet.","muted"));
+ converts.forEach(j=>{
+  const row=text("div","","model convert-row"),info=text("span","","model-text"),name=j.path.split(/[\\/]/).pop();
+  const state=j.state==="queued"?"Waiting for the PC's background task (up to 20 seconds)…":j.state==="running"?"Converting… ComfyUI stays usable meanwhile":
+   j.state==="failed"?"✗ "+(j.error||"failed"):"✓ Saved "+j.result_path.split(/[\\/]/).pop()+" ("+fmt(j.result_size)+")";
+  info.append(text("div",name,"model-name"),text("div",state,"model-sub"));row.append(text("span",j.state==="done"?"✓":"⇣","glyph"),info);
+  const original=j.state==="done"&&models.find(m=>m.device===j.device&&m.path===j.path&&m.sha256===j.sha256);
+  if(original){
+   const b=text("button","Delete original (frees "+fmt(original.size_bytes)+")","repo-action danger");b.type="button";
+   b.addEventListener("click",async()=>{
+    if(!confirm("Permanently delete the original "+name+"?\n\nOnly do this after trying the converted copy in ComfyUI. The PC re-checks the file's SHA-256 first. This cannot be undone."))return;
+    b.disabled=true;
+    try{
+     let del=await apiRequest("/api/models/delete","POST",{device:original.device,path:original.path});
+     while(del.state==="queued"||del.state==="running"){b.textContent="Deleting…";await new Promise(r=>setTimeout(r,3000));del=await apiRequest("/api/deletes/"+encodeURIComponent(del.id));}
+     if(del.state==="failed")throw Error(del.error);
+     await refresh();showNotice("Deleted the original "+name);
+    }catch(err){showNotice("Not deleted: "+err.message);b.disabled=false;b.textContent="Delete original";}
+   });
+   row.append(b);
+  }
+  jobs.append(row);
+ });
+}
 let allDownloads=[];
 function renderDownloadTray(){
  const tray=$("download-tray");if(!tray)return;
@@ -795,7 +857,7 @@ async function pollDownloads(){
  try{allDownloads=await apiRequest("/api/downloads");renderDownloadTray();}catch(_){}
 }
 $("tray-header").onclick=()=>$("download-tray").classList.toggle("collapsed");
-setInterval(()=>{if(token&&!document.hidden)pollDownloads();},4000);
+setInterval(()=>{if(token&&!document.hidden){pollDownloads();if(converts.some(j=>j.state==="queued"||j.state==="running"))loadConverts();}},4000);
 if(token)refresh();else openAuth();
 if("serviceWorker" in navigator)navigator.serviceWorker.register("/sw.js").catch(()=>{});
 })();

@@ -8,6 +8,7 @@ Self-hosted, mobile-friendly AI model inventory dashboard for **ComfyUI** and **
 - Search, model type filters, device filters, and model detail views.
 - SQLite-backed inventory API with token authentication.
 - Windows ComfyUI scanner (read-only).
+- Convert tab: shrink diffusion models and text encoders that don't fit the GPU to ComfyUI's `int8_convrot` format on the PC, and recognise your own conversions. See [docs/WINDOWS_AGENT.md](docs/WINDOWS_AGENT.md).
 - Ollama model inventory scanner (if merged from its separate PR).
 - Multi-platform Docker image published to GitHub Container Registry (GHCR).
 

@@ -13,6 +13,7 @@ import time
 from urllib.error import HTTPError
 from urllib.parse import quote, urlencode
 from urllib.request import Request, urlopen
+from .fit import conversion_of
 
 LOG = logging.getLogger("modelharbor.sources")
 # Both domains serve the same API; civitai.red is the mature-content site.
@@ -202,18 +203,21 @@ def _civitai_model(model_id, get):
     body = get(f"https://{CIVITAI_HOSTS[0]}/api/v1/models/{int(model_id)}")
     return (json.loads(body) or {}) if body else {}
 
-VERDICT_RANK = {"exact": 0, "same_weights": 1, "same_size": 2}
+VERDICT_RANK = {"exact": 0, "same_weights": 1, "converted": 2, "same_size": 3}
 
-def _verdict(item, sha, weights, size):
-    """Whether a Civitai file is the local file: identical, same tensors, or only the same size."""
+def _verdict(item, sha, weights, size, name=None):
+    """Whether a Civitai file is the local file: identical, same tensors, the original of the user's own
+    conversion (by name only), or only the same size."""
     if sha and _file_sha(item) == sha:
         return "exact"
     if weights and _autov3(item) == weights[:12]:
         return "same_weights"
+    if name and conversion_of(name, str(item.get("name") or "")):
+        return "converted"
     file_size = int(float(item.get("sizeKB") or 0) * 1024)
     return "same_size" if size and abs(file_size - size) <= 1024 else None  # sizeKB is rounded
 
-def civitai_check(query, sha, weights, size, get=fetch):
+def civitai_check(query, sha, weights, size, get=fetch, name=None):
     """Search Civitai and judge every file in the results against the local file."""
     body = get(f"https://{CIVITAI_HOSTS[0]}/api/v1/models?" + urlencode({"query": query, "limit": 20, "nsfw": "true"}))
     data = json.loads(body) if body else {}
@@ -228,7 +232,7 @@ def civitai_check(query, sha, weights, size, get=fetch):
                     continue
                 checked += 1
                 sizes.add(int(float(f.get("sizeKB") or 0) * 1024))
-                verdict = _verdict(f, sha, weights, size)
+                verdict = _verdict(f, sha, weights, size, name)
                 if verdict:
                     files.append({"verdict": verdict, "version_id": v.get("id"), "version_name": str(v.get("name") or "")[:250],
                                   "base_model": v.get("baseModel"), "file_id": f["id"], "file_name": str(f.get("name") or "")[:200]})

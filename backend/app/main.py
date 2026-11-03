@@ -16,7 +16,7 @@ from urllib.parse import quote
 from .hf_repository import list_model_files, validate_repo
 from .hf_inspect import inspect_huggingface
 from .suggest_matches import suggest_matches, link_huggingface
-from . import browse, deletes, downloads, fit
+from . import browse, converts, deletes, downloads, fit
 from .sources import _civitai_model, _file_sha, fetch
 from .sources import annotate, civitai_check, civitai_link, civitai_unlink, civitai_versions, ensure_tables as ensure_source_tables, start_worker
 from .hash_matches import ensure_tables, queue_job, claim_job, finish_job, get_job, select_match, selected_for_inventory
@@ -111,6 +111,7 @@ def connect():
     ensure_source_tables(db)
     downloads.ensure_tables(db)
     deletes.ensure_tables(db)
+    converts.ensure_tables(db)
     db.commit()
     return db
 
@@ -396,7 +397,7 @@ def civitai_check_file(device: str, path: str, q: str, x_modelharbor_token: str 
     with closing(connect()) as db:
         sha, weights, size = _local_hashes(db, device, path)
     try:
-        return civitai_check(q, sha, weights, size)
+        return civitai_check(q, sha, weights, size, name=path.replace("\\", "/").rsplit("/", 1)[-1])
     except (OSError, ValueError) as exc:
         raise HTTPException(502, "Civitai is unavailable right now") from exc
 
@@ -419,6 +420,8 @@ def link_civitai(payload: CivitaiLink, x_modelharbor_token: str | None = Header(
         with db:
             sha, weights, _ = _local_hashes(db, payload.device, payload.path)
             result = civitai_link(db, sha, payload.model_id, payload.version_id, payload.file_id, weights=weights)
+            if result:  # a linked file is no longer local only
+                db.execute("DELETE FROM match_ignored WHERE sha256=?", (sha,))
     if not result:
         raise HTTPException(404, "That file is not part of the chosen Civitai version")
     return result
@@ -442,7 +445,10 @@ def link_hf_model(payload: HuggingFaceLink, x_modelharbor_token: str | None = He
     authorize(x_modelharbor_token)
     with closing(connect()) as db:
         with db:
-            return link_huggingface(db, payload.device, payload.path, payload.repository, payload.remote_path)
+            result = link_huggingface(db, payload.device, payload.path, payload.repository, payload.remote_path)
+            db.execute("DELETE FROM match_ignored WHERE sha256=(SELECT sha256 FROM models WHERE device=? AND path=?)",
+                       (payload.device, payload.path))
+            return result
 
 @app.get("/api/models/suggest-match")
 def suggest_model_match(device: str, path: str, x_modelharbor_token: str | None = Header(default=None)):
@@ -565,6 +571,48 @@ def new_download(payload: NewDownload, x_modelharbor_token: str | None = Header(
     with closing(connect()) as db:
         with db:
             return downloads.create_new(db, payload.agent, *args, payload.provider, **extra)
+
+class ConvertRequest(BaseModel):
+    device: str = Field(min_length=1, max_length=100)
+    path: str = Field(min_length=1, max_length=4096)
+
+class ConvertResult(BaseModel):
+    agent: str = Field(min_length=1, max_length=100)
+    error: str | None = Field(default=None, max_length=300)
+    path: str | None = Field(default=None, min_length=1, max_length=4096)
+    sha256: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
+    size_bytes: int | None = Field(default=None, ge=0)
+    modified_ns: int | None = Field(default=None, ge=0)
+
+@app.post("/api/converts", status_code=202)
+def convert_model(payload: ConvertRequest, x_modelharbor_token: str | None = Header(default=None)):
+    """Queue an int8_convrot conversion of a ComfyUI file on its PC. The original is left as it is."""
+    authorize(x_modelharbor_token)
+    with closing(connect()) as db:
+        with db:
+            return converts.request(db, payload.device, payload.path)
+
+@app.get("/api/converts")
+def list_converts(x_modelharbor_token: str | None = Header(default=None)):
+    authorize(x_modelharbor_token)
+    with closing(connect()) as db:
+        return converts.recent(db)
+
+@app.get("/api/converts/next")
+def next_convert(agent: str, x_modelharbor_token: str | None = Header(default=None)):
+    authorize(x_modelharbor_token)
+    with closing(connect()) as db:
+        with db:
+            return {"job": converts.claim(db, agent)}
+
+@app.post("/api/converts/{job_id}/result")
+def convert_result(job_id: str, payload: ConvertResult, x_modelharbor_token: str | None = Header(default=None)):
+    authorize(x_modelharbor_token)
+    result = payload.model_dump(include={"path", "sha256", "size_bytes", "modified_ns"})
+    complete = all(v is not None for v in result.values())
+    with closing(connect()) as db:
+        with db:
+            return converts.finish(db, job_id, payload.agent, payload.error, result if complete else None)
 
 class DeleteRequest(BaseModel):
     device: str = Field(min_length=1, max_length=100)
