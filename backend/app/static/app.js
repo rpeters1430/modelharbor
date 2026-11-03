@@ -18,7 +18,9 @@ const text = (tag,value,cls) => { const e=document.createElement(tag); e.textCon
 function showNotice(message){ $("notice").textContent=message; $("notice").hidden=!message; }
 function setStatus(online){ $("status").textContent=online?"● Connected":"● Disconnected"; $("status").classList.toggle("online",online); }
 function openAuth(){ $("token").value=token; $("auth-dialog").showModal(); }
-function switchView(next){view=next;document.querySelectorAll(".tab").forEach(b=>b.classList.toggle("active",b.dataset.view===next));document.querySelectorAll(".view").forEach(e=>e.hidden=e.id!==next+"-view");$("heading").textContent=({overview:"Model overview",library:"Model library",browse:"Browse models",devices:"Connected sources"})[next];}
+const VIEWS=["overview","library","browse","devices"];
+// The tab lives in the URL hash so Back returns to the previous tab instead of closing the installed app.
+function switchView(next){view=next;if(location.hash.slice(1)!==next)location.hash=next;document.querySelector(".stats").hidden=next!=="overview";document.querySelectorAll(".tab").forEach(b=>b.classList.toggle("active",b.dataset.view===next));document.querySelectorAll(".view").forEach(e=>e.hidden=e.id!==next+"-view");$("heading").textContent=({overview:"Model overview",library:"Model library",browse:"Browse models",devices:"Connected sources"})[next];}
 let currentModel=null;
 function reopen(){const fresh=models.find(x=>x.device===currentModel.device&&x.path===currentModel.path);if(fresh)details(fresh);}
 async function showCivitaiVersions(item,target){
@@ -625,12 +627,17 @@ function filter(){
  const subset=models.filter(m=>(!q||(m.name+" "+m.path).toLowerCase().includes(q))&&(!kind||m.kind===kind)&&(!device||m.device===device)&&(!family||m.family_guess===family)&&(!folder||m.kind==="lora"&&m.path.replace(/[\\/][^\\/]+$/,"")===folder)&&(!duplicates||m.possible_duplicate)&&(!updates||m.update)&&(!unmatched||isUnmatched(m)));
  subset.sort((a,b)=>sort==="size-desc"?b.size_bytes-a.size_bytes:sort==="size-asc"?a.size_bytes-b.size_bytes:sort==="kind"?a.kind.localeCompare(b.kind)||a.name.localeCompare(b.name):a.name.localeCompare(b.name));
  $("results").textContent=subset.length+" results";
+ const active=["kind","device","family","folder"].filter(id=>$(id).value).length+["duplicates","updates","unmatched"].filter(id=>$(id).checked).length;
+ $("filter-toggle").textContent="Filters & sort"+(active?" ("+active+" active)":"");
  $("auto-match-btn").hidden=!unmatched||!models.some(isUnmatched);
  fill($("library"),subset.slice(0,500),"No matching models.");
  if(subset.length>500)$("library").append(text("p","Showing first 500 results. Narrow your filters to see more.","muted"));
 }
 async function refresh(){if(!token){openAuth();return;} $("refresh").disabled=true;try{const response=await fetch("/api/models",{headers:{"X-ModelHarbor-Token":token},cache:"no-store"});if(response.status===401){token="";saveToken("");setStatus(false);showNotice("Token rejected. Enter your configured API token.");openAuth();return;}if(!response.ok)throw Error("Server returned HTTP "+response.status);const data=await response.json();if(!Array.isArray(data))throw Error("Unexpected inventory response");models=data;try{selectedMatches=await apiRequest("/api/selected-matches");}catch(_){selectedMatches=[];}try{const agentsResponse=await fetch("/api/agents",{headers:{"X-ModelHarbor-Token":token},cache:"no-store"});agents=agentsResponse.ok?await agentsResponse.json():[];}catch(_){agents=[];}setStatus(true);showNotice("");render();pollDownloads();}catch(err){setStatus(false);showNotice("Unable to load inventory: "+err.message);}finally{$("refresh").disabled=false;}}
 document.querySelectorAll(".tab").forEach(b=>b.addEventListener("click",()=>switchView(b.dataset.view)));
+window.addEventListener("hashchange",()=>{const v=location.hash.slice(1)||"overview";if(VIEWS.includes(v)&&v!==view)switchView(v);});
+if(VIEWS.includes(location.hash.slice(1)))switchView(location.hash.slice(1));
+$("filter-toggle").addEventListener("click",()=>{const open=$("library-filters").classList.toggle("open");$("filter-toggle").setAttribute("aria-expanded",open);});
 document.querySelectorAll("[data-go]").forEach(b=>b.addEventListener("click",()=>switchView(b.dataset.go)));
 ["search","kind","device","family","folder","sort","duplicates","updates","unmatched"].forEach(id=>$(id).addEventListener(id==="search"?"input":"change",filter));
 $("unmatched-link").addEventListener("click",()=>{switchView("library");$("unmatched").checked=true;$("updates").checked=$("duplicates").checked=false;filter();});

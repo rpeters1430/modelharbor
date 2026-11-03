@@ -73,4 +73,4 @@
 .tray-item-status{font-size:11px;color:#9cb5ff}
 .tray-item-progress{height:4px;border-radius:2px;background:#2a3652;overflow:hidden}
 .tray-item-progress span{display:block;height:100%;background:#70e3b2}
-.download-tray.collapsed .tray-items{display:none}@supports(padding:env(safe-area-inset-top)){.shell{padding-top:env(safe-area-inset-top);padding-bottom:env(safe-area-inset-bottom)}.download-tray{bottom:calc(16px + env(safe-area-inset-bottom))}}
+.download-tray.collapsed .tray-items{display:none}@supports(padding:env(safe-area-inset-top)){.shell{padding-top:env(safe-area-inset-top);padding-bottom:env(safe-area-inset-bottom)}.download-tray{bottom:calc(16px + env(safe-area-inset-bottom))}}[hidden]{display:none!important}.filter-toggle{display:none}@media(max-width:750px){.filter-toggle{display:block;grid-column:1/-1;background:#19213a;border:1px solid #303b59;color:#d9e4ff;border-radius:10px;padding:11px;text-align:left}#library-filters:not(.open)>:not(#search):not(.filter-toggle){display:none}}
