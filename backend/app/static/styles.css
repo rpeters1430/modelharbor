@@ -73,4 +73,4 @@
 .tray-item-status{font-size:11px;color:#9cb5ff}
 .tray-item-progress{height:4px;border-radius:2px;background:#2a3652;overflow:hidden}
 .tray-item-progress span{display:block;height:100%;background:#70e3b2}
-.download-tray.collapsed .tray-items{display:none}
+.download-tray.collapsed .tray-items{display:none}@supports(padding:env(safe-area-inset-top)){.shell{padding-top:env(safe-area-inset-top);padding-bottom:env(safe-area-inset-bottom)}.download-tray{bottom:calc(16px + env(safe-area-inset-bottom))}}

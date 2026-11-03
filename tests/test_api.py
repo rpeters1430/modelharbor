@@ -35,6 +35,15 @@ def test_dashboard_files_are_revalidated():
     assert client.get("/").headers["cache-control"] == "no-cache"
     assert client.get("/static/app.js").headers["cache-control"] == "no-cache"
 
+def test_dashboard_is_installable():
+    client = TestClient(app)
+    manifest = client.get("/manifest.webmanifest").json()
+    assert {i["sizes"] for i in manifest["icons"]} >= {"192x192", "512x512"}
+    for icon in manifest["icons"]:
+        assert client.get(icon["src"]).content[1:4] == b"PNG"
+    sw = client.get("/sw.js")
+    assert sw.status_code == 200 and "javascript" in sw.headers["content-type"]
+
 def test_agent_status_and_scan_request(tmp_path, monkeypatch):
     from backend.app import main
     monkeypatch.setattr(main, "DB", tmp_path / "status.sqlite3")

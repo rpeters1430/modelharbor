@@ -50,6 +50,11 @@ def dashboard():
 def manifest():
     return FileResponse(STATIC / "manifest.webmanifest", media_type="application/manifest+json")
 
+@app.get("/sw.js", include_in_schema=False)
+def service_worker():
+    # Served from the root so its scope covers the whole dashboard.
+    return FileResponse(STATIC / "sw.js", media_type="text/javascript", headers={"Cache-Control": "no-cache"})
+
 class ModelRecord(BaseModel):
     device: str = Field(min_length=1, max_length=100)
     path: str = Field(min_length=1, max_length=4096)
