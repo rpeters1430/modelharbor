@@ -790,4 +790,5 @@ async function pollDownloads(){
 $("tray-header").onclick=()=>$("download-tray").classList.toggle("collapsed");
 setInterval(()=>{if(token&&!document.hidden)pollDownloads();},4000);
 if(token)refresh();else openAuth();
+if("serviceWorker" in navigator)navigator.serviceWorker.register("/sw.js").catch(()=>{});
 })();
