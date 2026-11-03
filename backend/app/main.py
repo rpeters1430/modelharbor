@@ -14,6 +14,7 @@ from .intelligence import enrich
 from .providers import search as provider_search
 from urllib.parse import quote
 from .hf_repository import list_model_files, validate_repo
+from .hf_inspect import inspect_huggingface
 from . import browse, deletes, downloads, fit
 from .sources import _civitai_model, _file_sha, fetch
 from .sources import annotate, civitai_check, civitai_link, civitai_unlink, civitai_versions, ensure_tables as ensure_source_tables, start_worker
@@ -131,6 +132,7 @@ def inventory(payload: Inventory, x_modelharbor_token: str | None = Header(defau
             db.executemany("""INSERT INTO models (device,path,name,kind,size_bytes,modified_ns,file_id,sha256,weights_sha256)
                 VALUES (?,?,?,?,?,?,?,?,?)""",
                 [(m.device,m.path,m.name,m.kind,m.size_bytes,m.modified_ns,m.file_id,m.sha256,m.weights_sha256) for m in payload.models])
+            db.execute("""UPDATE selected_matches SET local_size=(SELECT size_bytes FROM models WHERE models.device=selected_matches.device AND models.path=selected_matches.path), local_modified_ns=(SELECT modified_ns FROM models WHERE models.device=selected_matches.device AND models.path=selected_matches.path) WHERE EXISTS (SELECT 1 FROM models WHERE models.device=selected_matches.device AND models.path=selected_matches.path)""")
     return {"device": payload.device, "count": len(payload.models)}
 
 @app.post("/api/agents/heartbeat")
@@ -235,6 +237,23 @@ def huggingface_repository(repo: str, q: str = "", agent: str = "", x_modelharbo
     with closing(connect()) as db:
         shas, hw = browse.local_shas(db), _hardware(db, agent)
     return fit.annotate_listing(browse.mark_huggingface(list_model_files(repo, q), shas), hw)
+
+@app.get("/api/huggingface/inspect")
+def huggingface_inspect(url: str, agent: str = "", x_modelharbor_token: str | None = Header(default=None)):
+    authorize(x_modelharbor_token)
+    try:
+        data = inspect_huggingface(url)
+    except (OSError, ValueError) as exc:
+        raise HTTPException(502, f"Hugging Face is unavailable right now: {exc}") from exc
+    with closing(connect()) as db:
+        shas, hw = browse.local_shas(db), _hardware(db, agent)
+    annotated = fit.annotate_listing(browse.mark_huggingface({"files": data["files"]}, shas), hw)
+    data["files"] = annotated["files"]
+    if data.get("primary_file"):
+        match = next((f for f in data["files"] if f["path"] == data["primary_file"]["path"]), None)
+        if match:
+            data["primary_file"] = match
+    return data
 
 class VerifyRequest(BaseModel):
     device: str = Field(min_length=1,max_length=100)
@@ -478,11 +497,14 @@ class NewDownload(BaseModel):
     repository: str | None = Field(default=None, max_length=193)
     remote_path: str | None = Field(default=None, max_length=1024)
     folder: str | None = Field(default=None, max_length=40)
+    base_model: str | None = Field(default=None, max_length=100)
+    trigger_words: list[str] | str | None = None
 
 @app.post("/api/downloads/new", status_code=202)
 def new_download(payload: NewDownload, x_modelharbor_token: str | None = Header(default=None)):
     """Download a model that is not on the PC. URL, file name and hash come from the provider, not the client."""
     authorize(x_modelharbor_token)
+    extra = {}
     if payload.provider == "civitai":
         model = _civitai_model(payload.model_id or 0, fetch)
         version = next((v for v in model.get("modelVersions") or [] if v.get("id") == payload.version_id), None)
@@ -510,9 +532,11 @@ def new_download(payload: NewDownload, x_modelharbor_token: str | None = Header(
             raise HTTPException(404, "File not found in that repository")
         args = ("https://huggingface.co/" + quote(repo, safe="/") + "/resolve/main/" + quote(item["path"], safe="/"),
                 item["name"], item["sha256"], item["size_bytes"], payload.folder or "loras", f"huggingface:{repo}/{item['path']}")
+        bm = payload.base_model or (payload.folder.partition("/")[2] if payload.folder and "/" in payload.folder else None)
+        extra = {"base_model": bm, "trigger_words": payload.trigger_words}
     with closing(connect()) as db:
         with db:
-            return downloads.create_new(db, payload.agent, *args, payload.provider)
+            return downloads.create_new(db, payload.agent, *args, payload.provider, **extra)
 
 class DeleteRequest(BaseModel):
     device: str = Field(min_length=1, max_length=100)

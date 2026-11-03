@@ -354,8 +354,68 @@ function repoCard(repo){
  const link=document.createElement("a");link.href=repo.url;link.target="_blank";link.rel="noopener noreferrer";link.textContent="Open on "+site+" ↗";link.className="model-sub";
  info.append(toggle,link);card.append(info,files);return card;
 }
+function hfInspectCard(data){
+ const card=text("div","","browse-card inspect-card");const info=text("div","","browse-info");
+ const title=text("strong",data.repository);
+ const badges=[];
+ if(data.base_model)badges.push("Base: "+data.base_model);
+ if(data.model_type)badges.push("Type: "+data.model_type);
+ if(data.trigger_words&&data.trigger_words.length)badges.push("Trigger: "+data.trigger_words.join(", "));
+ if(data.downloads!=null)badges.push("↓ "+Number(data.downloads).toLocaleString());
+ if(data.likes)badges.push("♥ "+Number(data.likes).toLocaleString());
+ const meta=text("div",badges.join(" · "),"model-sub inspect-meta");
+ const folderRow=text("div","","inspect-folder-row");
+ folderRow.append(text("span","Save into: ","muted"));
+ const folderSelect=document.createElement("select");folderSelect.setAttribute("aria-label","Target folder");
+ (data.available_folders||[data.target_folder,"loras","checkpoints"]).forEach(f=>{
+  const opt=new Option(f,f);if(f===data.target_folder)opt.selected=true;folderSelect.append(opt);
+ });
+ folderRow.append(folderSelect);
+ const primaryBox=text("div","","primary-file-box");
+ if(data.primary_file){
+  const pf=data.primary_file;
+  const header=text("div","","primary-header");
+  header.append(text("span",data.specified_path?"★ Selected file from link":"★ Recommended file for ComfyUI","primary-badge"));
+  primaryBox.append(header);
+  primaryBox.append(fileRow(pf.name+(pf.size_bytes?" · "+fmt(pf.size_bytes):"")+(pf.sha256?"":" · no published hash"),
+   pf.on_pc,"huggingface:"+data.repository+"/"+pf.path,
+   {provider:"huggingface",repository:data.repository,remote_path:pf.path,base_model:data.base_model,trigger_words:data.trigger_words,get folder(){return folderSelect.value;}},pf));
+ }else{
+  primaryBox.append(text("p","No model files found in repository.","muted"));
+ }
+ const toggle=text("button","Browse all "+data.files.length+" repository files ▾","repo-action");toggle.type="button";
+ const files=text("div","","browse-versions");files.hidden=true;
+ toggle.addEventListener("click",()=>{
+  files.hidden=!files.hidden;
+  toggle.textContent=files.hidden?"Browse all "+data.files.length+" repository files ▾":"Hide repository files ▴";
+ });
+ data.files.forEach(f=>{
+  const isPrimary=data.primary_file&&f.path===data.primary_file.path;
+  files.append(fileRow(f.path+(isPrimary?" (recommended)":"")+(f.size_bytes?" · "+fmt(f.size_bytes):"")+(f.sha256?"":" · no published hash"),
+   f.on_pc,"huggingface:"+data.repository+"/"+f.path,
+   {provider:"huggingface",repository:data.repository,remote_path:f.path,base_model:data.base_model,trigger_words:data.trigger_words,get folder(){return folderSelect.value;}},f));
+ });
+ const link=document.createElement("a");link.href=data.url;link.target="_blank";link.rel="noopener noreferrer";link.textContent="Open on Hugging Face ↗";link.className="model-sub";
+ info.append(title,meta,folderRow,primaryBox,toggle,link);card.append(info,files);return card;
+}
+async function inspectLink(url){
+ url=(url||"").trim();if(!url)return;
+ const list=$("browse-list");list.replaceChildren(text("p","Inspecting Hugging Face repository…","muted"));
+ $("browse-results").textContent="Inspecting link…";$("browse-more").hidden=true;
+ try{
+  browseJobs=await apiRequest("/api/downloads").catch(()=>[]);
+  const data=await apiRequest("/api/huggingface/inspect?"+new URLSearchParams({url,agent:browseAgent()||""}));
+  list.replaceChildren(hfInspectCard(data));
+  $("browse-results").textContent="1 repository ("+(data.base_model?data.base_model+" ":"")+data.model_type+")";
+ }catch(err){
+  list.replaceChildren(text("p",err.message||"Failed to inspect repository","muted"));$("browse-results").textContent="";
+ }
+}
 async function browseSearch(more){
  const list=$("browse-list"),provider=$("browse-provider").value,q=$("browse-q").value.trim();
+ if(!more&&(q.startsWith("http://")||q.startsWith("https://")||q.includes("huggingface.co")||q.includes("hf.co")||(provider==="huggingface"&&/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(q)))){
+  return inspectLink(q);
+ }
  if(!more){list.replaceChildren(text("p","Searching…","muted"));browseCursor=null;}
  $("browse-go").disabled=$("browse-more").disabled=true;
  try{
@@ -386,6 +446,8 @@ async function browseSearch(more){
  }catch(err){if(!more)list.replaceChildren();list.append(text("p",err.message,"muted"));}
  finally{$("browse-go").disabled=$("browse-more").disabled=false;}
 }
+$("browse-link-btn").addEventListener("click",()=>inspectLink($("browse-link").value));
+$("browse-link").addEventListener("keydown",e=>{if(e.key==="Enter")inspectLink($("browse-link").value);});
 $("browse-go").addEventListener("click",()=>browseSearch(false));
 $("browse-more").addEventListener("click",()=>browseSearch(true));
 $("browse-q").addEventListener("keydown",e=>{if(e.key==="Enter")browseSearch(false);});

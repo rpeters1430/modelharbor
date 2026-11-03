@@ -15,7 +15,7 @@ SAFE_NAME = re.compile(r"^[\w .()+,-]{1,200}\.(?:safetensors|ckpt|pt|pth|bin|ggu
 ACTIVE = ("queued", "running")
 STALE_SECONDS = 1800
 FIELDS = ("id", "device", "path", "provider", "file_name", "size_bytes", "state", "bytes_done",
-          "error", "result_path", "created_at", "updated_at", "cleanup", "cleanup_error", "target_folder", "source_ref")
+          "error", "result_path", "created_at", "updated_at", "cleanup", "cleanup_error", "target_folder", "source_ref", "base_model", "trigger_words")
 
 def ensure_tables(db):
     db.execute("""CREATE TABLE IF NOT EXISTS download_jobs (
@@ -26,7 +26,7 @@ def ensure_tables(db):
     columns = [row[1] for row in db.execute("PRAGMA table_info(download_jobs)")]
     # cleanup: NULL, then queued -> running -> done | failed when the user deletes the old file.
     # target_folder/source_ref: new downloads from Browse, which have no old file next to them.
-    for column in ("old_sha", "cleanup", "cleanup_error", "target_folder", "source_ref"):
+    for column in ("old_sha", "cleanup", "cleanup_error", "target_folder", "source_ref", "base_model", "trigger_words"):
         if column not in columns:
             db.execute(f"ALTER TABLE download_jobs ADD COLUMN {column} TEXT")
 
@@ -106,6 +106,25 @@ def finish(db, job_id, agent, sha256, error, result_path):
     db.execute("UPDATE download_jobs SET state=?,error=?,result_path=?,updated_at=? WHERE id=?",
                (state, str(error)[:300] if error else None, None if error else result_path, int(time.time()), job_id))
     if state == "done":
+        job = db.execute("SELECT provider, source_ref, device, size_bytes, base_model, trigger_words FROM download_jobs WHERE id=?", (job_id,)).fetchone()
+        if job and job[0] == "huggingface" and job[1] and job[1].startswith("huggingface:") and result_path and sha256:
+            ref = job[1][len("huggingface:"):]
+            parts = ref.split("/", 2)
+            if len(parts) >= 3:
+                repo, remote_path = f"{parts[0]}/{parts[1]}", parts[2]
+                now, digest, size = int(time.time()), sha256.lower(), job[3] or 0
+                bm, tw = job[4], job[5]
+                db.execute("""INSERT INTO selected_matches
+                    (device, path, repository, remote_path, sha256, local_size, local_modified_ns, selected_at, latest_sha, latest_checked_at, base_model, trigger_words)
+                    VALUES (?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?)
+                    ON CONFLICT(device, path) DO UPDATE SET
+                    repository=excluded.repository, remote_path=excluded.remote_path,
+                    sha256=excluded.sha256, local_size=excluded.local_size,
+                    selected_at=excluded.selected_at, latest_sha=excluded.latest_sha,
+                    latest_checked_at=excluded.latest_checked_at,
+                    base_model=COALESCE(excluded.base_model, selected_matches.base_model),
+                    trigger_words=COALESCE(excluded.trigger_words, selected_matches.trigger_words)""",
+                    (job[2], result_path, repo, remote_path, digest, size, now, digest, now, bm, tw))
         _request_scan(db, agent)  # list the new file without waiting for the scheduled sync
     return {"id": job_id, "state": state}
 
@@ -155,7 +174,7 @@ def _request_scan(db, agent):
     db.execute("""INSERT INTO agent_status (device,phase,scan_requested_at) VALUES (?,'idle',?)
         ON CONFLICT(device) DO UPDATE SET scan_requested_at=excluded.scan_requested_at""", (agent, int(time.time())))
 
-def create_new(db, agent, url, file_name, expected_sha, size_bytes, folder, source_ref, provider):
+def create_new(db, agent, url, file_name, expected_sha, size_bytes, folder, source_ref, provider, base_model=None, trigger_words=None):
     """Queue a download of a model that is not on the PC yet, into a fixed ComfyUI folder."""
     from .browse import valid_folder
     if not valid_folder(folder) or not SAFE_NAME.fullmatch(file_name or "") or not expected_sha:
@@ -166,7 +185,8 @@ def create_new(db, agent, url, file_name, expected_sha, size_bytes, folder, sour
         return dict(zip(FIELDS, existing))
     now = int(time.time())
     job_id = uuid.uuid4().hex
+    tw_val = trigger_words if (isinstance(trigger_words, str) or trigger_words is None) else json.dumps(trigger_words)
     db.execute("""INSERT INTO download_jobs (id,agent,device,path,provider,url,file_name,expected_sha,size_bytes,
-        state,created_at,updated_at,target_folder,source_ref) VALUES (?,?,?,'',?,?,?,?,?,'queued',?,?,?,?)""",
-        (job_id, agent, agent + ":comfyui", provider, url, file_name, expected_sha, size_bytes, now, now, folder, source_ref))
+        state,created_at,updated_at,target_folder,source_ref,base_model,trigger_words) VALUES (?,?,?,'',?,?,?,?,?,'queued',?,?,?,?,?,?)""",
+        (job_id, agent, agent + ":comfyui", provider, url, file_name, expected_sha, size_bytes, now, now, folder, source_ref, base_model, tw_val))
     return dict(zip(FIELDS, db.execute(f"SELECT {','.join(FIELDS)} FROM download_jobs WHERE id=?", (job_id,)).fetchone()))

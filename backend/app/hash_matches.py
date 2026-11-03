@@ -25,7 +25,7 @@ def ensure_tables(db):
         local_modified_ns INTEGER NOT NULL, selected_at INTEGER NOT NULL,
         PRIMARY KEY(device,path))""")
     columns = [row[1] for row in db.execute("PRAGMA table_info(selected_matches)")]
-    for column, kind in (("latest_sha", "TEXT"), ("latest_checked_at", "INTEGER")):
+    for column, kind in (("latest_sha", "TEXT"), ("latest_checked_at", "INTEGER"), ("base_model", "TEXT"), ("trigger_words", "TEXT")):
         if column not in columns:
             db.execute(f"ALTER TABLE selected_matches ADD COLUMN {column} {kind}")
 

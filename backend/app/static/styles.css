@@ -39,3 +39,13 @@
 #unmatched-link{display:block;padding:4px 0 0;font-size:13px;cursor:pointer}#unmatched-link[hidden]{display:none}
 .match-none{color:#ffd2a8;font-size:13px;margin:0}.provider-results>.primary{text-align:left;overflow-wrap:anywhere}
 .fit{grid-column:1/-1;font-size:11px;overflow-wrap:anywhere}.fit-good{color:#8ff0c2}.fit-ok{color:#ffd2a8}.fit-bad{color:#ffb4ab}.browse-file.best{outline:1px solid #3fb98a}
+.link-import{display:grid;grid-template-columns:1fr auto;gap:10px;margin-bottom:14px}
+.link-import input{width:100%}
+.inspect-card{border-color:#4d5f8c;background:#18233c}
+.inspect-meta{font-size:12px;color:#c0ceeb;margin:4px 0}
+.inspect-folder-row{display:flex;align-items:center;gap:10px;margin:6px 0;font-size:13px}
+.inspect-folder-row select{padding:6px 10px;font-size:13px}
+.primary-file-box{border:1px solid #3c4f7c;background:#151e33;border-radius:10px;padding:10px;margin:8px 0;display:grid;gap:6px}
+.primary-header{display:flex;align-items:center;justify-content:space-between}
+.primary-badge{color:#70e3b2;font-size:12px;font-weight:650}
+@media(max-width:600px){.link-import{grid-template-columns:1fr}.link-import button{min-height:44px}}

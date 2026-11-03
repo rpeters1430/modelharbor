@@ -391,9 +391,10 @@ def annotate(db, records):
     checked = {r[0] for r in db.execute("SELECT sha256 FROM civitai_files")}
     ignored = {r[0] for r in db.execute("SELECT sha256 FROM match_ignored")}
     ollama = dict(db.execute("SELECT name,remote_digest FROM ollama_remote WHERE remote_digest IS NOT NULL"))
-    hf = {(r[0], r[1]): r for r in db.execute("""SELECT s.device,s.path,s.repository,s.remote_path,s.sha256,s.latest_sha
+    hf = {(r[0], r[1]): r for r in db.execute("""SELECT s.device,s.path,s.repository,s.remote_path,s.sha256,s.latest_sha,s.base_model,s.trigger_words
         FROM selected_matches s JOIN models m ON s.device=m.device AND s.path=m.path
-        AND s.local_size=m.size_bytes AND s.local_modified_ns=m.modified_ns""")}
+        AND (s.sha256=m.sha256 OR (s.local_size=m.size_bytes AND s.local_modified_ns=m.modified_ns))""")}
+    hf_by_sha = {r[4]: r for r in db.execute("""SELECT s.device,s.path,s.repository,s.remote_path,s.sha256,s.latest_sha,s.base_model,s.trigger_words FROM selected_matches s WHERE s.sha256 IS NOT NULL""")}
     for record in records:
         record["source"] = record["update"] = None
         record["source_checked"] = record.get("sha256") in checked
@@ -420,11 +421,13 @@ def annotate(db, records):
                 record["update"] = {"provider": "civitai", "version_id": latest_id, "version_name": latest_name,
                                     "url": civitai_url(model_id, latest_id, bool(nsfw))}
             continue
-        match = hf.get((record["device"], record["path"]))
+        match = hf.get((record["device"], record["path"])) or (sha and hf_by_sha.get(sha))
         if match:
-            _, _, repo, remote_path, digest, latest = match
+            _, _, repo, remote_path, digest, latest = match[:6]
+            base_m, tw_raw = (match[6], match[7]) if len(match) > 6 else (None, None)
+            tw_list = json.loads(tw_raw) if (tw_raw and isinstance(tw_raw, str) and tw_raw.startswith("[")) else ([tw_raw] if tw_raw else [])
             url = "https://huggingface.co/" + quote(repo, safe="/") + "/blob/main/" + quote(remote_path, safe="/")
-            record["source"] = {"provider": "huggingface", "model_name": repo, "version_name": remote_path, "url": url}
+            record["source"] = {"provider": "huggingface", "model_name": repo, "version_name": remote_path, "base_model": base_m, "trained_words": tw_list, "url": url}
             if latest and latest != digest:
                 record["update"] = {"provider": "huggingface", "version_name": "File changed on main", "url": url}
     return records

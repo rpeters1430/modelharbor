@@ -18,8 +18,8 @@ FOLDERS = sorted(set(FILE_FOLDERS.values()) | set(TYPE_FOLDERS.values()))
 # Family subfolders, named like the library's own (comfy-mobile reads a model's family from its folder).
 # Matched against the start of Civitai's base model name, so "Flux.1 Krea" is Flux, not Krea 2.
 FAMILY_FOLDERS = (("PonyV7", r"pony v7"), ("Pony", r"pony"), ("SD15", r"sd 1"), ("SD2", r"sd 2"),
-                  ("SDXL", r"sdxl|illustrious|noobai"), ("Krea2", r"krea 2"), ("Flux", r"flux"), ("Qwen", r"qwen"),
-                  ("Wan", r"wan"), ("LTX", r"ltx"), ("MOSS", r"moss"), ("ZImage", r"z ?image"))
+                  ("SDXL", r"sdxl|illustrious|noobai"), ("SD3", r"sd ?3"), ("Krea2", r"krea 2"), ("Flux", r"flux"), ("Qwen", r"qwen"),
+                  ("Wan", r"wan"), ("LTX", r"ltx"), ("Hunyuan", r"hunyuan"), ("MOSS", r"moss"), ("ZImage", r"z ?image"))
 FAMILY_PARENTS = {"checkpoints", "loras", "diffusion_models", "controlnet"}
 CURSOR = re.compile(r"^[A-Za-z0-9|:._-]{1,200}$")
 MAX_VERSIONS = 8
