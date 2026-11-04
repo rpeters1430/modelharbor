@@ -174,6 +174,29 @@ def _request_scan(db, agent):
     db.execute("""INSERT INTO agent_status (device,phase,scan_requested_at) VALUES (?,'idle',?)
         ON CONFLICT(device) DO UPDATE SET scan_requested_at=excluded.scan_requested_at""", (agent, int(time.time())))
 
+SPLIT_GGUF = re.compile(r"(?:^|[-_.])\d{5}-of-\d{5}$", re.IGNORECASE)
+
+def ollama_name(repo, remote_path):
+    """Return Ollama's Hugging Face name using the exact GGUF filename as its tag."""
+    name = PurePosixPath(remote_path or "")
+    if (name.suffix.lower() != ".gguf" or "mmproj" in name.stem.lower()
+            or SPLIT_GGUF.search(name.stem)):
+        raise HTTPException(422, "Ollama import requires one non-split GGUF model file")
+    return f"hf.co/{repo}:{name.name}"
+
+def create_ollama(db, agent, repo, remote_path):
+    """Queue an Ollama pull of a Hugging Face GGUF file. Ollama checks the layer digests itself."""
+    name = ollama_name(repo, remote_path)
+    source_ref = "ollama:" + name
+    existing = db.execute(f"SELECT {','.join(FIELDS)} FROM download_jobs WHERE source_ref=? AND agent=? AND state IN (?,?)",
+                          (source_ref, agent, *ACTIVE)).fetchone()
+    if existing:
+        return dict(zip(FIELDS, existing))
+    now, job_id = int(time.time()), uuid.uuid4().hex
+    db.execute("""INSERT INTO download_jobs (id,agent,device,path,provider,url,file_name,state,created_at,updated_at,source_ref)
+        VALUES (?,?,?,'','ollama',NULL,?,'queued',?,?,?)""", (job_id, agent, agent + ":ollama", name, now, now, source_ref))
+    return dict(zip(FIELDS, db.execute(f"SELECT {','.join(FIELDS)} FROM download_jobs WHERE id=?", (job_id,)).fetchone()))
+
 def create_new(db, agent, url, file_name, expected_sha, size_bytes, folder, source_ref, provider, base_model=None, trigger_words=None):
     """Queue a download of a model that is not on the PC yet, into a fixed ComfyUI folder."""
     from .browse import valid_folder

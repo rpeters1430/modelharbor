@@ -90,6 +90,12 @@ def pull_ollama(session, ollama_url, name):
                             timeout=(30, 6 * 3600))
     if response.status_code != 200:
         raise ValueError(f"Ollama pull failed (HTTP {response.status_code})")
+    try:
+        payload = response.json()
+    except ValueError as exc:
+        raise ValueError("Ollama returned an invalid pull response") from exc
+    if payload.get("error"):
+        raise ValueError("Ollama pull failed: " + str(payload["error"])[:250])
     return None, "ollama://" + name
 
 def process_one(session, server, token, agent, roots, ollama_url):

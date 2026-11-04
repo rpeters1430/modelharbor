@@ -6,6 +6,7 @@ import sqlite3
 import time
 from contextlib import asynccontextmanager, closing
 from pathlib import Path
+from pathlib import PurePosixPath
 from fastapi import FastAPI, Header, HTTPException
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
@@ -524,7 +525,7 @@ def browse_civitai(q: str = "", type: str = "", base: str = "", sort: str = "Mos
 
 class NewDownload(BaseModel):
     agent: str = Field(min_length=1, max_length=100)
-    provider: str = Field(pattern=r"^(civitai|huggingface|modelscope)$")
+    provider: str = Field(pattern=r"^(civitai|huggingface|modelscope|ollama)$")
     model_id: int | None = Field(default=None, ge=1)
     version_id: int | None = Field(default=None, ge=1)
     file_id: int | None = Field(default=None, ge=1)
@@ -539,6 +540,18 @@ def new_download(payload: NewDownload, x_modelharbor_token: str | None = Header(
     """Download a model that is not on the PC. URL, file name and hash come from the provider, not the client."""
     authorize(x_modelharbor_token)
     extra = {}
+    if payload.provider == "ollama":  # a GGUF file from a Hugging Face repository, pulled by the PC's Ollama
+        repo = validate_repo(payload.repository or "")
+        files = list_model_files(repo)["files"]
+        if not any(f["path"] == payload.remote_path for f in files):
+            raise HTTPException(404, "File not found in that repository")
+        selected_name = PurePosixPath(payload.remote_path or "").name.casefold()
+        same_name = [f for f in files if PurePosixPath(f["path"]).name.casefold() == selected_name]
+        if len(same_name) > 1:
+            raise HTTPException(422, "Ollama's Hugging Face import identifies files by filename; this repository has duplicate filenames")
+        with closing(connect()) as db:
+            with db:
+                return downloads.create_ollama(db, payload.agent, repo, payload.remote_path)
     if payload.provider == "civitai":
         model = _civitai_model(payload.model_id or 0, fetch)
         version = next((v for v in model.get("modelVersions") or [] if v.get("id") == payload.version_id), None)
