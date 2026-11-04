@@ -459,8 +459,8 @@ function fillBrowseAgents(){
 }
 function newDownloadStatus(j){
  if(j.state==="queued")return "Waiting for the Windows agent…";
- if(j.state==="running")return "Downloading "+fmt(j.bytes_done)+(j.size_bytes?" of "+fmt(j.size_bytes):"")+"…";
- if(j.state==="done")return "✓ Downloaded and verified: "+shortPath(j.result_path);
+ if(j.state==="running")return j.provider==="ollama"?"Ollama is pulling "+j.file_name+"…":"Downloading "+fmt(j.bytes_done)+(j.size_bytes?" of "+fmt(j.size_bytes):"")+"…";
+ if(j.state==="done")return j.provider==="ollama"?"✓ In Ollama as "+j.file_name:"✓ Downloaded and verified: "+shortPath(j.result_path);
  return "Download failed: "+(j.error||"unknown error");
 }
 function fileRow(label,onPc,ref,request,f={}){
@@ -532,10 +532,15 @@ function hfInspectCard(data){
  const folderRow=text("div","","inspect-folder-row");
  folderRow.append(text("span","Save into: ","muted"));
  const folderSelect=document.createElement("select");folderSelect.setAttribute("aria-label","Target folder");
+ const hasGguf=data.files.some(f=>/\.gguf$/i.test(f.path));
  (data.available_folders||[data.target_folder,"loras","checkpoints"]).forEach(f=>{
-  const opt=new Option(f,f);if(f===data.target_folder)opt.selected=true;folderSelect.append(opt);
+  const opt=new Option(f,f);if(f===data.target_folder&&!hasGguf)opt.selected=true;folderSelect.append(opt);
  });
+ // GGUF repos are usually LLMs: offer importing into Ollama (only .gguf files can go there).
+ if(hasGguf)folderSelect.prepend(new Option("Ollama (import GGUF)","ollama",true,true));
  folderRow.append(folderSelect);
+ const hfRequest=f=>({repository:data.repository,remote_path:f.path,base_model:data.base_model,trigger_words:data.trigger_words,
+  get provider(){return folderSelect.value==="ollama"?"ollama":"huggingface";},get folder(){return folderSelect.value==="ollama"?null:folderSelect.value;}});
  const primaryBox=text("div","","primary-file-box");
  if(data.primary_file){
   const pf=data.primary_file;
@@ -544,7 +549,7 @@ function hfInspectCard(data){
   primaryBox.append(header);
   primaryBox.append(fileRow(pf.name+(pf.size_bytes?" · "+fmt(pf.size_bytes):"")+(pf.sha256?"":" · no published hash"),
    pf.on_pc,"huggingface:"+data.repository+"/"+pf.path,
-   {provider:"huggingface",repository:data.repository,remote_path:pf.path,base_model:data.base_model,trigger_words:data.trigger_words,get folder(){return folderSelect.value;}},pf));
+   hfRequest(pf),pf));
  }else{
   primaryBox.append(text("p","No model files found in repository.","muted"));
  }
@@ -558,7 +563,7 @@ function hfInspectCard(data){
   const isPrimary=data.primary_file&&f.path===data.primary_file.path;
   files.append(fileRow(f.path+(isPrimary?" (recommended)":"")+(f.size_bytes?" · "+fmt(f.size_bytes):"")+(f.sha256?"":" · no published hash"),
    f.on_pc,"huggingface:"+data.repository+"/"+f.path,
-   {provider:"huggingface",repository:data.repository,remote_path:f.path,base_model:data.base_model,trigger_words:data.trigger_words,get folder(){return folderSelect.value;}},f));
+   hfRequest(f),f));
  });
  const link=document.createElement("a");link.href=data.url;link.target="_blank";link.rel="noopener noreferrer";link.textContent="Open on Hugging Face ↗";link.className="model-sub";
  info.append(title,meta,folderRow,primaryBox,toggle,link);card.append(info,files);return card;

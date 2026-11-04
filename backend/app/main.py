@@ -524,7 +524,7 @@ def browse_civitai(q: str = "", type: str = "", base: str = "", sort: str = "Mos
 
 class NewDownload(BaseModel):
     agent: str = Field(min_length=1, max_length=100)
-    provider: str = Field(pattern=r"^(civitai|huggingface|modelscope)$")
+    provider: str = Field(pattern=r"^(civitai|huggingface|modelscope|ollama)$")
     model_id: int | None = Field(default=None, ge=1)
     version_id: int | None = Field(default=None, ge=1)
     file_id: int | None = Field(default=None, ge=1)
@@ -539,6 +539,13 @@ def new_download(payload: NewDownload, x_modelharbor_token: str | None = Header(
     """Download a model that is not on the PC. URL, file name and hash come from the provider, not the client."""
     authorize(x_modelharbor_token)
     extra = {}
+    if payload.provider == "ollama":  # a GGUF file from a Hugging Face repository, pulled by the PC's Ollama
+        repo = validate_repo(payload.repository or "")
+        if not any(f["path"] == payload.remote_path for f in list_model_files(repo)["files"]):
+            raise HTTPException(404, "File not found in that repository")
+        with closing(connect()) as db:
+            with db:
+                return downloads.create_ollama(db, payload.agent, repo, payload.remote_path)
     if payload.provider == "civitai":
         model = _civitai_model(payload.model_id or 0, fetch)
         version = next((v for v in model.get("modelVersions") or [] if v.get("id") == payload.version_id), None)

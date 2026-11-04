@@ -174,6 +174,32 @@ def _request_scan(db, agent):
     db.execute("""INSERT INTO agent_status (device,phase,scan_requested_at) VALUES (?,'idle',?)
         ON CONFLICT(device) DO UPDATE SET scan_requested_at=excluded.scan_requested_at""", (agent, int(time.time())))
 
+# Quantization tag at the end of a GGUF file name ("…-Q4_K_M.gguf", "….IQ3_XS.gguf", "…-bf16.gguf").
+QUANT = re.compile(r"(?:^|[-_.])((?:I?Q\d(?:_[A-Z0-9]+)*)|BF16|F16|F32)$", re.IGNORECASE)
+
+def ollama_name(repo, remote_path):
+    """Ollama pulls GGUF repos from Hugging Face itself as hf.co/<repo>:<quant>; it picks the file by quant tag."""
+    name = PurePosixPath(remote_path or "")
+    if name.suffix.lower() != ".gguf" or "mmproj" in name.stem.lower():
+        raise HTTPException(422, "Ollama can only import a GGUF model file")
+    match = QUANT.search(name.stem)
+    if not match:
+        raise HTTPException(422, "Could not tell this GGUF file's quantization (split files are not supported by Ollama)")
+    return f"hf.co/{repo}:{match.group(1).upper()}"
+
+def create_ollama(db, agent, repo, remote_path):
+    """Queue an Ollama pull of a Hugging Face GGUF file. Ollama checks the layer digests itself."""
+    name = ollama_name(repo, remote_path)
+    source_ref = "ollama:" + name
+    existing = db.execute(f"SELECT {','.join(FIELDS)} FROM download_jobs WHERE source_ref=? AND agent=? AND state IN (?,?)",
+                          (source_ref, agent, *ACTIVE)).fetchone()
+    if existing:
+        return dict(zip(FIELDS, existing))
+    now, job_id = int(time.time()), uuid.uuid4().hex
+    db.execute("""INSERT INTO download_jobs (id,agent,device,path,provider,url,file_name,state,created_at,updated_at,source_ref)
+        VALUES (?,?,?,'','ollama',NULL,?,'queued',?,?,?)""", (job_id, agent, agent + ":ollama", name, now, now, source_ref))
+    return dict(zip(FIELDS, db.execute(f"SELECT {','.join(FIELDS)} FROM download_jobs WHERE id=?", (job_id,)).fetchone()))
+
 def create_new(db, agent, url, file_name, expected_sha, size_bytes, folder, source_ref, provider, base_model=None, trigger_words=None):
     """Queue a download of a model that is not on the PC yet, into a fixed ComfyUI folder."""
     from .browse import valid_folder

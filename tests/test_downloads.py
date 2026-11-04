@@ -155,3 +155,18 @@ def test_agent_deletes_old_only_when_both_hashes_still_match(tmp_path):
     assert old.exists()
     delete_old(job, [str(tmp_path)])
     assert not old.exists() and new.read_bytes() == b"new"
+
+def test_ollama_name_from_gguf_file():
+    assert downloads.ollama_name("bartowski/Llama-3.2-1B-Instruct-GGUF", "Llama-3.2-1B-Instruct-Q4_K_M.gguf") == "hf.co/bartowski/Llama-3.2-1B-Instruct-GGUF:Q4_K_M"
+    assert downloads.ollama_name("o/r", "sub/model.iq3_xs.gguf") == "hf.co/o/r:IQ3_XS"
+    assert downloads.ollama_name("o/r", "model-bf16.gguf") == "hf.co/o/r:BF16"
+    for bad in ("model.safetensors", "mmproj-model-f16.gguf", "model-00001-of-00002.gguf"):
+        with pytest.raises(HTTPException):
+            downloads.ollama_name("o/r", bad)
+
+def test_ollama_import_job_is_claimed_and_deduplicated(db):
+    job = downloads.create_ollama(db, "pc", "o/r", "model-Q8_0.gguf")
+    assert downloads.create_ollama(db, "pc", "o/r", "model-Q8_0.gguf")["id"] == job["id"]
+    claimed = downloads.claim(db, "pc")
+    assert (claimed["provider"], claimed["file_name"], claimed["url"]) == ("ollama", "hf.co/o/r:Q8_0", None)
+    assert downloads.finish(db, job["id"], "pc", None, None, "ollama://hf.co/o/r:Q8_0")["state"] == "done"
