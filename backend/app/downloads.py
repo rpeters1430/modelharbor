@@ -174,18 +174,15 @@ def _request_scan(db, agent):
     db.execute("""INSERT INTO agent_status (device,phase,scan_requested_at) VALUES (?,'idle',?)
         ON CONFLICT(device) DO UPDATE SET scan_requested_at=excluded.scan_requested_at""", (agent, int(time.time())))
 
-# Quantization tag at the end of a GGUF file name ("…-Q4_K_M.gguf", "….IQ3_XS.gguf", "…-bf16.gguf").
-QUANT = re.compile(r"(?:^|[-_.])((?:I?Q\d(?:_[A-Z0-9]+)*)|BF16|F16|F32)$", re.IGNORECASE)
+SPLIT_GGUF = re.compile(r"(?:^|[-_.])\d{5}-of-\d{5}$", re.IGNORECASE)
 
 def ollama_name(repo, remote_path):
-    """Ollama pulls GGUF repos from Hugging Face itself as hf.co/<repo>:<quant>; it picks the file by quant tag."""
+    """Return Ollama's Hugging Face name using the exact GGUF filename as its tag."""
     name = PurePosixPath(remote_path or "")
-    if name.suffix.lower() != ".gguf" or "mmproj" in name.stem.lower():
-        raise HTTPException(422, "Ollama can only import a GGUF model file")
-    match = QUANT.search(name.stem)
-    if not match:
-        raise HTTPException(422, "Could not tell this GGUF file's quantization (split files are not supported by Ollama)")
-    return f"hf.co/{repo}:{match.group(1).upper()}"
+    if (name.suffix.lower() != ".gguf" or "mmproj" in name.stem.lower()
+            or SPLIT_GGUF.search(name.stem)):
+        raise HTTPException(422, "Ollama import requires one non-split GGUF model file")
+    return f"hf.co/{repo}:{name.name}"
 
 def create_ollama(db, agent, repo, remote_path):
     """Queue an Ollama pull of a Hugging Face GGUF file. Ollama checks the layer digests itself."""

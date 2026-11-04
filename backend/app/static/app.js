@@ -463,18 +463,48 @@ function newDownloadStatus(j){
  if(j.state==="done")return j.provider==="ollama"?"✓ In Ollama as "+j.file_name:"✓ Downloaded and verified: "+shortPath(j.result_path);
  return "Download failed: "+(j.error||"unknown error");
 }
-function fileRow(label,onPc,ref,request,f={}){
- // One downloadable file: "On your PC", an existing job's state, or a Download button; plus how it suits the PC.
+function isOllamaCompatiblePath(path){
+ const filename=(path||"").split("/").pop()||"";
+ const stem=filename.replace(/\.gguf$/i,"");
+ return /\.gguf$/i.test(filename)&&!stem.toLowerCase().includes("mmproj")&&!/(?:^|[-_.])\d{5}-of-\d{5}$/i.test(stem);
+}
+function ollamaModelName(repository,path){
+ return "hf.co/"+repository+":"+(path||"").split("/").pop();
+}
+function fileRow(label,onPc,ref,request,f={},behavior={}){
+ // One downloadable file: a destination-specific installed state, active job, or Download button.
  const row=text("div","","browse-file"+(f.best?" best":""));row.append(text("span",label,"model-sub"));
  if(f.fit)row.append(text("span",(f.best?"★ Best for your PC · ":"")+(f.fit.level==="good"?"✓ ":f.fit.level==="bad"?"✗ ":"⚠ ")+f.fit.note,"fit fit-"+f.fit.level));
  const status=text("span","","browse-status");row.append(status);
- if(onPc){status.textContent="✓ On your PC";status.classList.add("on-pc");return row;}
  const button=text("button","Download","repo-action");button.type="button";row.append(button);
- const show=j=>{if(!j)return;status.textContent=newDownloadStatus(j);button.hidden=j.state!=="failed";
-  if(j.state==="queued"||j.state==="running")setTimeout(async()=>{if(view!=="browse")return;try{show((await apiRequest("/api/downloads")).find(x=>x.id===j.id));}catch(_){}},3000);};
- if(!browseAgent()){button.disabled=true;status.textContent="No Windows agent connected";}
- button.addEventListener("click",async()=>{button.disabled=true;try{show(await apiRequest("/api/downloads/new","POST",{agent:browseAgent(),...request}));pollDownloads();$("download-tray").classList.remove("collapsed");}catch(err){status.textContent=err.message;button.disabled=false;}});
- show(browseJobs.find(j=>j.source_ref===ref&&j.state!=="failed"));
+ const currentRef=()=>typeof ref==="function"?ref():ref;
+ const installed=()=>typeof onPc==="function"?onPc():onPc;
+ const allowed=()=>!behavior.isAllowed||behavior.isAllowed();
+ const show=j=>{
+  if(!j){status.textContent="";button.hidden=false;return;}
+  status.textContent=newDownloadStatus(j);button.hidden=j.state!=="failed";
+  if((j.state==="queued"||j.state==="running")&&j.source_ref===currentRef())setTimeout(async()=>{
+   if(view!=="browse"||j.source_ref!==currentRef())return;
+   try{show((await apiRequest("/api/downloads")).find(x=>x.id===j.id));}catch(_){}
+  },3000);
+ };
+ const render=()=>{
+  if(!allowed()){status.textContent="Ollama can import single GGUF model files only.";status.classList.remove("on-pc");button.hidden=true;return;}
+  status.classList.remove("on-pc");
+  if(installed()){status.textContent=request.provider==="ollama"?"✓ In Ollama":"✓ On your PC";status.classList.add("on-pc");button.hidden=true;return;}
+  button.hidden=false;
+  show(browseJobs.find(j=>j.source_ref===currentRef()&&j.state!=="failed"));
+  if(!browseAgent()){button.disabled=true;status.textContent="No Windows agent connected";}
+  else button.disabled=false;
+ };
+ if(behavior.destination)behavior.destination.addEventListener("change",render);
+ button.addEventListener("click",async()=>{
+  if(!allowed())return;
+  button.disabled=true;
+  try{const job=await apiRequest("/api/downloads/new","POST",{agent:browseAgent(),...request});show(job);pollDownloads();$("download-tray").classList.remove("collapsed");}
+  catch(err){status.textContent=err.message;button.disabled=false;}
+ });
+ render();
  return row;
 }
 function civitaiCard(item){
@@ -532,15 +562,25 @@ function hfInspectCard(data){
  const folderRow=text("div","","inspect-folder-row");
  folderRow.append(text("span","Save into: ","muted"));
  const folderSelect=document.createElement("select");folderSelect.setAttribute("aria-label","Target folder");
- const hasGguf=data.files.some(f=>/\.gguf$/i.test(f.path));
+ const hasGguf=data.files.some(f=>isOllamaCompatiblePath(f.path));
+ const primaryCanOllama=!!data.primary_file&&isOllamaCompatiblePath(data.primary_file.path)&&
+  data.files.filter(f=>f.path.split("/").pop().toLowerCase()===data.primary_file.path.split("/").pop().toLowerCase()).length===1;
  (data.available_folders||[data.target_folder,"loras","checkpoints"]).forEach(f=>{
-  const opt=new Option(f,f);if(f===data.target_folder&&!hasGguf)opt.selected=true;folderSelect.append(opt);
+  const opt=new Option(f,f);if(f===data.target_folder&&!primaryCanOllama)opt.selected=true;folderSelect.append(opt);
  });
- // GGUF repos are usually LLMs: offer importing into Ollama (only .gguf files can go there).
- if(hasGguf)folderSelect.prepend(new Option("Ollama (import GGUF)","ollama",true,true));
+ // Default to Ollama only when the selected file can actually be imported there.
+ if(hasGguf)folderSelect.prepend(new Option("Ollama (import GGUF)","ollama",primaryCanOllama,primaryCanOllama));
  folderRow.append(folderSelect);
  const hfRequest=f=>({repository:data.repository,remote_path:f.path,base_model:data.base_model,trigger_words:data.trigger_words,
   get provider(){return folderSelect.value==="ollama"?"ollama":"huggingface";},get folder(){return folderSelect.value==="ollama"?null:folderSelect.value;}});
+ const hfRef=f=>folderSelect.value==="ollama"?"ollama:"+ollamaModelName(data.repository,f.path):"huggingface:"+data.repository+"/"+f.path;
+ const hfInstalled=f=>{
+  if(folderSelect.value!=="ollama")return !!f.on_pc;
+  const name=ollamaModelName(data.repository,f.path).toLowerCase(),device=(browseAgent()||"")+":ollama";
+  return models.some(m=>m.device===device&&m.name.toLowerCase()===name);
+ };
+ const hfBehavior=f=>({destination:folderSelect,isAllowed:()=>folderSelect.value!=="ollama"||
+  isOllamaCompatiblePath(f.path)&&data.files.filter(x=>x.path.split("/").pop().toLowerCase()===f.path.split("/").pop().toLowerCase()).length===1});
  const primaryBox=text("div","","primary-file-box");
  if(data.primary_file){
   const pf=data.primary_file;
@@ -548,8 +588,8 @@ function hfInspectCard(data){
   header.append(text("span",data.specified_path?"★ Selected file from link":"★ Recommended file for ComfyUI","primary-badge"));
   primaryBox.append(header);
   primaryBox.append(fileRow(pf.name+(pf.size_bytes?" · "+fmt(pf.size_bytes):"")+(pf.sha256?"":" · no published hash"),
-   pf.on_pc,"huggingface:"+data.repository+"/"+pf.path,
-   hfRequest(pf),pf));
+   ()=>hfInstalled(pf),()=>hfRef(pf),
+   hfRequest(pf),pf,hfBehavior(pf)));
  }else{
   primaryBox.append(text("p","No model files found in repository.","muted"));
  }
@@ -562,8 +602,8 @@ function hfInspectCard(data){
  data.files.forEach(f=>{
   const isPrimary=data.primary_file&&f.path===data.primary_file.path;
   files.append(fileRow(f.path+(isPrimary?" (recommended)":"")+(f.size_bytes?" · "+fmt(f.size_bytes):"")+(f.sha256?"":" · no published hash"),
-   f.on_pc,"huggingface:"+data.repository+"/"+f.path,
-   hfRequest(f),f));
+   ()=>hfInstalled(f),()=>hfRef(f),
+   hfRequest(f),f,hfBehavior(f)));
  });
  const link=document.createElement("a");link.href=data.url;link.target="_blank";link.rel="noopener noreferrer";link.textContent="Open on Hugging Face ↗";link.className="model-sub";
  info.append(title,meta,folderRow,primaryBox,toggle,link);card.append(info,files);return card;
