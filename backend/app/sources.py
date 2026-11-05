@@ -21,6 +21,8 @@ CIVITAI_HOSTS = ("civitai.com", "civitai.red")
 OLLAMA_NAME = re.compile(r"^(?:([a-z0-9][a-z0-9._-]{0,63})/)?([a-z0-9][a-z0-9._-]{0,127}):([A-Za-z0-9][A-Za-z0-9._-]{0,127})$")
 DAY = 86400
 MAX_BYTES = 3_000_000
+# Malformed or unexpected provider data (bad JSON, oversized body, wrong shapes), as opposed to network errors.
+DATA_ERRORS = (ValueError, TypeError, AttributeError, KeyError)
 
 def ensure_tables(db):
     db.execute("""CREATE TABLE IF NOT EXISTS civitai_files (
@@ -339,7 +341,12 @@ def run_pass(db, get=fetch, list_files=None, now=None, pause=0.5, limit=300):
              OR (m.weights_sha256 IS NOT NULL AND c.weights_checked IS NULL))))
         GROUP BY m.sha256 LIMIT ?""", (now - 7 * DAY, limit)).fetchall()
     for sha, weights in pending:
-        civitai_lookup(db, sha, get, now, weights)
+        try:
+            civitai_lookup(db, sha, get, now, weights)
+        except DATA_ERRORS as exc:  # a bad response for this file; network errors still end the pass
+            LOG.warning("Civitai lookup failed for %s: %s", sha, exc)
+            db.execute("""INSERT INTO civitai_files (sha256,found,checked_at,weights_checked) VALUES (?,0,?,1)
+                ON CONFLICT(sha256) DO UPDATE SET found=0,checked_at=excluded.checked_at,weights_checked=1""", (sha, now))
         db.commit()
         time.sleep(pause)
     # LoRAs identified before example weights were recorded: read their version once.
@@ -349,14 +356,20 @@ def run_pass(db, get=fetch, list_files=None, now=None, pause=0.5, limit=300):
     for sha, version_id in backfill:
         body = next((b for b in (get(f"https://{h}/api/v1/model-versions/{int(version_id)}") for h in CIVITAI_HOSTS)
                      if b is not None), None)
-        weight = example_weight(json.loads(body)) if body else None
+        try:
+            weight = example_weight(json.loads(body)) if body else None
+        except DATA_ERRORS:
+            weight = None
         db.execute("UPDATE civitai_files SET lora_weight=?,weight_checked=1 WHERE sha256=?", (weight, sha))
         db.commit()
         time.sleep(pause)
     model_ids = [r[0] for r in db.execute("""SELECT DISTINCT model_id FROM civitai_files WHERE found=1
         AND (latest_checked_at IS NULL OR latest_checked_at<?) LIMIT ?""", (now - DAY, limit))]
     for model_id in model_ids:
-        civitai_latest(db, model_id, get, now)
+        try:
+            civitai_latest(db, model_id, get, now)
+        except DATA_ERRORS as exc:
+            LOG.warning("Civitai update check failed for model %s: %s", model_id, exc)
         db.commit()
         time.sleep(pause)
     names = [r[0] for r in db.execute("""SELECT DISTINCT m.name FROM models m
@@ -386,6 +399,16 @@ def start_worker(connect, list_files, interval=300):
 def _ollama_page(name):
     base = name.split(":")[0]
     return "https://ollama.com/" + quote(base if "/" in base else "library/" + base, safe="/")
+
+def _word_list(raw):
+    """Trigger words stored as a JSON list or a plain string; never raises on malformed data."""
+    if isinstance(raw, str) and raw.startswith("["):
+        try:
+            words = json.loads(raw)
+            return [str(w) for w in words if w] if isinstance(words, list) else [raw]
+        except ValueError:
+            return [raw]
+    return [raw] if raw else []
 
 def annotate(db, records):
     """Attach source identity and update availability to inventory records."""
@@ -429,7 +452,7 @@ def annotate(db, records):
         if match:
             _, _, repo, remote_path, digest, latest = match[:6]
             base_m, tw_raw = (match[6], match[7]) if len(match) > 6 else (None, None)
-            tw_list = json.loads(tw_raw) if (tw_raw and isinstance(tw_raw, str) and tw_raw.startswith("[")) else ([tw_raw] if tw_raw else [])
+            tw_list = _word_list(tw_raw)
             url = "https://huggingface.co/" + quote(repo, safe="/") + "/blob/main/" + quote(remote_path, safe="/")
             record["source"] = {"provider": "huggingface", "model_name": repo, "version_name": remote_path, "base_model": base_m, "trained_words": tw_list, "url": url}
             if latest and latest != digest:

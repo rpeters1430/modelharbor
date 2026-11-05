@@ -65,6 +65,8 @@ def download_file(session, job, roots, report_progress):
             raise ValueError(explain(response.status_code, url.hostname))
         if "text/html" in response.headers.get("Content-Type", ""):
             raise ValueError(explain(401, url.hostname))  # a login page instead of the file
+        # Ours by name: left behind by a crash or restart mid-download, so start it over.
+        partial.unlink(missing_ok=True)
         try:
             with open(partial, "xb") as out:
                 for chunk in response.iter_content(CHUNK):

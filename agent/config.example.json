@@ -1,5 +1,5 @@
 {
-  "server": "http://192.168.8.137:8099",
+  "server": "http://192.168.8.137:8096",
   "device": "windows-pc",
   "comfyui_models_dirs": [],
   "ollama_enabled": true,

@@ -407,7 +407,10 @@ def civitai_model_versions(model_id: int, device: str, path: str, x_modelharbor_
     authorize(x_modelharbor_token)
     with closing(connect()) as db:
         sha, weights, _ = _local_hashes(db, device, path)
-    result = civitai_versions(model_id, sha, weights=weights)
+    try:
+        result = civitai_versions(model_id, sha, weights=weights)
+    except (OSError, ValueError) as exc:
+        raise HTTPException(502, "Civitai is unavailable right now") from exc
     if not result:
         raise HTTPException(404, "Civitai model not found")
     return result
@@ -420,7 +423,10 @@ def link_civitai(payload: CivitaiLink, x_modelharbor_token: str | None = Header(
     with closing(connect()) as db:
         with db:
             sha, weights, _ = _local_hashes(db, payload.device, payload.path)
-            result = civitai_link(db, sha, payload.model_id, payload.version_id, payload.file_id, weights=weights)
+            try:
+                result = civitai_link(db, sha, payload.model_id, payload.version_id, payload.file_id, weights=weights)
+            except (OSError, ValueError) as exc:
+                raise HTTPException(502, "Civitai is unavailable right now") from exc
             if result:  # a linked file is no longer local only
                 db.execute("DELETE FROM match_ignored WHERE sha256=?", (sha,))
     if not result:
@@ -553,7 +559,10 @@ def new_download(payload: NewDownload, x_modelharbor_token: str | None = Header(
             with db:
                 return downloads.create_ollama(db, payload.agent, repo, payload.remote_path)
     if payload.provider == "civitai":
-        model = _civitai_model(payload.model_id or 0, fetch)
+        try:
+            model = _civitai_model(payload.model_id or 0, fetch)
+        except (OSError, ValueError) as exc:
+            raise HTTPException(502, "Civitai is unavailable right now") from exc
         version = next((v for v in model.get("modelVersions") or [] if v.get("id") == payload.version_id), None)
         file = version and next((f for f in version.get("files") or [] if f.get("id") == payload.file_id), None)
         if not file:

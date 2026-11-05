@@ -154,10 +154,15 @@ def request_cleanup(db, job_id):
     return {"id": job_id, "cleanup": "queued"}
 
 def claim_cleanup(db, agent):
+    # A cleanup re-hashes two files; one running this long was cut off by a crash or restart.
+    now = int(time.time())
+    db.execute("""UPDATE download_jobs SET cleanup='failed',cleanup_error=?,updated_at=?
+        WHERE agent=? AND cleanup='running' AND updated_at<?""",
+               ("Interrupted: the PC's background task stopped before it finished. Try again.", now, agent, now - 3600))
     row = db.execute("""SELECT id,path,result_path,old_sha,expected_sha FROM download_jobs
         WHERE agent=? AND cleanup='queued' ORDER BY updated_at LIMIT 1""", (agent,)).fetchone()
-    if not row or db.execute("UPDATE download_jobs SET cleanup='running' WHERE id=? AND cleanup='queued'",
-                             (row[0],)).rowcount != 1:
+    if not row or db.execute("UPDATE download_jobs SET cleanup='running',updated_at=? WHERE id=? AND cleanup='queued'",
+                             (now, row[0])).rowcount != 1:
         return None
     return dict(zip(("id", "path", "new_path", "old_sha", "new_sha"), row))
 

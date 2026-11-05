@@ -131,28 +131,28 @@ def run_hash_worker(cfg, token):
                 if res.ok and res.json().get("scan"):
                     LOG.info("Scan requested from the dashboard")
                     sync(cfg,token)
-            except (requests.RequestException,OSError,ValueError) as exc:
+            except Exception as exc:  # noqa: BLE001 - keep the worker alive; retried next poll
                 LOG.warning("Scan request poll or sync failed: %s",exc)
             try:
                 process_one(session,server,token,device,roots)
-            except (requests.RequestException,OSError,ValueError) as exc:
+            except Exception as exc:  # noqa: BLE001 - keep the worker alive; retried next poll
                 LOG.warning("Hash job poll failed; retrying: %s",exc)
             if cfg.get("downloads_enabled", True):
                 try:
                     download_worker.process_one(session,server,token,device.rsplit(":",1)[0],roots,
                                                 cfg.get("ollama_url","http://127.0.0.1:11434"))
                     download_worker.process_cleanup(session,server,token,agent,roots)
-                except (requests.RequestException,OSError,ValueError) as exc:
+                except Exception as exc:  # noqa: BLE001 - keep the worker alive; retried next poll
                     LOG.warning("Download poll failed; retrying: %s",exc)
             if cfg.get("deletes_enabled", True):
                 try:
                     download_worker.process_delete(session,server,token,agent,roots)
-                except (requests.RequestException,OSError,ValueError) as exc:
+                except Exception as exc:  # noqa: BLE001 - keep the worker alive; retried next poll
                     LOG.warning("Delete poll failed; retrying: %s",exc)
             if cfg.get("converts_enabled", True):
                 try:
                     convert_worker.process_convert(session,server,token,agent,roots,cfg)
-                except (requests.RequestException,OSError,ValueError) as exc:
+                except Exception as exc:  # noqa: BLE001 - keep the worker alive; retried next poll
                     LOG.warning("Conversion poll failed; retrying: %s",exc)
             time.sleep(interval)
 

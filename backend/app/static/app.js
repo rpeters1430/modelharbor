@@ -312,6 +312,21 @@ function renderCompanionWarning(m){
  };
  box.append(findBtn);
 }
+// Suggestions also include files that only share a name or size; linking those says "this is my file" when it isn't.
+const SURE=new Set(["exact","same_weights"]);
+function verdictLabel(c){
+ const v=c.verdict||c.match_type;
+ if(v==="exact")return "✓ Exact SHA-256 match";
+ if(v==="same_weights")return c.provider==="civitai"?"✓ Same model weights":"Same name and size (not hash-checked)";
+ if(v==="converted")return "Looks like your conversion of this file (same name, different precision)";
+ if(v==="same_size")return "Same size only (different contents)";
+ return "Name match only";
+}
+function confirmLink(c,m){
+ const v=c.verdict||c.match_type;
+ if(v==="exact"||(v==="same_weights"&&c.provider==="civitai"))return true;
+ return confirm("This is not a verified match ("+verdictLabel(c)+").\n\n"+m.name+" → "+(c.model_name||c.name||c.repository)+"\n\nOnly link it if you know your file is this model (for example, your own conversion of it). Link anyway?");
+}
 async function renderSuggestedMatches(m){
  const box=$("suggest-matches-box");box.replaceChildren();box.hidden=true;
  // Local-only files named like a conversion (int8, fp8…) are often the user's own copy of a published model.
@@ -337,9 +352,10 @@ async function renderSuggestedMatches(m){
   const h4=document.createElement("h4");h4.textContent="⚡ Suggested online matches ("+(cv.length+hf.length)+")";box.append(h4);
   cv.forEach(c=>{
    const card=text("div","","suggest-match-card"),info=text("div","","suggest-match-info");
-   info.append(text("strong","Civitai · "+c.name+" ("+c.version_name+")"),text("small",(c.match_type==="exact"?"✓ Exact SHA-256 match":c.match_type==="same_weights"?"✓ Same model weights":c.match_type==="converted"?"Looks like your conversion of this file (same name, different precision)":"Name match")+(c.base_model?" · "+c.base_model:"")));
+   info.append(text("strong","Civitai · "+c.name+" ("+c.version_name+")"),text("small",verdictLabel(c)+(c.base_model?" · "+c.base_model:"")));
    const linkBtn=text("button","Link to this model","primary");linkBtn.type="button";
    linkBtn.onclick=async()=>{
+    if(!confirmLink(c,m))return;
     linkBtn.disabled=true;
     try{
      const r=await apiRequest("/api/civitai/link","POST",{device:m.device,path:m.path,model_id:c.model_id,version_id:c.version_id,file_id:c.file_id});
@@ -350,9 +366,10 @@ async function renderSuggestedMatches(m){
   });
   hf.forEach(h=>{
    const card=text("div","","suggest-match-card"),info=text("div","","suggest-match-info");
-   info.append(text("strong","Hugging Face · "+h.repository+" / "+h.remote_path),text("small",(h.match_type==="exact"?"✓ Exact SHA-256 match":"Filename match")+(h.base_model?" · "+h.base_model:"")));
+   info.append(text("strong","Hugging Face · "+h.repository+" / "+h.remote_path),text("small",verdictLabel(h)+(h.base_model?" · "+h.base_model:"")));
    const linkBtn=text("button","Link to this model","primary");linkBtn.type="button";
    linkBtn.onclick=async()=>{
+    if(!confirmLink(h,m))return;
     linkBtn.disabled=true;
     try{
      await apiRequest("/api/huggingface/link","POST",{device:m.device,path:m.path,repository:h.repository,remote_path:h.remote_path,sha256:h.sha256,base_model:h.base_model,trigger_words:h.trigger_words});
@@ -437,7 +454,7 @@ function renderAgents(){
   if(s&&s.phase==="hashing"&&s.total_bytes){const bar=text("div","","bar");const inner=text("span");inner.style.width=Math.min(100,s.done_bytes/s.total_bytes*100)+"%";bar.append(inner);card.append(bar);}
   if(a.hardware)card.append(text("div",[a.hardware.gpu,a.hardware.vram_bytes?Math.round(a.hardware.vram_bytes/2**30)+" GB VRAM":"",a.hardware.ram_bytes?Math.round(a.hardware.ram_bytes/2**30)+" GB RAM":""].filter(Boolean).join(" · "),"model-sub"));
   card.append(text("div","ComfyUI: "+a.comfyui_count+" · Ollama: "+(a.ollama_count ?? "unavailable")+" · last full sync "+ago(a.last_seen),"model-sub"));
-  card.append(text("div",a.worker_running?"Background task running (checks for scan requests and downloads)":"Background task not running"+(a.worker_seen?" · last seen "+ago(a.worker_seen):"")+". Start “ModelHarbor Hash Worker” in Task Scheduler.","model-sub"));
+  card.append(text("div",a.worker_running?"Background task running (checks for scan requests and downloads)":busy?"Background task paused while a scan runs"+(a.worker_seen?" · last seen "+ago(a.worker_seen):"")+" (it checks for jobs again when the scan ends)":"Background task not running"+(a.worker_seen?" · last seen "+ago(a.worker_seen):"")+". Start “ModelHarbor Hash Worker” in Task Scheduler.","model-sub"));
   const button=text("button",busy?"Scanning…":a.scan_requested?"Scan requested":"Scan now","repo-action");button.type="button";button.disabled=!!busy||a.scan_requested;
   button.addEventListener("click",async()=>{button.disabled=true;try{await apiRequest("/api/agents/"+encodeURIComponent(a.device)+"/scan","POST");await pollAgents();}catch(err){showNotice(err.message);button.disabled=false;}});
   card.append(button);list.append(card);
@@ -723,6 +740,7 @@ async function openAutoMatchWizard(){
  const matched=[],noMatch=[];
  for(let i=0;i<unmatchedModels.length;i++){
   const m=unmatchedModels[i];
+  if(!$("automatch-dialog").open)return;  // closed: stop querying Civitai and Hugging Face
   status.textContent="Checking "+(i+1)+" of "+unmatchedModels.length+": "+m.name+"…";
   try{
    const res=await apiRequest("/api/models/suggest-match?"+new URLSearchParams({device:m.device,path:m.path}));
@@ -766,11 +784,12 @@ function renderAutoMatchContent(matched,noMatch){
     const prov=topCandidate.provider==="civitai"?"Civitai":"Hugging Face";
     const candTitle=topCandidate.model_name||topCandidate.name||topCandidate.repository;
     const vName=topCandidate.version_name?" ("+topCandidate.version_name+")":topCandidate.remote_path?" / "+topCandidate.remote_path:"";
-    const badge=(topCandidate.verdict==="exact"||topCandidate.match_type==="exact")?"✓ Exact hash match":(topCandidate.verdict==="same_weights"||topCandidate.match_type==="same_weights")?"✓ Same model weights":"Name match";
+    const badge=verdictLabel(topCandidate);
     left.append(text("span","Candidate: "+prov+" · "+candTitle+vName+" ("+badge+")","match-possible"));
    }
    const actions=text("div","","suggest-match-actions"),linkBtn=text("button","Link","primary");linkBtn.type="button";
    linkBtn.onclick=async()=>{
+    if(!confirmLink(topCandidate,m))return;
     linkBtn.disabled=true;
     try{
      if(topCandidate.provider==="civitai"){
@@ -779,7 +798,7 @@ function renderAutoMatchContent(matched,noMatch){
       await apiRequest("/api/huggingface/link","POST",{device:m.device,path:m.path,repository:topCandidate.repository,remote_path:topCandidate.remote_path,sha256:topCandidate.sha256,base_model:topCandidate.base_model,trigger_words:topCandidate.trigger_words});
      }
      linkBtn.textContent="✓ Linked";linkBtn.classList.remove("primary");linkBtn.classList.add("repo-action");
-    }catch(err){linkBtn.textContent="Error";linkBtn.disabled=false;}
+    }catch(err){linkBtn.textContent="Error: "+err.message;linkBtn.disabled=false;}
    };
    actions.append(linkBtn);row.append(left,actions);sec.append(row);
   });
@@ -882,7 +901,7 @@ function renderDownloadTray(){
  const items=$("tray-items");items.replaceChildren();
  allDownloads.slice(0,15).forEach(j=>{
   const row=text("div","","tray-item"),top=text("div","","tray-item-top");
-  const label=j.name||(j.remote_path?j.remote_path.split("/").pop():j.source_ref||"Download");
+  const label=j.file_name||j.source_ref||"Download";
   top.append(text("span",label,"tray-item-name"),text("span",j.state,"tray-item-status"));
   row.append(top);
   if(j.state==="running"&&j.size_bytes){
