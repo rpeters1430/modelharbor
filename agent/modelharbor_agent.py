@@ -9,6 +9,7 @@ from pathlib import Path
 import requests
 from scan import scan
 from ollama_scan import collect
+import lemonade_scan
 from hash_worker import process_one
 from hash_cache import fill_hashes
 from hardware import detect as detect_hardware
@@ -89,28 +90,41 @@ def run_once(cfg, token, dry_run=False, reporter=None):
                 ollama = collect(session, cfg.get("ollama_url", "http://127.0.0.1:11434"), device + ":ollama")
             except (requests.RequestException, ValueError) as exc:
                 LOG.warning("Ollama unavailable; preserving previous inventory: %s", exc)
-        LOG.info("Found %d ComfyUI models and %s Ollama models", len(comfy), len(ollama) if ollama is not None else "unavailable")
+        lemonade = None
+        if cfg.get("lemonade_enabled", True):
+            try:
+                lemonade = lemonade_scan.collect(session, cfg.get("lemonade_url", lemonade_scan.DEFAULT_URL), device + ":lemonade")
+            except (requests.RequestException, ValueError) as exc:
+                LOG.warning("Lemonade unavailable; preserving previous inventory: %s", exc)
+        LOG.info("Found %d ComfyUI models, %s Ollama models and %s Lemonade models", len(comfy),
+                 len(ollama) if ollama is not None else "unavailable", len(lemonade) if lemonade is not None else "unavailable")
+        llms = (ollama or []) + (lemonade or [])
         if dry_run:
-            for m in (comfy + (ollama or []))[:25]:
+            for m in (comfy + llms)[:25]:
                 print(m["kind"], m["name"])
             return
-        reporter.update("uploading", total=len(comfy) + len(ollama or []))
+        reporter.update("uploading", total=len(comfy) + len(llms))
         if roots and any(Path(root).is_dir() for root in roots):
             post_inventory(session, server, token, device + ":comfyui", comfy)
         elif roots:
             LOG.warning("No configured ComfyUI roots accessible; preserving prior inventory")
         else:
             LOG.warning("No ComfyUI roots discovered; set comfyui_models_dirs in config")
-        if ollama is not None:
-            post_inventory(session, server, token, device + ":ollama", ollama)
+        # A runtime switched off in config is gone from this PC: clear its old inventory.
+        for runtime, found in (("ollama", ollama), ("lemonade", lemonade)):
+            if found is not None or not cfg.get(runtime + "_enabled", True):
+                post_inventory(session, server, token, device + ":" + runtime, found or [])
         # Heartbeat is independent of inventory; never modifies model files.
         response = session.post(server.rstrip("/") + "/api/agents/heartbeat",
             headers={"X-ModelHarbor-Token": token},
             json={"device": device, "comfyui_count": len(comfy),
-                  "ollama_count": len(ollama) if ollama is not None else None, "hardware": detect_hardware()}, timeout=20)
+                  "ollama_count": len(ollama) if ollama is not None else None,
+                  "lemonade_count": len(lemonade) if lemonade is not None else None,
+                  "hardware": detect_hardware()}, timeout=20)
         response.raise_for_status()
         reporter.update("idle", done=len(comfy), total=len(comfy), message=f"Synced {len(comfy)} ComfyUI files"
-                        + (f" and {len(ollama)} Ollama models" if ollama is not None else "; Ollama unavailable"))
+                        + "".join(f", {len(found)} {label} models" for label, found in
+                                  (("Ollama", ollama), ("Lemonade", lemonade)) if found is not None))
 
 
 def run_hash_worker(cfg, token):
@@ -140,7 +154,9 @@ def run_hash_worker(cfg, token):
             if cfg.get("downloads_enabled", True):
                 try:
                     download_worker.process_one(session,server,token,device.rsplit(":",1)[0],roots,
-                                                cfg.get("ollama_url","http://127.0.0.1:11434"))
+                                                cfg.get("ollama_url","http://127.0.0.1:11434"),
+                                                cfg.get("lemonade_url",lemonade_scan.DEFAULT_URL),
+                                                cfg.get("lemonade_load_after_pull",True))
                     download_worker.process_cleanup(session,server,token,agent,roots)
                 except Exception as exc:  # noqa: BLE001 - keep the worker alive; retried next poll
                     LOG.warning("Download poll failed; retrying: %s",exc)

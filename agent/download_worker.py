@@ -1,5 +1,6 @@
 """Download user-approved model updates next to the old file, and delete the old file only when asked."""
 import hashlib
+import json
 import os
 import re
 import shutil
@@ -9,6 +10,7 @@ from urllib.parse import urlsplit
 import requests
 from hash_worker import allowed_file
 from hash_cache import sha256_file
+from lemonade_scan import auth_headers as lemonade_headers
 
 ALLOWED_HOSTS = {"civitai.com", "civitai.red", "huggingface.co", "modelscope.cn", "www.modelscope.cn"}
 SAFE_NAME = re.compile(r"^[\w .()+,-]{1,200}\.(?:safetensors|ckpt|pt|pth|bin|gguf|onnx)$")
@@ -100,7 +102,77 @@ def pull_ollama(session, ollama_url, name):
         raise ValueError("Ollama pull failed: " + str(payload["error"])[:250])
     return None, "ollama://" + name
 
-def process_one(session, server, token, agent, roots, ollama_url):
+LEMONADE_NAME = re.compile(r"^user\.[A-Za-z0-9][A-Za-z0-9._-]{0,159}$")
+LEMONADE_CHECKPOINT = re.compile(r"^[\w.-]{1,96}/[\w.-]{1,96}:[\w .()+,-]{1,200}\.gguf$")
+
+def _lemonade_error(response):
+    if response.status_code in (401, 403):
+        return f"HTTP {response.status_code}; set LEMONADE_API_KEY in the Windows user environment to the server's API key"
+    try:
+        body = response.json()
+    except ValueError:
+        return f"HTTP {response.status_code}"
+    if not isinstance(body, dict):
+        return f"HTTP {response.status_code}"
+    error = body.get("error")
+    if isinstance(error, dict):
+        error = error.get("message")
+    return str(error or body.get("message") or f"HTTP {response.status_code}")[:250]
+
+def _lemonade_stream(response, report_progress):
+    """Follow /api/v1/pull's Server-Sent Events, reporting bytes so the NAS knows the pull is alive."""
+    event, finished, current, total = None, 0, None, 0
+    for line in response.iter_lines(decode_unicode=True):
+        if not line:
+            continue
+        if line.startswith("event:"):
+            event = line[6:].strip()
+            continue
+        if not line.startswith("data:"):
+            continue
+        try:
+            data = json.loads(line[5:].strip())
+        except ValueError:
+            continue
+        if event == "error":
+            raise ValueError("Lemonade pull failed: " + str(data.get("error") or data.get("message") or "unknown error")[:250])
+        if event == "complete":
+            return
+        if event == "progress":
+            if data.get("file_index") != current:  # moved on to the next file of a multi-file pull
+                finished += total
+                current = data.get("file_index")
+            total = int(data.get("bytes_total") or 0)
+            report_progress(finished + int(data.get("bytes_downloaded") or 0))
+    raise ValueError("Lemonade closed the connection before the pull finished")
+
+def pull_lemonade(session, lemonade_url, job, report_progress, load=True):
+    """Ask the PC's Lemonade Server to download a Hugging Face GGUF, then load it."""
+    name, checkpoint = job["file_name"], job.get("url") or ""
+    if not LEMONADE_NAME.fullmatch(name or "") or not LEMONADE_CHECKPOINT.fullmatch(checkpoint):
+        raise ValueError("Unsafe Lemonade model name or checkpoint")
+    base = lemonade_url.rstrip("/") + "/api/v1/"
+    body = {"model_name": name, "checkpoint": checkpoint, "recipe": "llamacpp", "stream": True}
+    headers = lemonade_headers()
+    with session.post(base + "pull", json=body, headers=headers, stream=True, timeout=(30, 3600)) as response:
+        if response.status_code != 200:
+            raise ValueError("Lemonade pull failed: " + _lemonade_error(response))
+        if "text/event-stream" in response.headers.get("Content-Type", ""):
+            _lemonade_stream(response, report_progress)
+        else:  # a server that ignores "stream" answers once with {"status": ...}
+            try:
+                payload = response.json()
+            except ValueError as exc:
+                raise ValueError("Lemonade returned an invalid pull response") from exc
+            if not isinstance(payload, dict) or payload.get("status") == "error" or payload.get("error"):
+                raise ValueError("Lemonade pull failed: " + _lemonade_error(response))
+    if load:
+        response = session.post(base + "load", json={"model_name": name}, headers=headers, timeout=(30, 900))
+        if response.status_code != 200:
+            raise ValueError("Downloaded into Lemonade, but loading failed: " + _lemonade_error(response))
+    return None, "lemonade://" + name
+
+def process_one(session, server, token, agent, roots, ollama_url, lemonade_url=None, lemonade_load=True):
     headers = {"X-ModelHarbor-Token": token}
     base = server.rstrip("/") + "/api/downloads/"
     res = session.get(base + "next", params={"agent": agent}, headers=headers, timeout=20)
@@ -115,6 +187,9 @@ def process_one(session, server, token, agent, roots, ollama_url):
     try:
         if job["provider"] == "ollama":
             result["sha256"], result["result_path"] = pull_ollama(session, ollama_url, job["file_name"])
+        elif job["provider"] == "lemonade":
+            result["sha256"], result["result_path"] = pull_lemonade(
+                session, lemonade_url or "http://127.0.0.1:13305", job, report_progress, lemonade_load)
         else:
             result["sha256"], result["result_path"] = download_file(session, job, roots, report_progress)
     except (OSError, ValueError, requests.RequestException) as exc:

@@ -4,6 +4,9 @@
   "comfyui_models_dirs": [],
   "ollama_enabled": true,
   "ollama_url": "http://127.0.0.1:11434",
+  "lemonade_enabled": true,
+  "lemonade_url": "http://127.0.0.1:13305",
+  "lemonade_load_after_pull": true,
   "sync_interval_seconds": 1800,
   "hash_models": true
 }

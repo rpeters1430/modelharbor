@@ -19,7 +19,7 @@ $Trigger = @(
     (New-ScheduledTaskTrigger -Once -At (Get-Date) -RepetitionInterval (New-TimeSpan -Minutes 30))
 )
 $Principal = New-ScheduledTaskPrincipal -UserId "$env:USERDOMAIN\$env:USERNAME" -LogonType Interactive -RunLevel Limited
-Register-ScheduledTask -TaskName "ModelHarbor Inventory Sync" -Action $Action -Trigger $Trigger -Principal $Principal -Description "Read-only ComfyUI and Ollama inventory sync" -Force
+Register-ScheduledTask -TaskName "ModelHarbor Inventory Sync" -Action $Action -Trigger $Trigger -Principal $Principal -Description "Read-only ComfyUI, Ollama and Lemonade inventory sync" -Force
 Write-Host "Installed task: ModelHarbor Inventory Sync"
 
 # Dedicated per-user hash worker, independent of the 30-minute inventory schedule.

@@ -139,8 +139,8 @@ def request_cleanup(db, job_id):
     if not row:
         raise HTTPException(404, "Unknown download")
     device, path, provider, state, result_path, cleanup = row
-    if provider == "ollama":
-        raise HTTPException(409, "Ollama replaces the old build itself")
+    if provider in ("ollama", "lemonade"):
+        raise HTTPException(409, "The LLM server manages its own model files")
     if state != "done" or not result_path:
         raise HTTPException(409, "The new version must finish downloading and pass its hash check first")
     if cleanup in ("queued", "running", "done"):
@@ -181,13 +181,16 @@ def _request_scan(db, agent):
 
 SPLIT_GGUF = re.compile(r"(?:^|[-_.])\d{5}-of-\d{5}$", re.IGNORECASE)
 
-def ollama_name(repo, remote_path):
-    """Return Ollama's Hugging Face name using the exact GGUF filename as its tag."""
+def _single_gguf(remote_path, runtime):
     name = PurePosixPath(remote_path or "")
     if (name.suffix.lower() != ".gguf" or "mmproj" in name.stem.lower()
             or SPLIT_GGUF.search(name.stem)):
-        raise HTTPException(422, "Ollama import requires one non-split GGUF model file")
-    return f"hf.co/{repo}:{name.name}"
+        raise HTTPException(422, f"{runtime} import requires one non-split GGUF model file")
+    return name
+
+def ollama_name(repo, remote_path):
+    """Return Ollama's Hugging Face name using the exact GGUF filename as its tag."""
+    return f"hf.co/{repo}:{_single_gguf(remote_path, 'Ollama').name}"
 
 def create_ollama(db, agent, repo, remote_path):
     """Queue an Ollama pull of a Hugging Face GGUF file. Ollama checks the layer digests itself."""
@@ -200,6 +203,35 @@ def create_ollama(db, agent, repo, remote_path):
     now, job_id = int(time.time()), uuid.uuid4().hex
     db.execute("""INSERT INTO download_jobs (id,agent,device,path,provider,url,file_name,state,created_at,updated_at,source_ref)
         VALUES (?,?,?,'','ollama',NULL,?,'queued',?,?,?)""", (job_id, agent, agent + ":ollama", name, now, now, source_ref))
+    return dict(zip(FIELDS, db.execute(f"SELECT {','.join(FIELDS)} FROM download_jobs WHERE id=?", (job_id,)).fetchone()))
+
+LEMONADE_UNSAFE = re.compile(r"[^A-Za-z0-9._-]+")
+
+def lemonade_model(repo, remote_path):
+    """Return (model_name, checkpoint) for registering a Hugging Face GGUF with Lemonade Server.
+    The checkpoint names the exact file; the user. prefix marks it as a user-added model."""
+    file_name = _single_gguf(remote_path, "Lemonade")
+    owner, model = repo.split("/", 1)
+    # The owner keeps two uploaders' identically named files apart; the repo name is
+    # skipped when the filename already starts with it ("Qwen3-8B-GGUF" / "Qwen3-8B-Q4_K_M").
+    parts = [owner, file_name.stem]
+    if not file_name.stem.lower().startswith(model.lower().removesuffix("-gguf")):
+        parts.insert(1, model)
+    stem = LEMONADE_UNSAFE.sub("-", "-".join(parts)).strip("-._")
+    return "user." + (stem[:150].rstrip("-._") or "model"), f"{repo}:{file_name.name}"
+
+def create_lemonade(db, agent, repo, remote_path, size_bytes=None):
+    """Queue a Lemonade pull (and load) of a Hugging Face GGUF file. The checkpoint rides in url."""
+    name, checkpoint = lemonade_model(repo, remote_path)
+    source_ref = "lemonade:" + name
+    existing = db.execute(f"SELECT {','.join(FIELDS)} FROM download_jobs WHERE source_ref=? AND agent=? AND state IN (?,?)",
+                          (source_ref, agent, *ACTIVE)).fetchone()
+    if existing:
+        return dict(zip(FIELDS, existing))
+    now, job_id = int(time.time()), uuid.uuid4().hex
+    db.execute("""INSERT INTO download_jobs (id,agent,device,path,provider,url,file_name,size_bytes,state,created_at,updated_at,source_ref)
+        VALUES (?,?,?,'','lemonade',?,?,?,'queued',?,?,?)""",
+        (job_id, agent, agent + ":lemonade", checkpoint, name, size_bytes, now, now, source_ref))
     return dict(zip(FIELDS, db.execute(f"SELECT {','.join(FIELDS)} FROM download_jobs WHERE id=?", (job_id,)).fetchone()))
 
 def create_new(db, agent, url, file_name, expected_sha, size_bytes, folder, source_ref, provider, base_model=None, trigger_words=None):

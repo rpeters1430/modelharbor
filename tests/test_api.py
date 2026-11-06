@@ -49,12 +49,13 @@ def test_agent_status_and_scan_request(tmp_path, monkeypatch):
     monkeypatch.setattr(main, "DB", tmp_path / "status.sqlite3")
     client, headers = TestClient(app), {"X-ModelHarbor-Token": "test-token"}
     assert client.post("/api/agents/pc/scan", headers=headers).status_code == 404  # unknown agent
-    client.post("/api/agents/heartbeat", headers=headers, json={"device": "pc", "comfyui_count": 1, "ollama_count": 0})
+    client.post("/api/agents/heartbeat", headers=headers, json={"device": "pc", "comfyui_count": 1, "ollama_count": 0, "lemonade_count": 2})
     progress = {"device": "pc", "phase": "hashing", "done": 3, "total": 10, "done_bytes": 30, "total_bytes": 100, "current": "C:/m/a.safetensors"}
     assert client.post("/api/agents/status", headers=headers, json=progress).status_code == 200
     assert client.post("/api/agents/status", headers=headers, json={**progress, "phase": "deleting"}).status_code == 422
     [agent] = client.get("/api/agents", headers=headers).json()
     assert agent["status"]["phase"] == "hashing" and agent["status"]["done"] == 3
+    assert (agent["ollama_count"], agent["lemonade_count"]) == (0, 2)
     assert agent["worker_running"] is False and agent["scan_requested"] is False
     assert client.post("/api/agents/pc/scan", headers=headers).status_code == 202
     assert client.get("/api/agents", headers=headers).json()[0]["scan_requested"] is True
@@ -91,3 +92,17 @@ def test_mark_file_local_only(tmp_path, monkeypatch):
     client.post("/api/match-ignore", headers=headers, json={**body, "path": "C:/m/LoRA/renamed.safetensors", "ignored": False})
     assert client.get("/api/models", headers=headers).json()[0]["match_ignored"] is False
     assert client.post("/api/match-ignore", headers=headers, json={**body, "path": "C:/nope"}).status_code == 404
+
+def test_new_lemonade_download_uses_the_repository_listing(tmp_path, monkeypatch):
+    from backend.app import main
+    monkeypatch.setattr(main, "DB", tmp_path / "lemonade.sqlite3")
+    monkeypatch.setattr(main, "list_model_files", lambda repo: {"files": [
+        {"path": "Qwen3-8B-Q4_K_M.gguf", "size_bytes": 5_000_000_000},
+        {"path": "a/dup.gguf", "size_bytes": 1}, {"path": "b/dup.gguf", "size_bytes": 1}]})
+    client, headers = TestClient(app), {"X-ModelHarbor-Token": "test-token"}
+    body = {"agent": "pc", "provider": "lemonade", "repository": "unsloth/Qwen3-8B-GGUF"}
+    job = client.post("/api/downloads/new", headers=headers, json={**body, "remote_path": "Qwen3-8B-Q4_K_M.gguf"}).json()
+    assert (job["provider"], job["file_name"], job["device"], job["size_bytes"]) == (
+        "lemonade", "user.unsloth-Qwen3-8B-Q4_K_M", "pc:lemonade", 5_000_000_000)
+    assert client.post("/api/downloads/new", headers=headers, json={**body, "remote_path": "a/dup.gguf"}).status_code == 422
+    assert client.post("/api/downloads/new", headers=headers, json={**body, "remote_path": "missing.gguf"}).status_code == 404

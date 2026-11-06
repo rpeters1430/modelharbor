@@ -82,6 +82,7 @@ class Heartbeat(BaseModel):
     device: str = Field(min_length=1, max_length=100)
     comfyui_count: int = Field(ge=0)
     ollama_count: int | None = Field(default=None, ge=0)
+    lemonade_count: int | None = Field(default=None, ge=0)
     hardware: Hardware | None = None
 
 class Inventory(BaseModel):
@@ -102,8 +103,11 @@ def connect():
     db.execute("""CREATE TABLE IF NOT EXISTS agent_heartbeats
         (device TEXT PRIMARY KEY, last_seen INTEGER NOT NULL,
          comfyui_count INTEGER NOT NULL, ollama_count INTEGER)""")
-    if "hardware" not in [row[1] for row in db.execute("PRAGMA table_info(agent_heartbeats)")]:
+    heartbeat_columns = [row[1] for row in db.execute("PRAGMA table_info(agent_heartbeats)")]
+    if "hardware" not in heartbeat_columns:
         db.execute("ALTER TABLE agent_heartbeats ADD COLUMN hardware TEXT")  # JSON from the agent
+    if "lemonade_count" not in heartbeat_columns:
+        db.execute("ALTER TABLE agent_heartbeats ADD COLUMN lemonade_count INTEGER")
     db.execute("""CREATE TABLE IF NOT EXISTS agent_status (
         device TEXT PRIMARY KEY, phase TEXT NOT NULL, done INTEGER, total INTEGER,
         done_bytes INTEGER, total_bytes INTEGER, current TEXT, message TEXT,
@@ -152,11 +156,13 @@ def heartbeat(payload: Heartbeat, x_modelharbor_token: str | None = Header(defau
     with closing(connect()) as db:
         with db:
             hardware = payload.hardware and payload.hardware.model_dump_json()
-            db.execute("""INSERT INTO agent_heartbeats (device,last_seen,comfyui_count,ollama_count,hardware)
-                VALUES (?,?,?,?,?) ON CONFLICT(device) DO UPDATE SET last_seen=excluded.last_seen,
+            db.execute("""INSERT INTO agent_heartbeats (device,last_seen,comfyui_count,ollama_count,lemonade_count,hardware)
+                VALUES (?,?,?,?,?,?) ON CONFLICT(device) DO UPDATE SET last_seen=excluded.last_seen,
                 comfyui_count=excluded.comfyui_count,ollama_count=excluded.ollama_count,
+                lemonade_count=excluded.lemonade_count,
                 hardware=COALESCE(excluded.hardware,agent_heartbeats.hardware)""",
-                (payload.device, int(time.time()), payload.comfyui_count, payload.ollama_count, hardware))
+                (payload.device, int(time.time()), payload.comfyui_count, payload.ollama_count,
+                 payload.lemonade_count, hardware))
     return {"ok": True}
 
 @app.get("/api/agents")
@@ -165,7 +171,7 @@ def agents(x_modelharbor_token: str | None = Header(default=None)):
     with closing(connect()) as db:
         rows = db.execute("""SELECT h.device,h.last_seen,h.comfyui_count,h.ollama_count,
             s.phase,s.done,s.total,s.done_bytes,s.total_bytes,s.current,s.message,s.started_at,s.updated_at,
-            s.worker_seen,s.scan_requested_at,h.hardware
+            s.worker_seen,s.scan_requested_at,h.hardware,h.lemonade_count
             FROM agent_heartbeats h LEFT JOIN agent_status s ON s.device=h.device ORDER BY h.device""").fetchall()
     now = int(time.time())
     result = []
@@ -174,7 +180,7 @@ def agents(x_modelharbor_token: str | None = Header(default=None)):
         status = dict(zip(("phase", "done", "total", "done_bytes", "total_bytes", "current", "message",
                            "started_at", "updated_at"), r[4:13])) if r[12] else None  # None until a sync reports
         result.append({"device": r[0], "last_seen": r[1], "online": now - max(r[1], worker_seen) <= 3900,
-            "comfyui_count": r[2], "ollama_count": r[3], "status": status,
+            "comfyui_count": r[2], "ollama_count": r[3], "lemonade_count": r[16], "status": status,
             # The worker polls every ~20 s, so two minutes of silence means it is not running.
             "worker_running": now - worker_seen <= 120, "worker_seen": worker_seen or None,
             "scan_requested": bool(r[14]), "hardware": json.loads(r[15]) if r[15] else None})
@@ -531,7 +537,7 @@ def browse_civitai(q: str = "", type: str = "", base: str = "", sort: str = "Mos
 
 class NewDownload(BaseModel):
     agent: str = Field(min_length=1, max_length=100)
-    provider: str = Field(pattern=r"^(civitai|huggingface|modelscope|ollama)$")
+    provider: str = Field(pattern=r"^(civitai|huggingface|modelscope|ollama|lemonade)$")
     model_id: int | None = Field(default=None, ge=1)
     version_id: int | None = Field(default=None, ge=1)
     file_id: int | None = Field(default=None, ge=1)
@@ -546,7 +552,7 @@ def new_download(payload: NewDownload, x_modelharbor_token: str | None = Header(
     """Download a model that is not on the PC. URL, file name and hash come from the provider, not the client."""
     authorize(x_modelharbor_token)
     extra = {}
-    if payload.provider == "ollama":  # a GGUF file from a Hugging Face repository, pulled by the PC's Ollama
+    if payload.provider in ("ollama", "lemonade"):  # a Hugging Face GGUF, pulled by the PC's LLM server
         repo = validate_repo(payload.repository or "")
         files = list_model_files(repo)["files"]
         if not any(f["path"] == payload.remote_path for f in files):
@@ -554,9 +560,13 @@ def new_download(payload: NewDownload, x_modelharbor_token: str | None = Header(
         selected_name = PurePosixPath(payload.remote_path or "").name.casefold()
         same_name = [f for f in files if PurePosixPath(f["path"]).name.casefold() == selected_name]
         if len(same_name) > 1:
-            raise HTTPException(422, "Ollama's Hugging Face import identifies files by filename; this repository has duplicate filenames")
+            runtime = "Ollama" if payload.provider == "ollama" else "Lemonade"
+            raise HTTPException(422, f"{runtime}'s Hugging Face import identifies files by filename; this repository has duplicate filenames")
         with closing(connect()) as db:
             with db:
+                if payload.provider == "lemonade":
+                    size = next(f.get("size_bytes") for f in files if f["path"] == payload.remote_path)
+                    return downloads.create_lemonade(db, payload.agent, repo, payload.remote_path, size)
                 return downloads.create_ollama(db, payload.agent, repo, payload.remote_path)
     if payload.provider == "civitai":
         try:
