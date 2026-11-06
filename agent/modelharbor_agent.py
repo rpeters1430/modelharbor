@@ -90,12 +90,18 @@ def run_once(cfg, token, dry_run=False, reporter=None):
                 ollama = collect(session, cfg.get("ollama_url", "http://127.0.0.1:11434"), device + ":ollama")
             except (requests.RequestException, ValueError) as exc:
                 LOG.warning("Ollama unavailable; preserving previous inventory: %s", exc)
-        lemonade = None
+        lemonade = lemonade_info = None
         if cfg.get("lemonade_enabled", True):
+            lemonade_url = cfg.get("lemonade_url", lemonade_scan.DEFAULT_URL)
             try:
-                lemonade = lemonade_scan.collect(session, cfg.get("lemonade_url", lemonade_scan.DEFAULT_URL), device + ":lemonade")
+                lemonade = lemonade_scan.collect(session, lemonade_url, device + ":lemonade")
             except (requests.RequestException, ValueError) as exc:
                 LOG.warning("Lemonade unavailable; preserving previous inventory: %s", exc)
+            if lemonade is not None:
+                try:
+                    lemonade_info = lemonade_scan.system_info(session, lemonade_url)
+                except (requests.RequestException, ValueError, KeyError, TypeError) as exc:
+                    LOG.warning("Lemonade system info unavailable: %s", exc)
         LOG.info("Found %d ComfyUI models, %s Ollama models and %s Lemonade models", len(comfy),
                  len(ollama) if ollama is not None else "unavailable", len(lemonade) if lemonade is not None else "unavailable")
         llms = (ollama or []) + (lemonade or [])
@@ -120,6 +126,7 @@ def run_once(cfg, token, dry_run=False, reporter=None):
             json={"device": device, "comfyui_count": len(comfy),
                   "ollama_count": len(ollama) if ollama is not None else None,
                   "lemonade_count": len(lemonade) if lemonade is not None else None,
+                  "lemonade": lemonade_info,
                   "hardware": detect_hardware()}, timeout=20)
         response.raise_for_status()
         reporter.update("idle", done=len(comfy), total=len(comfy), message=f"Synced {len(comfy)} ComfyUI files"

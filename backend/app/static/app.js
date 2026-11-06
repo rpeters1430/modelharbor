@@ -191,8 +191,10 @@ async function browseRepository(){
 }
 $("repo-browse").addEventListener("click",browseRepository);
 $("repo-filter").addEventListener("input",displayRepoFiles);
-const isUnmatched=m=>!!m.sha256&&!m.source&&!m.hard_link&&!m.kind.startsWith("ollama/")&&!m.match_ignored;
-function modelRow(m){const b=text("button","", "model");b.type="button";b.append(text("span","◈","glyph"));const info=text("span","","model-text");info.append(text("div",m.name,"model-name"),text("div",m.kind+" · "+m.device+" · "+fmt(m.size_bytes)+(m.possible_duplicate?" · Possible duplicate":"")+(m.hard_link?" · Hard link":"")+(m.source?" · ✓ "+providerName(m.source.provider):"")+(m.update?" · ⬆ Update":"")+(isUnmatched(m)?" · Unmatched":"")+(m.match_ignored?" · Local only":""),"model-sub"));b.append(info,text("span","›","chevron"));b.addEventListener("click",()=>details(m));return b;}
+// LLM server models have no hash; they are linked by name and size instead.
+const isLlmServer=m=>m.kind.startsWith("lemonade/");
+const isUnmatched=m=>(!!m.sha256||isLlmServer(m))&&!m.source&&!m.hard_link&&!m.kind.startsWith("ollama/")&&!m.match_ignored;
+function modelRow(m){const b=text("button","", "model");b.type="button";b.append(text("span","◈","glyph"));const info=text("span","","model-text");info.append(text("div",m.name,"model-name"),text("div",m.kind+" · "+m.device+" · "+fmt(m.size_bytes)+(m.possible_duplicate?(m.duplicate_verified?" · Duplicate":" · Possible duplicate"):"")+(m.hard_link?(isLlmServer(m)?" · Alias":" · Hard link"):"")+(m.source?" · ✓ "+providerName(m.source.provider):"")+(m.update?" · ⬆ Update":"")+(isUnmatched(m)?" · Unmatched":"")+(m.match_ignored?" · Local only":""),"model-sub"));b.append(info,text("span","›","chevron"));b.addEventListener("click",()=>details(m));return b;}
 function fill(target,items,empty){target.replaceChildren();if(!items.length)target.append(text("p",empty,"muted"));else items.forEach(m=>target.append(modelRow(m)));}
 const providerName=p=>({civitai:"Civitai",huggingface:"Hugging Face",modelscope:"ModelScope",ollama:"Ollama",lemonade:"Lemonade"})[p]||p;
 function linkRow(dl,label,caption,url){const a=document.createElement("a");a.href=url;a.target="_blank";a.rel="noopener noreferrer";a.textContent=caption;const dd=document.createElement("dd");dd.append(a);dl.append(text("dt",label),dd);}
@@ -230,6 +232,7 @@ function renderDelete(m){
 }
 async function renderDownload(m){
  const box=$("download-box");box.replaceChildren();if(!m.update)return;
+ if(m.update.provider==="lemonade"){box.append(text("p","Lemonade keeps its own copy of this model. Update it from Lemonade, which downloads the newer file from Hugging Face.","muted"));return;}
  const button=text("button","Download update","primary");button.type="button";const status=text("p","","muted");box.append(button,status);
  if(m.source&&m.source.provider==="civitai"&&!m.source.verified)box.prepend(text("p","Your file differs from the published one (a converted copy, for example). The update downloads the original format: convert it again before deleting your old file.","muted"));
  let job=null;
@@ -256,6 +259,11 @@ function renderLinkTools(m){
   // Own LoRAs and merges are on no site; marking them keeps the Unmatched list to real work.
   const b=text("button",m.match_ignored?"Show in Unmatched again":"Mark as local only (not on any site)","repo-action");b.type="button";
   b.addEventListener("click",async()=>{b.disabled=true;try{await apiRequest("/api/match-ignore","POST",{device:m.device,path:m.path,ignored:!m.match_ignored});await refresh();showNotice((m.match_ignored?"Back on the Unmatched list: ":"Marked local only: ")+m.name);reopen();}catch(err){box.append(text("p",err.message,"muted"));b.disabled=false;}});
+  box.append(b);return;
+ }
+ if(m.source&&m.source.provider==="huggingface"&&!m.source.reported_by){
+  const b=text("button","Unlink from Hugging Face","repo-action");b.type="button";
+  b.addEventListener("click",async()=>{b.disabled=true;try{await apiRequest("/api/huggingface/unlink","POST",{device:m.device,path:m.path});await refresh();showNotice("Unlinked "+m.name);reopen();}catch(err){box.append(text("p",err.message,"muted"));b.disabled=false;}});
   box.append(b);return;
  }
  if(!m.source||m.source.provider!=="civitai")return;
@@ -397,11 +405,13 @@ function details(m){
  const baseModelVal=(m.source&&m.source.base_model)||m.base_model_guess||(m.local_meta&&m.local_meta.base_model);
  for(const [k,v] of Object.entries({
   Type:m.kind,Device:m.device,Size:fmt(m.size_bytes),Family:(m.family_guess||"Unknown")+(m.family_verified?" (from source)":" (unverified)"),
-  ...(m.source?{Source:providerName(m.source.provider)+" · "+m.source.model_name+(m.source.version_name?" — "+m.source.version_name:"")+(m.source.provider==="civitai"?(m.source.weights_match?" (same weights; file info differs)":m.source.verified?" (exact hash match)":" (linked by hand, hash differs)"):"")}:{"Source":!m.sha256?"Waiting for the Windows agent to hash this file":m.kind.startsWith("ollama/")?"Not on the Ollama registry":m.source_checked?"Not found on Civitai":"Checking Civitai…"}),
+  ...(m.source?{Source:providerName(m.source.provider)+" · "+m.source.model_name+(m.source.version_name?" — "+m.source.version_name:"")+(m.source.provider==="civitai"?(m.source.weights_match?" (same weights; file info differs)":m.source.verified?" (exact hash match)":" (linked by hand, hash differs)"):m.source.reported_by?" (reported by Lemonade)":isLlmServer(m)?" (linked by hand)":"")}:{"Source":isLlmServer(m)?"Not linked to Hugging Face yet":!m.sha256?"Waiting for the Windows agent to hash this file":m.kind.startsWith("ollama/")?"Not on the Ollama registry":m.source_checked?"Not found on Civitai":"Checking Civitai…"}),
   ...(baseModelVal?{"Base model":baseModelVal}:{}),
   ...(m.source&&m.source.weight?{"Recommended weight":m.source.weight+" (median in the creator's example images)"}:{}),
   ...(m.update?{Update:m.update.version_name}:{}),
-  Duplicates:m.possible_duplicate?"Possible match — verify hashes":"No matching name and size",Folder:m.path.replace(/[\\/][^\\/]+$/,""),Path:m.path,
+  ...(m.checkpoint?{Checkpoint:m.checkpoint}:{}),
+  Duplicates:m.possible_duplicate?(m.duplicate_verified?m.duplicate_group_size+" copies with the same SHA-256 (identical files)":"Same name and size — not hashed yet"):m.sha256?"No other file with this SHA-256":"No matching name and size",
+  ...(m.hard_link&&isLlmServer(m)?{Alias:"Another Lemonade name for "+(m.checkpoint||"the same file")+"; counted once"}:{}),Folder:m.path.replace(/[\\/][^\\/]+$/,""),Path:m.path,
   ...(m.sha256?{[m.kind.startsWith("ollama/")?"Digest":"SHA-256"]:m.sha256}:{}),
   ...(selectedMatches.some(s=>s.device===m.device&&s.path===m.path)?{"Verified source":selectedMatches.filter(s=>s.device===m.device&&s.path===m.path).map(s=>"Hugging Face · "+s.repository+" / "+s.remote_path).join(", ")}:{})
  })){
@@ -454,6 +464,8 @@ function renderAgents(){
   if(s&&s.phase==="hashing"&&s.total_bytes){const bar=text("div","","bar");const inner=text("span");inner.style.width=Math.min(100,s.done_bytes/s.total_bytes*100)+"%";bar.append(inner);card.append(bar);}
   if(a.hardware)card.append(text("div",[a.hardware.gpu,a.hardware.vram_bytes?Math.round(a.hardware.vram_bytes/2**30)+" GB VRAM":"",a.hardware.ram_bytes?Math.round(a.hardware.ram_bytes/2**30)+" GB RAM":""].filter(Boolean).join(" · "),"model-sub"));
   card.append(text("div","ComfyUI: "+a.comfyui_count+(a.ollama_count!=null?" · Ollama: "+a.ollama_count:"")+" · Lemonade: "+(a.lemonade_count ?? "unavailable")+" · last full sync "+ago(a.last_seen),"model-sub"));
+  const lem=a.lemonade;
+  if(lem)card.append(text("div","Lemonade PC"+(lem.host?" ("+lem.host+")":"")+": "+[lem.gpu,lem.vram_bytes?Math.round(lem.vram_bytes/2**30)+" GB VRAM":"",lem.ram_bytes?Math.round(lem.ram_bytes/2**30)+" GB RAM":"",lem.free_bytes!=null?fmt(lem.free_bytes)+" free":""].filter(Boolean).join(" · "),"model-sub"));
   card.append(text("div",a.worker_running?"Background task running (checks for scan requests and downloads)":busy?"Background task paused while a scan runs"+(a.worker_seen?" · last seen "+ago(a.worker_seen):"")+" (it checks for jobs again when the scan ends)":"Background task not running"+(a.worker_seen?" · last seen "+ago(a.worker_seen):"")+". Start “ModelHarbor Hash Worker” in Task Scheduler.","model-sub"));
   const button=text("button",busy?"Scanning…":a.scan_requested?"Scan requested":"Scan now","repo-action");button.type="button";button.disabled=!!busy||a.scan_requested;
   button.addEventListener("click",async()=>{button.disabled=true;try{await apiRequest("/api/agents/"+encodeURIComponent(a.device)+"/scan","POST");await pollAgents();}catch(err){showNotice(err.message);button.disabled=false;}});
@@ -502,8 +514,15 @@ function lemonadeModelName(repository,path){
 const LLM_SERVERS={ollama:{label:"Ollama",name:ollamaModelName},lemonade:{label:"Lemonade",name:lemonadeModelName}};
 function fileRow(label,onPc,ref,request,f={},behavior={}){
  // One downloadable file: a destination-specific installed state, active job, or Download button.
- const row=text("div","","browse-file"+(f.best?" best":""));row.append(text("span",label,"model-sub"));
- if(f.fit)row.append(text("span",(f.best?"★ Best for your PC · ":"")+(f.fit.level==="good"?"✓ ":f.fit.level==="bad"?"✗ ":"⚠ ")+f.fit.note,"fit fit-"+f.fit.level));
+ const row=text("div","","browse-file");row.append(text("span",label,"model-sub"));
+ // Lemonade may run on another PC, so its GGUFs are rated for that PC's hardware instead.
+ const fitSpan=text("span","","fit");fitSpan.hidden=true;row.append(fitSpan);
+ const paintFit=()=>{
+  const llm=request.provider==="lemonade",fit=llm?f.llm_fit:f.fit,best=llm?f.llm_best:f.best;
+  row.classList.toggle("best",!!best);fitSpan.hidden=!fit;if(!fit)return;
+  fitSpan.className="fit fit-"+fit.level;
+  fitSpan.textContent=(best?(llm?"★ Best for the Lemonade PC · ":"★ Best for your PC · "):"")+(fit.level==="good"?"✓ ":fit.level==="bad"?"✗ ":"⚠ ")+fit.note;
+ };
  const status=text("span","","browse-status");row.append(status);
  const button=text("button","Download","repo-action");button.type="button";row.append(button);
  const currentRef=()=>typeof ref==="function"?ref():ref;
@@ -518,6 +537,7 @@ function fileRow(label,onPc,ref,request,f={},behavior={}){
   },3000);
  };
  const render=()=>{
+  paintFit();
   const server=LLM_SERVERS[request.provider];
   if(!allowed()){status.textContent=(server?server.label:"This destination")+" can import single GGUF model files only.";status.classList.remove("on-pc");button.hidden=true;return;}
   status.classList.remove("on-pc");

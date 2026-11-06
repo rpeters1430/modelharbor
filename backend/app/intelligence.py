@@ -38,6 +38,7 @@ def enrich(records):
     groups = defaultdict(set)
     seen_files = set()
     hard_links = set()
+    sources = {}  # file key -> the source linked to any one of its names
     for index, record in enumerate(records):
         # Same device + file id is one file on disk under several paths (hard link).
         file_key = (physical_device(record["device"]), record.get("file_id")) if record.get("file_id") else None
@@ -45,17 +46,29 @@ def enrich(records):
             hard_links.add(index)
         elif file_key:
             seen_files.add(file_key)
-        # Filename + size is only a *possible* duplicate, not proof of same bytes.
-        key = (record["name"].casefold(), record["size_bytes"])
+        if file_key and record.get("source") and file_key not in sources:
+            sources[file_key] = (record["source"], record.get("update"))
         if record["size_bytes"] > 0 and not record["kind"].startswith(("ollama/", "lemonade/")):
-            groups[key].add(file_key or index)
+            groups[_dup_key(record)].add(file_key or index)
     result = []
     for index, record in enumerate(records):
+        file_key = (physical_device(record["device"]), record.get("file_id")) if record.get("file_id") else None
+        if not record.get("source") and file_key in sources:
+            # Another name of the same file is linked; so is this one.
+            record = {**record, "source": sources[file_key][0], "update": sources[file_key][1]}
         label, verified = family(record)
-        copies = len(groups.get((record["name"].casefold(), record["size_bytes"]), ()))
+        copies = len(groups.get(_dup_key(record), ()))
         result.append({**record, "physical_device": physical_device(record["device"]),
             "family_guess": label, "family_verified": verified,
             "hard_link": index in hard_links,
             "possible_duplicate": copies > 1,
+            # Same SHA-256 is proof of identical bytes; name + size is only a hint.
+            "duplicate_verified": copies > 1 and bool(record.get("sha256")),
             "duplicate_group_size": copies if copies > 1 else 0})
     return result
+
+def _dup_key(record):
+    """Hashed files are duplicates only when their SHA-256 matches; unhashed ones by name and size."""
+    if record.get("sha256"):
+        return ("sha", record["sha256"])
+    return (record["name"].casefold(), record["size_bytes"])

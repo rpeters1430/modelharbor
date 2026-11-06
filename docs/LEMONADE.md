@@ -39,3 +39,15 @@ If the model downloads but can't be loaded (for example, not enough memory), the
 Limitations match the Ollama import: only single-file GGUF models are offered (no `mmproj` projectors or split shards), and repositories with duplicate filenames in different folders are rejected. For gated or private repositories, give Lemonade its own Hugging Face token (`HF_TOKEN` in the environment Lemonade runs in).
 
 When Lemonade listens on your network, start it with an API key so other devices can't use it.
+
+## Linking Lemonade models to Hugging Face
+
+- **Automatic.** When Lemonade downloaded a model from Hugging Face itself, its checkpoint names the repository (`unsloth/Qwen3-0.6B-GGUF:Q4_0`). ModelHarbor shows that repo as the source ("reported by Lemonade"), and Lemonade's own `update_available` flag shows as an update. Updates happen in Lemonade, not as a download next to a file.
+- **Suggested.** For local `.gguf` files (Lemonade's `extra_models_dir` or a local path), the model is listed under **Unmatched**. Suggestions search Hugging Face using the real filename from the checkpoint path, not the model's nickname. When the model's name looks like `hf.co/owner/repo:tag`, that repository is checked first, and the file named by the tag ranks above its sibling quants. Lemonade publishes no file hash, so matches are by name and size: Lemonade rounds sizes to about 0.5%, so a "same weights" match is likely but not proven, and you confirm it before linking.
+- **By hand.** Search and **Link** from the model's details like any other file. Then use **Unlink from Hugging Face** to undo it, or **Mark as local only** for models that aren't on any site.
+
+## Aliases, hardware and disk space
+
+- **Aliases.** Lemonade often lists one file under several names (`gemma4-12b`, `extra.gemma4-12b`, `gemma4:12b`). ModelHarbor counts each file once, marks the extra names as aliases, and a link made on one name applies to all of them.
+- **The Lemonade PC's hardware.** Each sync reads Lemonade's `/api/v1/system-info`, so download advice for GGUF files uses the GPU, VRAM, RAM and free disk of the machine Lemonade runs on, which may not be the agent's PC. The rating leaves about 10% plus 1.5 GB above the weights for an 8K context. The PC card on the Devices page shows that machine.
+- **Disk check.** Before a pull, the agent checks Lemonade's free model storage and refuses the download if the file plus 2 GB doesn't fit.

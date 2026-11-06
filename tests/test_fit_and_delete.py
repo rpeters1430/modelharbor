@@ -128,3 +128,17 @@ def test_delete_cut_off_by_a_restart_can_be_retried(db):
     assert deletes.claim(db, "pc") is None
     assert deletes.get(db, job["id"])["state"] == "failed"
     assert deletes.request(db, "pc:comfyui", "C:/m/loras/a.safetensors")["id"] != job["id"]
+
+
+def test_llm_fit_uses_the_lemonade_pc_with_context_headroom():
+    from backend.app.fit import GB, annotate_listing, rate_llm
+    lemonade = {"gpu": "RX 9070 XT", "vram_bytes": 16 * GB, "ram_bytes": 128 * GB, "free_bytes": 500 * GB}
+    assert rate_llm("m-Q4_K_M.gguf", 9 * GB, lemonade)["level"] == "good"
+    assert rate_llm("m-Q8_0.gguf", 15 * GB, lemonade)["level"] == "ok"  # weights fit, the context does not
+    assert rate_llm("m-F16.gguf", 120 * GB, lemonade)["level"] == "bad"
+    assert "free disk" in rate_llm("m.gguf", 9 * GB, {**lemonade, "free_bytes": 10 * GB})["note"]
+    assert rate_llm("m.safetensors", 9 * GB, lemonade) is None
+    listing = annotate_listing({"files": [{"name": n, "path": n, "size_bytes": s} for n, s in
+        (("m-Q4_K_M.gguf", 5 * GB), ("m-Q8_0.gguf", 9 * GB), ("m-F16.gguf", 17 * GB))]}, None, lemonade)
+    assert [f.get("llm_best", False) for f in listing["files"]] == [False, True, False]
+    assert all("fit" not in f for f in listing["files"])  # no agent hardware: no ComfyUI rating

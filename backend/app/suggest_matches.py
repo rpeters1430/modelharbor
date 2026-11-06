@@ -6,7 +6,29 @@ from urllib.parse import quote, urlencode
 from fastapi import HTTPException
 from .hf_repository import list_model_files, validate_repo
 from .fit import COMPACT, VARIANT
-from .sources import civitai_check, fetch
+from .sources import civitai_check, fetch, hf_checkpoint
+
+# Ollama-style names Lemonade lists for imported models: "hf.co/owner/repo:tag".
+HF_NAME = re.compile(r"^(?:hf\.co|huggingface\.co)/([\w.-]+/[\w.-]+)(?::(.+))?$", re.IGNORECASE)
+# Lemonade reports GiB to about three significant figures (16.3 for 16.257): 0.6% covers the
+# rounding while staying far below the gap between neighbouring quants (Q3_K_M vs Q3_K_L is ~8%).
+LEMONADE_SIZE_SLACK = 0.006
+
+def _llm_hints(name, checkpoint):
+    """(file name to compare, repository hint, tag) for an LLM server model."""
+    file_name = name
+    if checkpoint and checkpoint.lower().endswith(".gguf"):
+        file_name = re.split(r"[\\/]", checkpoint)[-1]
+    pulled = hf_checkpoint(checkpoint)
+    if pulled:
+        return file_name, pulled[0], pulled[1]
+    match = HF_NAME.fullmatch(name or "")
+    return (file_name, match[1], match[2]) if match else (file_name, None, None)
+
+def _tag_matches(tag, file_name):
+    if not tag or tag.lower() == "latest":
+        return False
+    return file_name.lower() == tag.lower() if tag.lower().endswith(".gguf") else tag.lower() in file_name.lower()
 
 EXT_CLEAN = re.compile(r"\.(?:safetensors|ckpt|pt|pth|bin|gguf|onnx)$", re.IGNORECASE)
 SUFFIX_CLEAN = re.compile(
@@ -42,18 +64,26 @@ def clean_search_query(filename: str, meta_title: str | None = None, full_path: 
 def suggest_matches(db, device: str, path: str, get=fetch) -> dict:
     """Find candidate matches across Civitai and Hugging Face for a local model file."""
     row = db.execute(
-        "SELECT name, size_bytes, sha256, weights_sha256, meta_title FROM models WHERE device=? AND path=?",
+        "SELECT name, size_bytes, sha256, weights_sha256, meta_title, checkpoint FROM models WHERE device=? AND path=?",
         (device, path),
     ).fetchone()
     if not row:
         raise HTTPException(404, "Model not found in inventory")
 
-    name, size, sha, weights, title = row
-    query = clean_search_query(name, title, full_path=path)
+    name, size, sha, weights, title, checkpoint = row
+    llm = device.endswith(":lemonade")
+    hint_repo = tag = None
+    if llm:
+        # Compare against the real .gguf file name; Lemonade's id is often a nickname.
+        name, hint_repo, tag = _llm_hints(name, checkpoint)
+        query = clean_search_query(name)
+    else:
+        query = clean_search_query(name, title, full_path=path)
+    slack = max(6_000_000, size * LEMONADE_SIZE_SLACK) if llm else 1024
 
-    # 1. Civitai suggestions
+    # 1. Civitai suggestions (LLM server models are not on Civitai)
     civitai_results = []
-    if len(query) >= 3:
+    if len(query) >= 3 and not llm:
         try:
             cv = civitai_check(query, sha, weights, size, get=get, name=name)
             words = query.split()
@@ -80,13 +110,19 @@ def suggest_matches(db, device: str, path: str, get=fetch) -> dict:
 
     # 2. Hugging Face suggestions
     hf_results = []
-    if len(query) >= 3:
+    if len(query) >= 3 or hint_repo:
         try:
             params = {"search": query, "limit": 4}
-            body = get("https://huggingface.co/api/models?" + urlencode(params))
-            repos = json.loads(body) if body else []
-            for r in repos:
-                repo_id = str(r.get("id") or "")
+            try:
+                body = get("https://huggingface.co/api/models?" + urlencode(params))
+                repos = json.loads(body) if body else []
+            except Exception:
+                if not hint_repo:
+                    raise
+                repos = []
+            repo_ids = [hint_repo] if hint_repo else []
+            repo_ids += [str(r.get("id") or "") for r in repos if str(r.get("id") or "") not in repo_ids]
+            for repo_id in repo_ids:
                 if not repo_id or "/" not in repo_id:
                     continue
                 try:
@@ -95,10 +131,14 @@ def suggest_matches(db, device: str, path: str, get=fetch) -> dict:
                     continue
                 for f in listing.get("files") or []:
                     f_name = f["name"].lower()
+                    if llm and (not f_name.endswith(".gguf") or "mmproj" in f_name):
+                        continue
                     local_name_lower = name.lower()
                     is_exact_sha = sha and f.get("sha256") and f["sha256"].lower() == sha.lower()
-                    is_same_size = size and f.get("size_bytes") and abs(f["size_bytes"] - size) <= 1024
-                    is_same_name = f_name == local_name_lower or clean_search_query(f_name) == clean_search_query(local_name_lower)
+                    is_same_size = size and f.get("size_bytes") and abs(f["size_bytes"] - size) <= slack
+                    # The exact file (same name, or the quant tag in the model's name) ranks above its sibling quants.
+                    is_exact_name = f_name == local_name_lower or repo_id == hint_repo and _tag_matches(tag, f["name"])
+                    is_same_name = is_exact_name or clean_search_query(f_name) == clean_search_query(local_name_lower)
 
                     if is_exact_sha:
                         verdict = "exact"
@@ -123,6 +163,7 @@ def suggest_matches(db, device: str, path: str, get=fetch) -> dict:
                         "verdict": verdict,
                         "match_type": verdict,
                         "url": f.get("url"),
+                        "_exact_name": bool(is_exact_name),
                     })
         except Exception:
             pass
@@ -135,7 +176,7 @@ def suggest_matches(db, device: str, path: str, get=fetch) -> dict:
     seen = set()
     civitai_results = [x for x in civitai_results if x["verdict"] != "converted"
                        or (x["version_id"] not in seen and not seen.add(x["version_id"]))]
-    hf_results.sort(key=lambda x: VERDICT_ORDER.get(x["verdict"], 9))
+    hf_results.sort(key=lambda x: (VERDICT_ORDER.get(x["verdict"], 9), not x.pop("_exact_name")))
 
     return {
         "device": device,
