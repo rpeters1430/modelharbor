@@ -19,7 +19,7 @@ from .hf_inspect import inspect_huggingface
 from .suggest_matches import suggest_matches, link_huggingface
 from . import browse, converts, deletes, downloads, fit
 from .sources import _civitai_model, _file_sha, fetch
-from .sources import annotate, civitai_check, civitai_link, civitai_unlink, civitai_versions, ensure_tables as ensure_source_tables, start_worker
+from .sources import annotate, ignore_key, civitai_check, civitai_link, civitai_unlink, civitai_versions, ensure_tables as ensure_source_tables, start_worker
 from .hash_matches import ensure_tables, queue_job, claim_job, finish_job, get_job, select_match, selected_for_inventory
 
 DB = Path(os.environ.get("MODELHARBOR_DB", "/data/modelharbor.sqlite3"))
@@ -71,6 +71,9 @@ class ModelRecord(BaseModel):
     trigger_words: list[str] | str | None = None
     base_model_guess: str | None = Field(default=None, max_length=100)
     meta_title: str | None = Field(default=None, max_length=250)
+    # LLM servers: where the model came from (Lemonade "owner/repo:variant" or a local path).
+    checkpoint: str | None = Field(default=None, max_length=1024)
+    update_available: bool | None = None
 
 class Hardware(BaseModel):
     gpu: str | None = Field(default=None, max_length=120)
@@ -78,11 +81,20 @@ class Hardware(BaseModel):
     vram_bytes: int | None = Field(default=None, ge=0)
     ram_bytes: int | None = Field(default=None, ge=0)
 
+class LemonadeInfo(BaseModel):
+    host: str | None = Field(default=None, max_length=253)
+    gpu: str | None = Field(default=None, max_length=120)
+    vendor: str | None = Field(default=None, pattern=r"^(nvidia|amd|intel|other)$")
+    vram_bytes: int | None = Field(default=None, ge=0)
+    ram_bytes: int | None = Field(default=None, ge=0)
+    free_bytes: int | None = Field(default=None, ge=0)
+
 class Heartbeat(BaseModel):
     device: str = Field(min_length=1, max_length=100)
     comfyui_count: int = Field(ge=0)
     ollama_count: int | None = Field(default=None, ge=0)
     lemonade_count: int | None = Field(default=None, ge=0)
+    lemonade: LemonadeInfo | None = None  # the Lemonade PC, which may not be the agent's PC
     hardware: Hardware | None = None
 
 class Inventory(BaseModel):
@@ -97,7 +109,8 @@ def connect():
         kind TEXT NOT NULL, size_bytes INTEGER NOT NULL, modified_ns INTEGER NOT NULL,
         PRIMARY KEY (device, path))""")
     columns = [row[1] for row in db.execute("PRAGMA table_info(models)")]
-    for column in ("file_id", "sha256", "weights_sha256", "trigger_words", "base_model_guess", "meta_title"):
+    for column in ("file_id", "sha256", "weights_sha256", "trigger_words", "base_model_guess", "meta_title",
+                   "checkpoint", "update_available"):
         if column not in columns:
             db.execute(f"ALTER TABLE models ADD COLUMN {column} TEXT")
     db.execute("""CREATE TABLE IF NOT EXISTS agent_heartbeats
@@ -108,6 +121,8 @@ def connect():
         db.execute("ALTER TABLE agent_heartbeats ADD COLUMN hardware TEXT")  # JSON from the agent
     if "lemonade_count" not in heartbeat_columns:
         db.execute("ALTER TABLE agent_heartbeats ADD COLUMN lemonade_count INTEGER")
+    if "lemonade" not in heartbeat_columns:
+        db.execute("ALTER TABLE agent_heartbeats ADD COLUMN lemonade TEXT")  # JSON from the agent
     db.execute("""CREATE TABLE IF NOT EXISTS agent_status (
         device TEXT PRIMARY KEY, phase TEXT NOT NULL, done INTEGER, total INTEGER,
         done_bytes INTEGER, total_bytes INTEGER, current TEXT, message TEXT,
@@ -128,7 +143,8 @@ def health():
 def models(x_modelharbor_token: str | None = Header(default=None)):
     authorize(x_modelharbor_token)
     with closing(connect()) as db:
-        fields = ("device","path","name","kind","size_bytes","modified_ns","file_id","sha256","trigger_words","base_model_guess","meta_title")
+        fields = ("device","path","name","kind","size_bytes","modified_ns","file_id","sha256","trigger_words","base_model_guess","meta_title",
+                  "checkpoint","update_available")
         rows = db.execute(f"SELECT {','.join(fields)} FROM models ORDER BY device,kind,name").fetchall()
         return enrich(annotate(db, [dict(zip(fields, row)) for row in rows]))
 
@@ -144,9 +160,10 @@ def inventory(payload: Inventory, x_modelharbor_token: str | None = Header(defau
     with closing(connect()) as db:
         with db:
             db.execute("DELETE FROM models WHERE device=?", (payload.device,))
-            db.executemany("""INSERT INTO models (device,path,name,kind,size_bytes,modified_ns,file_id,sha256,weights_sha256,trigger_words,base_model_guess,meta_title)
-                VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
-                [(m.device,m.path,m.name,m.kind,m.size_bytes,m.modified_ns,m.file_id,m.sha256,m.weights_sha256,json.dumps(m.trigger_words) if isinstance(m.trigger_words, list) else m.trigger_words,m.base_model_guess,m.meta_title) for m in payload.models])
+            db.executemany("""INSERT INTO models (device,path,name,kind,size_bytes,modified_ns,file_id,sha256,weights_sha256,trigger_words,base_model_guess,meta_title,checkpoint,update_available)
+                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                [(m.device,m.path,m.name,m.kind,m.size_bytes,m.modified_ns,m.file_id,m.sha256,m.weights_sha256,json.dumps(m.trigger_words) if isinstance(m.trigger_words, list) else m.trigger_words,m.base_model_guess,m.meta_title,
+                  m.checkpoint,None if m.update_available is None else int(m.update_available)) for m in payload.models])
             db.execute("""UPDATE selected_matches SET local_size=(SELECT size_bytes FROM models WHERE models.device=selected_matches.device AND models.path=selected_matches.path), local_modified_ns=(SELECT modified_ns FROM models WHERE models.device=selected_matches.device AND models.path=selected_matches.path) WHERE EXISTS (SELECT 1 FROM models WHERE models.device=selected_matches.device AND models.path=selected_matches.path)""")
     return {"device": payload.device, "count": len(payload.models)}
 
@@ -156,13 +173,15 @@ def heartbeat(payload: Heartbeat, x_modelharbor_token: str | None = Header(defau
     with closing(connect()) as db:
         with db:
             hardware = payload.hardware and payload.hardware.model_dump_json()
-            db.execute("""INSERT INTO agent_heartbeats (device,last_seen,comfyui_count,ollama_count,lemonade_count,hardware)
-                VALUES (?,?,?,?,?,?) ON CONFLICT(device) DO UPDATE SET last_seen=excluded.last_seen,
+            lemonade = payload.lemonade and payload.lemonade.model_dump_json()
+            db.execute("""INSERT INTO agent_heartbeats (device,last_seen,comfyui_count,ollama_count,lemonade_count,lemonade,hardware)
+                VALUES (?,?,?,?,?,?,?) ON CONFLICT(device) DO UPDATE SET last_seen=excluded.last_seen,
                 comfyui_count=excluded.comfyui_count,ollama_count=excluded.ollama_count,
                 lemonade_count=excluded.lemonade_count,
+                lemonade=COALESCE(excluded.lemonade,agent_heartbeats.lemonade),
                 hardware=COALESCE(excluded.hardware,agent_heartbeats.hardware)""",
                 (payload.device, int(time.time()), payload.comfyui_count, payload.ollama_count,
-                 payload.lemonade_count, hardware))
+                 payload.lemonade_count, lemonade, hardware))
     return {"ok": True}
 
 @app.get("/api/agents")
@@ -171,7 +190,7 @@ def agents(x_modelharbor_token: str | None = Header(default=None)):
     with closing(connect()) as db:
         rows = db.execute("""SELECT h.device,h.last_seen,h.comfyui_count,h.ollama_count,
             s.phase,s.done,s.total,s.done_bytes,s.total_bytes,s.current,s.message,s.started_at,s.updated_at,
-            s.worker_seen,s.scan_requested_at,h.hardware,h.lemonade_count
+            s.worker_seen,s.scan_requested_at,h.hardware,h.lemonade_count,h.lemonade
             FROM agent_heartbeats h LEFT JOIN agent_status s ON s.device=h.device ORDER BY h.device""").fetchall()
     now = int(time.time())
     result = []
@@ -180,7 +199,8 @@ def agents(x_modelharbor_token: str | None = Header(default=None)):
         status = dict(zip(("phase", "done", "total", "done_bytes", "total_bytes", "current", "message",
                            "started_at", "updated_at"), r[4:13])) if r[12] else None  # None until a sync reports
         result.append({"device": r[0], "last_seen": r[1], "online": now - max(r[1], worker_seen) <= 3900,
-            "comfyui_count": r[2], "ollama_count": r[3], "lemonade_count": r[16], "status": status,
+            "comfyui_count": r[2], "ollama_count": r[3], "lemonade_count": r[16],
+            "lemonade": json.loads(r[17]) if r[17] else None, "status": status,
             # The worker polls every ~20 s, so two minutes of silence means it is not running.
             "worker_running": now - worker_seen <= 120, "worker_seen": worker_seen or None,
             "scan_requested": bool(r[14]), "hardware": json.loads(r[15]) if r[15] else None})
@@ -188,6 +208,11 @@ def agents(x_modelharbor_token: str | None = Header(default=None)):
 
 def _hardware(db, agent):
     row = db.execute("SELECT hardware FROM agent_heartbeats WHERE device=?", (agent,)).fetchone() if agent else None
+    return json.loads(row[0]) if row and row[0] else None
+
+def _lemonade_hardware(db, agent):
+    """The Lemonade PC's GPU, RAM and free disk as the agent last reported them."""
+    row = db.execute("SELECT lemonade FROM agent_heartbeats WHERE device=?", (agent,)).fetchone() if agent else None
     return json.loads(row[0]) if row and row[0] else None
 
 class AgentStatus(BaseModel):
@@ -263,8 +288,8 @@ def huggingface_inspect(url: str, agent: str = "", x_modelharbor_token: str | No
     except (OSError, ValueError) as exc:
         raise HTTPException(502, f"Hugging Face is unavailable right now: {exc}") from exc
     with closing(connect()) as db:
-        shas, hw = browse.local_shas(db), _hardware(db, agent)
-    annotated = fit.annotate_listing(browse.mark_huggingface({"files": data["files"]}, shas), hw)
+        shas, hw, llm_hw = browse.local_shas(db), _hardware(db, agent), _lemonade_hardware(db, agent)
+    annotated = fit.annotate_listing(browse.mark_huggingface({"files": data["files"]}, shas), hw, llm_hw)
     data["files"] = annotated["files"]
     if data.get("primary_file"):
         match = next((f for f in data["files"] if f["path"] == data["primary_file"]["path"]), None)
@@ -459,9 +484,21 @@ def link_hf_model(payload: HuggingFaceLink, x_modelharbor_token: str | None = He
     with closing(connect()) as db:
         with db:
             result = link_huggingface(db, payload.device, payload.path, payload.repository, payload.remote_path)
-            db.execute("DELETE FROM match_ignored WHERE sha256=(SELECT sha256 FROM models WHERE device=? AND path=?)",
-                       (payload.device, payload.path))
+            db.execute("DELETE FROM match_ignored WHERE sha256 IN (?, (SELECT sha256 FROM models WHERE device=? AND path=?))",
+                       (ignore_key(payload.device, payload.path, None), payload.device, payload.path))
             return result
+
+class ModelRef(BaseModel):
+    device: str = Field(min_length=1, max_length=100)
+    path: str = Field(min_length=1, max_length=4096)
+
+@app.post("/api/huggingface/unlink")
+def unlink_hf_model(payload: ModelRef, x_modelharbor_token: str | None = Header(default=None)):
+    authorize(x_modelharbor_token)
+    with closing(connect()) as db:
+        with db:
+            db.execute("DELETE FROM selected_matches WHERE device=? AND path=?", (payload.device, payload.path))
+    return {"ok": True}
 
 @app.get("/api/models/suggest-match")
 def suggest_model_match(device: str, path: str, x_modelharbor_token: str | None = Header(default=None)):
@@ -689,11 +726,17 @@ class MatchIgnore(BaseModel):
 
 @app.post("/api/match-ignore")
 def match_ignore(payload: MatchIgnore, x_modelharbor_token: str | None = Header(default=None)):
-    """Mark a file as local only (not on any site) or put it back on the Unmatched list. Keyed by hash."""
+    """Mark a file as local only (not on any site) or put it back on the Unmatched list. Keyed by hash,
+    or by device and path for LLM server models, which have none."""
     authorize(x_modelharbor_token)
     with closing(connect()) as db:
         with db:
-            sha = _local_sha(db, payload.device, payload.path)
+            if payload.device.endswith(":lemonade"):
+                if not db.execute("SELECT 1 FROM models WHERE device=? AND path=?", (payload.device, payload.path)).fetchone():
+                    raise HTTPException(404, "Model not found in inventory")
+                sha = ignore_key(payload.device, payload.path, None)
+            else:
+                sha = _local_sha(db, payload.device, payload.path)
             if payload.ignored:
                 db.execute("INSERT OR IGNORE INTO match_ignored VALUES (?,?)", (sha, int(time.time())))
             else:

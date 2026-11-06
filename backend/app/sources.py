@@ -410,6 +410,19 @@ def _word_list(raw):
             return [raw]
     return [raw] if raw else []
 
+# Lemonade's checkpoint for a model it pulled itself: "owner/repo" plus an optional ":variant".
+# Local files are Windows paths ("C:\AI\x.gguf") and never match.
+HF_CHECKPOINT = re.compile(r"^([A-Za-z0-9][\w.-]{0,95}/[A-Za-z0-9][\w.-]{0,95})(?::([\w .()+,-]{1,200}))?$")
+
+def hf_checkpoint(checkpoint):
+    """(repository, variant or None) when a Lemonade checkpoint names a Hugging Face repo, else None."""
+    match = HF_CHECKPOINT.fullmatch(checkpoint or "")
+    return (match[1], match[2]) if match else None
+
+def ignore_key(device, path, sha):
+    """match_ignored key: the file hash, or device and path for LLM server models, which have none."""
+    return sha or "path:" + device + "|" + path
+
 def annotate(db, records):
     """Attach source identity and update availability to inventory records."""
     civitai = {r[0]: r for r in db.execute("""SELECT sha256,model_id,version_id,model_name,version_name,
@@ -425,7 +438,7 @@ def annotate(db, records):
     for record in records:
         record["source"] = record["update"] = None
         record["source_checked"] = record.get("sha256") in checked
-        record["match_ignored"] = record.get("sha256") in ignored
+        record["match_ignored"] = ignore_key(record["device"], record["path"], record.get("sha256")) in ignored
         sha = record.get("sha256")
         if record["kind"].startswith("ollama/"):
             remote = ollama.get(record["name"])
@@ -456,7 +469,16 @@ def annotate(db, records):
             url = "https://huggingface.co/" + quote(repo, safe="/") + "/blob/main/" + quote(remote_path, safe="/")
             record["source"] = {"provider": "huggingface", "model_name": repo, "version_name": remote_path, "base_model": base_m, "trained_words": tw_list, "url": url}
             if latest and latest != digest:
-                record["update"] = {"provider": "huggingface", "version_name": "File changed on main", "url": url}
+                # An LLM server keeps its own copy; it is updated there, not downloaded next to a file.
+                provider = "lemonade" if record["kind"].startswith("lemonade/") else "huggingface"
+                record["update"] = {"provider": provider, "version_name": "File changed on main", "url": url}
+        elif record["kind"].startswith("lemonade/") and (pulled := hf_checkpoint(record.get("checkpoint"))):
+            repo, variant = pulled
+            url = "https://huggingface.co/" + quote(repo, safe="/")
+            record["source"] = {"provider": "huggingface", "model_name": repo, "version_name": variant,
+                                "trained_words": [], "url": url, "reported_by": "lemonade"}
+            if record.get("update_available"):
+                record["update"] = {"provider": "lemonade", "version_name": "Newer commit on Hugging Face", "url": url}
         local_tw = record.get("trigger_words")
         if isinstance(local_tw, str) and local_tw.startswith("["):
             try:

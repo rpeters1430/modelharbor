@@ -49,13 +49,15 @@ def test_agent_status_and_scan_request(tmp_path, monkeypatch):
     monkeypatch.setattr(main, "DB", tmp_path / "status.sqlite3")
     client, headers = TestClient(app), {"X-ModelHarbor-Token": "test-token"}
     assert client.post("/api/agents/pc/scan", headers=headers).status_code == 404  # unknown agent
-    client.post("/api/agents/heartbeat", headers=headers, json={"device": "pc", "comfyui_count": 1, "ollama_count": 0, "lemonade_count": 2})
+    client.post("/api/agents/heartbeat", headers=headers, json={"device": "pc", "comfyui_count": 1, "ollama_count": 0, "lemonade_count": 2,
+                "lemonade": {"host": "192.168.8.143", "gpu": "RX 9070 XT", "vendor": "amd", "vram_bytes": 1, "free_bytes": 2}})
     progress = {"device": "pc", "phase": "hashing", "done": 3, "total": 10, "done_bytes": 30, "total_bytes": 100, "current": "C:/m/a.safetensors"}
     assert client.post("/api/agents/status", headers=headers, json=progress).status_code == 200
     assert client.post("/api/agents/status", headers=headers, json={**progress, "phase": "deleting"}).status_code == 422
     [agent] = client.get("/api/agents", headers=headers).json()
     assert agent["status"]["phase"] == "hashing" and agent["status"]["done"] == 3
     assert (agent["ollama_count"], agent["lemonade_count"]) == (0, 2)
+    assert agent["lemonade"]["host"] == "192.168.8.143" and agent["lemonade"]["free_bytes"] == 2
     assert agent["worker_running"] is False and agent["scan_requested"] is False
     assert client.post("/api/agents/pc/scan", headers=headers).status_code == 202
     assert client.get("/api/agents", headers=headers).json()[0]["scan_requested"] is True

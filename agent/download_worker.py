@@ -89,17 +89,29 @@ def download_file(session, job, roots, report_progress):
                 partial.unlink()
     return sha, str(target)
 
-def pull_ollama(session, ollama_url, name):
-    response = session.post(ollama_url.rstrip("/") + "/api/pull", json={"model": name, "stream": False},
-                            timeout=(30, 6 * 3600))
-    if response.status_code != 200:
-        raise ValueError(f"Ollama pull failed (HTTP {response.status_code})")
-    try:
-        payload = response.json()
-    except ValueError as exc:
-        raise ValueError("Ollama returned an invalid pull response") from exc
-    if payload.get("error"):
-        raise ValueError("Ollama pull failed: " + str(payload["error"])[:250])
+def pull_ollama(session, ollama_url, name, report_progress=lambda done: None):
+    """Stream Ollama's pull so progress reaches the NAS. Without it, a pull over 30 minutes looked
+    stalled, was handed out again and ran twice."""
+    with session.post(ollama_url.rstrip("/") + "/api/pull", json={"model": name, "stream": True},
+                      stream=True, timeout=(30, 3600)) as response:
+        if response.status_code != 200:
+            raise ValueError(f"Ollama pull failed (HTTP {response.status_code})")
+        last, status = 0.0, None
+        for line in response.iter_lines(decode_unicode=True):
+            if not line:
+                continue
+            try:
+                event = json.loads(line)
+            except ValueError as exc:
+                raise ValueError("Ollama returned an invalid pull response") from exc
+            if event.get("error"):
+                raise ValueError("Ollama pull failed: " + str(event["error"])[:250])
+            status = event.get("status")
+            if event.get("completed") and time.monotonic() - last > PROGRESS_SECONDS:
+                report_progress(int(event["completed"]))
+                last = time.monotonic()
+        if status != "success":
+            raise ValueError("Ollama closed the connection before the pull finished")
     return None, "ollama://" + name
 
 LEMONADE_NAME = re.compile(r"^user\.[A-Za-z0-9][A-Za-z0-9._-]{0,159}$")
@@ -121,7 +133,7 @@ def _lemonade_error(response):
 
 def _lemonade_stream(response, report_progress):
     """Follow /api/v1/pull's Server-Sent Events, reporting bytes so the NAS knows the pull is alive."""
-    event, finished, current, total = None, 0, None, 0
+    event, finished, current, total, last = None, 0, None, 0, 0.0
     for line in response.iter_lines(decode_unicode=True):
         if not line:
             continue
@@ -143,7 +155,9 @@ def _lemonade_stream(response, report_progress):
                 finished += total
                 current = data.get("file_index")
             total = int(data.get("bytes_total") or 0)
-            report_progress(finished + int(data.get("bytes_downloaded") or 0))
+            if time.monotonic() - last > PROGRESS_SECONDS:  # Lemonade sends many events a second
+                report_progress(finished + int(data.get("bytes_downloaded") or 0))
+                last = time.monotonic()
     raise ValueError("Lemonade closed the connection before the pull finished")
 
 def pull_lemonade(session, lemonade_url, job, report_progress, load=True):
@@ -152,6 +166,13 @@ def pull_lemonade(session, lemonade_url, job, report_progress, load=True):
     if not LEMONADE_NAME.fullmatch(name or "") or not LEMONADE_CHECKPOINT.fullmatch(checkpoint):
         raise ValueError("Unsafe Lemonade model name or checkpoint")
     base = lemonade_url.rstrip("/") + "/api/v1/"
+    try:
+        free = (session.get(base + "system-info", headers=lemonade_headers(), timeout=20).json()
+                .get("model_storage") or {}).get("free_bytes")
+    except (requests.RequestException, ValueError, AttributeError):
+        free = None  # older Lemonade: let the pull itself fail if the disk is full
+    if isinstance(free, (int, float)) and job.get("size_bytes") and free < job["size_bytes"] + HEADROOM:
+        raise ValueError(f"Not enough free space on the Lemonade PC ({free / 2**30:.0f} GB free)")
     body = {"model_name": name, "checkpoint": checkpoint, "recipe": "llamacpp", "stream": True}
     headers = lemonade_headers()
     with session.post(base + "pull", json=body, headers=headers, stream=True, timeout=(30, 3600)) as response:
@@ -181,12 +202,16 @@ def process_one(session, server, token, agent, roots, ollama_url, lemonade_url=N
     if not job:
         return False
     def report_progress(done):
-        session.post(base + job["id"] + "/progress", headers=headers,
-                     json={"agent": agent, "bytes_done": done}, timeout=20)
+        # Best effort: a NAS hiccup must not abort a download that is going fine.
+        try:
+            session.post(base + job["id"] + "/progress", headers=headers,
+                         json={"agent": agent, "bytes_done": done}, timeout=20)
+        except requests.RequestException:
+            pass
     result = {"agent": agent, "sha256": None, "error": None, "result_path": None}
     try:
         if job["provider"] == "ollama":
-            result["sha256"], result["result_path"] = pull_ollama(session, ollama_url, job["file_name"])
+            result["sha256"], result["result_path"] = pull_ollama(session, ollama_url, job["file_name"], report_progress)
         elif job["provider"] == "lemonade":
             result["sha256"], result["result_path"] = pull_lemonade(
                 session, lemonade_url or "http://127.0.0.1:13305", job, report_progress, lemonade_load)

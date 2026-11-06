@@ -40,3 +40,25 @@ def test_krea2_and_zimage_families():
     assert guess("flux1-krea-dev.safetensors","C:/m/diffusion_models/flux1-krea-dev.safetensors")=="FLUX"
     assert guess("z_image_turbo_bf16.safetensors","C:/m/diffusion_models/z_image_turbo_bf16.safetensors")=="Z-Image"
     assert family({**record("a.safetensors","a"),"source":{"base_model":"Krea 2 Turbo"}})==("Krea 2",True)
+
+
+def test_lemonade_aliases_count_once_and_share_a_link():
+    source = {"provider": "huggingface", "model_name": "o/r", "url": "https://huggingface.co/o/r"}
+    rows = enrich([
+        {"device": "pc:lemonade", "path": "lemonade://gemma4-12b", "name": "gemma4-12b", "kind": "lemonade/llamacpp",
+         "size_bytes": 7, "file_id": "ckpt:abc", "source": source, "update": None},
+        {"device": "pc:lemonade", "path": "lemonade://gemma4:12b", "name": "gemma4:12b", "kind": "lemonade/llamacpp",
+         "size_bytes": 7, "file_id": "ckpt:abc", "source": None, "update": None},
+    ])
+    assert [r["hard_link"] for r in rows] == [False, True]
+    assert rows[1]["source"] == source
+
+def test_duplicates_are_decided_by_sha256_when_known():
+    def model(path, sha):
+        return {"device": "pc:comfyui", "path": path, "name": "x.safetensors", "kind": "lora", "size_bytes": 10, "sha256": sha}
+    same = enrich([model("C:/a/x.safetensors", "a" * 64), model("C:/b/x.safetensors", "a" * 64)])
+    assert all(r["possible_duplicate"] and r["duplicate_verified"] for r in same)
+    different = enrich([model("C:/a/x.safetensors", "a" * 64), model("C:/b/x.safetensors", "b" * 64)])
+    assert not any(r["possible_duplicate"] for r in different)
+    unhashed = enrich([model("C:/a/x.safetensors", None), model("C:/b/x.safetensors", None)])
+    assert all(r["possible_duplicate"] and not r["duplicate_verified"] for r in unhashed)

@@ -8,7 +8,7 @@ import pytest
 from fastapi import HTTPException
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "agent"))
-from download_worker import download_file, pull_lemonade
+from download_worker import download_file, pull_lemonade, pull_ollama
 from backend.app import downloads
 from backend.app.hash_matches import ensure_tables as ensure_hash_tables
 from backend.app.sources import ensure_tables as ensure_source_tables
@@ -224,8 +224,10 @@ class LemonadeResponse:
         return self.body
 
 class LemonadeSession:
-    def __init__(self, *responses):
-        self.responses, self.calls = list(responses), []
+    def __init__(self, *responses, free=None):
+        self.responses, self.calls, self.free = list(responses), [], free
+    def get(self, url, **kwargs):  # /api/v1/system-info
+        return LemonadeResponse(body={"model_storage": {"free_bytes": self.free}} if self.free is not None else {})
     def post(self, url, json=None, headers=None, **kwargs):
         self.headers = headers
         self.calls.append((url, json))
@@ -235,6 +237,7 @@ LEMONADE_JOB = {"file_name": "user.o-r-model-Q8_0", "url": "o/r:model-Q8_0.gguf"
 
 def test_pull_lemonade_streams_progress_then_loads(monkeypatch):
     monkeypatch.setenv("LEMONADE_API_KEY", "secret")
+    monkeypatch.setattr("download_worker.PROGRESS_SECONDS", -1)  # report every event in this test
     events = ["event: progress", 'data: {"file_index":1,"total_files":2,"bytes_downloaded":10,"bytes_total":100}', "",
               "event: progress", 'data: {"file_index":2,"total_files":2,"bytes_downloaded":5,"bytes_total":50}', "",
               "event: complete", 'data: {"file_index":2,"total_files":2,"percent":100}']
@@ -259,3 +262,22 @@ def test_pull_lemonade_reports_errors_and_skips_load_when_disabled():
         pull_lemonade(load_fails, "http://x", LEMONADE_JOB, lambda d: None)
     with pytest.raises(ValueError, match="Unsafe"):
         pull_lemonade(LemonadeSession(), "http://x", {"file_name": "user.x", "url": "o/r:x.safetensors"}, lambda d: None)
+
+
+def test_pull_lemonade_refuses_when_the_lemonade_disk_is_full():
+    session = LemonadeSession(free=3 * 2**30)
+    with pytest.raises(ValueError, match="Not enough free space on the Lemonade PC"):
+        pull_lemonade(session, "http://x", {**LEMONADE_JOB, "size_bytes": 2 * 2**30}, lambda d: None)
+    assert session.calls == []  # nothing was pulled
+
+def test_pull_ollama_streams_progress_and_needs_success(monkeypatch):
+    monkeypatch.setattr("download_worker.PROGRESS_SECONDS", -1)
+    ok = LemonadeSession(LemonadeResponse(lines=['{"status":"pulling manifest"}',
+        '{"status":"pulling abc","total":100,"completed":40}', '{"status":"success"}']))
+    seen = []
+    assert pull_ollama(ok, "http://o", "hf.co/o/r:m.gguf", seen.append) == (None, "ollama://hf.co/o/r:m.gguf")
+    assert seen == [40] and ok.calls[0][1] == {"model": "hf.co/o/r:m.gguf", "stream": True}
+    for lines, reason in ((['{"error":"pull model manifest: file does not exist"}'], "does not exist"),
+                          (['{"status":"pulling abc","completed":5}'], "before the pull finished")):
+        with pytest.raises(ValueError, match=reason):
+            pull_ollama(LemonadeSession(LemonadeResponse(lines=lines)), "http://o", "x:y")

@@ -65,6 +65,8 @@ def create(db, device, path):
     record = _record(db, device, path)
     if not record["update"]:
         raise HTTPException(409, "No update is available for this model")
+    if record["update"]["provider"] == "lemonade":
+        raise HTTPException(409, "Lemonade keeps its own copy; update the model from Lemonade")
     url, file_name, expected, size = _plan(db, record)
     if url and not SAFE_NAME.fullmatch(file_name or ""):
         raise HTTPException(422, "Unsafe file name from provider")
