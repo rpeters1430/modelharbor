@@ -1,6 +1,6 @@
 # ModelHarbor
 
-Self-hosted, mobile-friendly AI model inventory dashboard for **ComfyUI** and **Ollama**. Designed for a lightweight Docker deployment on NAS hardware, with a read-only Windows scanner.
+Self-hosted, mobile-friendly AI model inventory dashboard for **ComfyUI**, **Lemonade Server** and **Ollama**. Designed for a lightweight Docker deployment on NAS hardware, with a read-only Windows scanner.
 
 ## Features
 
@@ -90,7 +90,7 @@ pip install -r agent/requirements.txt
 python agent/scan.py --models-dir "C:\\path\\to\\ComfyUI\\models" --dry-run
 ```
 
-For the Ollama scanner, see [Ollama setup](docs/OLLAMA.md) if available. See [Dashboard setup](docs/DASHBOARD.md) and [Phase 1 instructions](docs/PHASE1.md) for details.
+For LLM servers, see [Lemonade setup](docs/LEMONADE.md) and [Ollama setup](docs/OLLAMA.md). See [Dashboard setup](docs/DASHBOARD.md) and [Phase 1 instructions](docs/PHASE1.md) for details.
 
 ## Container publishing
 

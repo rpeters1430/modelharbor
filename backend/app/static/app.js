@@ -194,7 +194,7 @@ $("repo-filter").addEventListener("input",displayRepoFiles);
 const isUnmatched=m=>!!m.sha256&&!m.source&&!m.hard_link&&!m.kind.startsWith("ollama/")&&!m.match_ignored;
 function modelRow(m){const b=text("button","", "model");b.type="button";b.append(text("span","◈","glyph"));const info=text("span","","model-text");info.append(text("div",m.name,"model-name"),text("div",m.kind+" · "+m.device+" · "+fmt(m.size_bytes)+(m.possible_duplicate?" · Possible duplicate":"")+(m.hard_link?" · Hard link":"")+(m.source?" · ✓ "+providerName(m.source.provider):"")+(m.update?" · ⬆ Update":"")+(isUnmatched(m)?" · Unmatched":"")+(m.match_ignored?" · Local only":""),"model-sub"));b.append(info,text("span","›","chevron"));b.addEventListener("click",()=>details(m));return b;}
 function fill(target,items,empty){target.replaceChildren();if(!items.length)target.append(text("p",empty,"muted"));else items.forEach(m=>target.append(modelRow(m)));}
-const providerName=p=>({civitai:"Civitai",huggingface:"Hugging Face",modelscope:"ModelScope",ollama:"Ollama"})[p]||p;
+const providerName=p=>({civitai:"Civitai",huggingface:"Hugging Face",modelscope:"ModelScope",ollama:"Ollama",lemonade:"Lemonade"})[p]||p;
 function linkRow(dl,label,caption,url){const a=document.createElement("a");a.href=url;a.target="_blank";a.rel="noopener noreferrer";a.textContent=caption;const dd=document.createElement("dd");dd.append(a);dl.append(text("dt",label),dd);}
 function downloadStatus(j){
  if(!j)return "Saved next to the current file after its SHA-256 is checked. The old file stays until you choose to delete it.";
@@ -283,7 +283,7 @@ function getTriggerWords(m){
 function getInstalledFamilies(){
  const res=new Set();
  models.forEach(m=>{
-  if(m.kind==="checkpoint"||m.kind==="diffusion"||m.kind.startsWith("ollama/")){
+  if(m.kind==="checkpoint"||m.kind==="diffusion"||m.kind.startsWith("ollama/")||m.kind.startsWith("lemonade/")){
    if(m.family_guess&&m.family_guess!=="Unknown")res.add(m.family_guess.toLowerCase());
   }
  });
@@ -453,7 +453,7 @@ function renderAgents(){
   card.append(text("div",agentStatusText(a),"agent-status"+(s&&s.phase==="error"?" agent-error":"")));
   if(s&&s.phase==="hashing"&&s.total_bytes){const bar=text("div","","bar");const inner=text("span");inner.style.width=Math.min(100,s.done_bytes/s.total_bytes*100)+"%";bar.append(inner);card.append(bar);}
   if(a.hardware)card.append(text("div",[a.hardware.gpu,a.hardware.vram_bytes?Math.round(a.hardware.vram_bytes/2**30)+" GB VRAM":"",a.hardware.ram_bytes?Math.round(a.hardware.ram_bytes/2**30)+" GB RAM":""].filter(Boolean).join(" · "),"model-sub"));
-  card.append(text("div","ComfyUI: "+a.comfyui_count+" · Ollama: "+(a.ollama_count ?? "unavailable")+" · last full sync "+ago(a.last_seen),"model-sub"));
+  card.append(text("div","ComfyUI: "+a.comfyui_count+(a.ollama_count!=null?" · Ollama: "+a.ollama_count:"")+" · Lemonade: "+(a.lemonade_count ?? "unavailable")+" · last full sync "+ago(a.last_seen),"model-sub"));
   card.append(text("div",a.worker_running?"Background task running (checks for scan requests and downloads)":busy?"Background task paused while a scan runs"+(a.worker_seen?" · last seen "+ago(a.worker_seen):"")+" (it checks for jobs again when the scan ends)":"Background task not running"+(a.worker_seen?" · last seen "+ago(a.worker_seen):"")+". Start “ModelHarbor Hash Worker” in Task Scheduler.","model-sub"));
   const button=text("button",busy?"Scanning…":a.scan_requested?"Scan requested":"Scan now","repo-action");button.type="button";button.disabled=!!busy||a.scan_requested;
   button.addEventListener("click",async()=>{button.disabled=true;try{await apiRequest("/api/agents/"+encodeURIComponent(a.device)+"/scan","POST");await pollAgents();}catch(err){showNotice(err.message);button.disabled=false;}});
@@ -476,8 +476,12 @@ function fillBrowseAgents(){
 }
 function newDownloadStatus(j){
  if(j.state==="queued")return "Waiting for the Windows agent…";
- if(j.state==="running")return j.provider==="ollama"?"Ollama is pulling "+j.file_name+"…":"Downloading "+fmt(j.bytes_done)+(j.size_bytes?" of "+fmt(j.size_bytes):"")+"…";
- if(j.state==="done")return j.provider==="ollama"?"✓ In Ollama as "+j.file_name:"✓ Downloaded and verified: "+shortPath(j.result_path);
+ if(j.state==="running"&&j.provider==="ollama")return "Ollama is pulling "+j.file_name+"…";
+ if(j.state==="running"&&j.provider==="lemonade")return "Lemonade is downloading "+(j.bytes_done?fmt(j.bytes_done)+(j.size_bytes?" of "+fmt(j.size_bytes):"")+" ":"")+"then loading "+j.file_name+"…";
+ if(j.state==="running")return "Downloading "+fmt(j.bytes_done)+(j.size_bytes?" of "+fmt(j.size_bytes):"")+"…";
+ if(j.state==="done"&&j.provider==="ollama")return "✓ In Ollama as "+j.file_name;
+ if(j.state==="done"&&j.provider==="lemonade")return "✓ In Lemonade as "+j.file_name;
+ if(j.state==="done")return "✓ Downloaded and verified: "+shortPath(j.result_path);
  return "Download failed: "+(j.error||"unknown error");
 }
 function isOllamaCompatiblePath(path){
@@ -488,6 +492,14 @@ function isOllamaCompatiblePath(path){
 function ollamaModelName(repository,path){
  return "hf.co/"+repository+":"+(path||"").split("/").pop();
 }
+// Mirrors downloads.lemonade_model on the server.
+function lemonadeModelName(repository,path){
+ const [owner,model]=repository.split("/"),stem=(path||"").split("/").pop().replace(/\.gguf$/i,"");
+ const parts=[owner,stem];if(!stem.toLowerCase().startsWith(model.toLowerCase().replace(/-gguf$/,"")))parts.splice(1,0,model);
+ const name=parts.join("-").replace(/[^A-Za-z0-9._-]+/g,"-").replace(/^[-._]+|[-._]+$/g,"");
+ return "user."+(name.slice(0,150).replace(/[-._]+$/,"")||"model");
+}
+const LLM_SERVERS={ollama:{label:"Ollama",name:ollamaModelName},lemonade:{label:"Lemonade",name:lemonadeModelName}};
 function fileRow(label,onPc,ref,request,f={},behavior={}){
  // One downloadable file: a destination-specific installed state, active job, or Download button.
  const row=text("div","","browse-file"+(f.best?" best":""));row.append(text("span",label,"model-sub"));
@@ -506,9 +518,10 @@ function fileRow(label,onPc,ref,request,f={},behavior={}){
   },3000);
  };
  const render=()=>{
-  if(!allowed()){status.textContent="Ollama can import single GGUF model files only.";status.classList.remove("on-pc");button.hidden=true;return;}
+  const server=LLM_SERVERS[request.provider];
+  if(!allowed()){status.textContent=(server?server.label:"This destination")+" can import single GGUF model files only.";status.classList.remove("on-pc");button.hidden=true;return;}
   status.classList.remove("on-pc");
-  if(installed()){status.textContent=request.provider==="ollama"?"✓ In Ollama":"✓ On your PC";status.classList.add("on-pc");button.hidden=true;return;}
+  if(installed()){status.textContent=server?"✓ In "+server.label:"✓ On your PC";status.classList.add("on-pc");button.hidden=true;return;}
   button.hidden=false;
   show(browseJobs.find(j=>j.source_ref===currentRef()&&j.state!=="failed"));
   if(!browseAgent()){button.disabled=true;status.textContent="No Windows agent connected";}
@@ -585,18 +598,24 @@ function hfInspectCard(data){
  (data.available_folders||[data.target_folder,"loras","checkpoints"]).forEach(f=>{
   const opt=new Option(f,f);if(f===data.target_folder&&!primaryCanOllama)opt.selected=true;folderSelect.append(opt);
  });
- // Default to Ollama only when the selected file can actually be imported there.
- if(hasGguf)folderSelect.prepend(new Option("Ollama (import GGUF)","ollama",primaryCanOllama,primaryCanOllama));
+ // Default to an LLM server only when the selected file can actually be imported there.
+ // Ollama is offered only while the PC's last sync could reach it.
+ if(hasGguf){
+  const agent=agents.find(a=>a.device===browseAgent());
+  if(!agent||agent.ollama_count!=null)folderSelect.prepend(new Option("Ollama (import GGUF)","ollama"));
+  folderSelect.prepend(new Option("Lemonade (download & load GGUF)","lemonade",primaryCanOllama,primaryCanOllama));
+ }
  folderRow.append(folderSelect);
+ const llm=()=>LLM_SERVERS[folderSelect.value];
  const hfRequest=f=>({repository:data.repository,remote_path:f.path,base_model:data.base_model,trigger_words:data.trigger_words,
-  get provider(){return folderSelect.value==="ollama"?"ollama":"huggingface";},get folder(){return folderSelect.value==="ollama"?null:folderSelect.value;}});
- const hfRef=f=>folderSelect.value==="ollama"?"ollama:"+ollamaModelName(data.repository,f.path):"huggingface:"+data.repository+"/"+f.path;
+  get provider(){return llm()?folderSelect.value:"huggingface";},get folder(){return llm()?null:folderSelect.value;}});
+ const hfRef=f=>llm()?folderSelect.value+":"+llm().name(data.repository,f.path):"huggingface:"+data.repository+"/"+f.path;
  const hfInstalled=f=>{
-  if(folderSelect.value!=="ollama")return !!f.on_pc;
-  const name=ollamaModelName(data.repository,f.path).toLowerCase(),device=(browseAgent()||"")+":ollama";
+  if(!llm())return !!f.on_pc;
+  const name=llm().name(data.repository,f.path).toLowerCase(),device=(browseAgent()||"")+":"+folderSelect.value;
   return models.some(m=>m.device===device&&m.name.toLowerCase()===name);
  };
- const hfBehavior=f=>({destination:folderSelect,isAllowed:()=>folderSelect.value!=="ollama"||
+ const hfBehavior=f=>({destination:folderSelect,isAllowed:()=>!llm()||
   isOllamaCompatiblePath(f.path)&&data.files.filter(x=>x.path.split("/").pop().toLowerCase()===f.path.split("/").pop().toLowerCase()).length===1});
  const primaryBox=text("div","","primary-file-box");
  if(data.primary_file){

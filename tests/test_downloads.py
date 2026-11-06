@@ -8,7 +8,7 @@ import pytest
 from fastapi import HTTPException
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "agent"))
-from download_worker import download_file
+from download_worker import download_file, pull_lemonade
 from backend.app import downloads
 from backend.app.hash_matches import ensure_tables as ensure_hash_tables
 from backend.app.sources import ensure_tables as ensure_source_tables
@@ -187,3 +187,75 @@ def test_cleanup_cut_off_by_a_restart_can_be_retried(db):
     row = db.execute("SELECT cleanup,cleanup_error FROM download_jobs WHERE id='j'").fetchone()
     assert row[0] == "failed" and "Interrupted" in row[1]
     assert downloads.request_cleanup(db, "j")["cleanup"] == "queued"
+
+def test_lemonade_model_names_the_exact_gguf_file():
+    assert downloads.lemonade_model("unsloth/Qwen3-8B-GGUF", "Qwen3-8B-Q4_K_M.gguf") == (
+        "user.unsloth-Qwen3-8B-Q4_K_M", "unsloth/Qwen3-8B-GGUF:Qwen3-8B-Q4_K_M.gguf")
+    assert downloads.lemonade_model("o/r", "sub/model.iq3_xs.gguf") == ("user.o-r-model.iq3_xs", "o/r:model.iq3_xs.gguf")
+    # Two uploaders' identically named files stay distinct models.
+    assert downloads.lemonade_model("a/Qwen3-8B-GGUF", "Qwen3-8B-Q4_K_M.gguf")[0] != downloads.lemonade_model("b/Qwen3-8B-GGUF", "Qwen3-8B-Q4_K_M.gguf")[0]
+    for bad in ("model.safetensors", "mmproj-model-f16.gguf", "model-00001-of-00002.gguf"):
+        with pytest.raises(HTTPException, match="Lemonade"):
+            downloads.lemonade_model("o/r", bad)
+
+def test_lemonade_job_is_claimed_and_deduplicated(db):
+    job = downloads.create_lemonade(db, "pc", "o/r", "model-Q8_0.gguf", 1234)
+    assert downloads.create_lemonade(db, "pc", "o/r", "model-Q8_0.gguf", 1234)["id"] == job["id"]
+    assert job["device"] == "pc:lemonade" and job["size_bytes"] == 1234
+    claimed = downloads.claim(db, "pc")
+    assert (claimed["provider"], claimed["file_name"], claimed["url"]) == ("lemonade", "user.o-r-model-Q8_0", "o/r:model-Q8_0.gguf")
+    assert downloads.finish(db, job["id"], "pc", None, None, "lemonade://user.o-r-model-Q8_0")["state"] == "done"
+    with pytest.raises(HTTPException):
+        downloads.request_cleanup(db, job["id"])
+
+class LemonadeResponse:
+    def __init__(self, status=200, lines=(), body=None, content_type="text/event-stream"):
+        self.status_code, self.lines, self.body = status, lines, body
+        self.headers = {"Content-Type": content_type}
+    def __enter__(self):
+        return self
+    def __exit__(self, *exc):
+        return False
+    def iter_lines(self, decode_unicode=False):
+        return iter(self.lines)
+    def json(self):
+        if self.body is None:
+            raise ValueError("no json")
+        return self.body
+
+class LemonadeSession:
+    def __init__(self, *responses):
+        self.responses, self.calls = list(responses), []
+    def post(self, url, json=None, headers=None, **kwargs):
+        self.headers = headers
+        self.calls.append((url, json))
+        return self.responses.pop(0)
+
+LEMONADE_JOB = {"file_name": "user.o-r-model-Q8_0", "url": "o/r:model-Q8_0.gguf"}
+
+def test_pull_lemonade_streams_progress_then_loads(monkeypatch):
+    monkeypatch.setenv("LEMONADE_API_KEY", "secret")
+    events = ["event: progress", 'data: {"file_index":1,"total_files":2,"bytes_downloaded":10,"bytes_total":100}', "",
+              "event: progress", 'data: {"file_index":2,"total_files":2,"bytes_downloaded":5,"bytes_total":50}', "",
+              "event: complete", 'data: {"file_index":2,"total_files":2,"percent":100}']
+    session, seen = LemonadeSession(LemonadeResponse(lines=events), LemonadeResponse(body={"status": "success"})), []
+    assert pull_lemonade(session, "http://127.0.0.1:13305/", LEMONADE_JOB, seen.append) == (None, "lemonade://user.o-r-model-Q8_0")
+    assert seen == [10, 105] and session.headers == {"Authorization": "Bearer secret"}
+    assert session.calls == [
+        ("http://127.0.0.1:13305/api/v1/pull", {"model_name": "user.o-r-model-Q8_0", "checkpoint": "o/r:model-Q8_0.gguf",
+                                                "recipe": "llamacpp", "stream": True}),
+        ("http://127.0.0.1:13305/api/v1/load", {"model_name": "user.o-r-model-Q8_0"})]
+
+def test_pull_lemonade_reports_errors_and_skips_load_when_disabled():
+    failing = LemonadeSession(LemonadeResponse(lines=["event: error", 'data: {"error":"repo not found"}']))
+    with pytest.raises(ValueError, match="repo not found"):
+        pull_lemonade(failing, "http://x", LEMONADE_JOB, lambda d: None)
+    plain = LemonadeSession(LemonadeResponse(body={"status": "success"}, content_type="application/json"))
+    assert pull_lemonade(plain, "http://x", LEMONADE_JOB, lambda d: None, load=False)[1] == "lemonade://user.o-r-model-Q8_0"
+    assert len(plain.calls) == 1
+    load_fails = LemonadeSession(LemonadeResponse(body={"status": "success"}, content_type="application/json"),
+                                 LemonadeResponse(status=500, body={"status": "error", "message": "out of memory"}))
+    with pytest.raises(ValueError, match="loading failed: out of memory"):
+        pull_lemonade(load_fails, "http://x", LEMONADE_JOB, lambda d: None)
+    with pytest.raises(ValueError, match="Unsafe"):
+        pull_lemonade(LemonadeSession(), "http://x", {"file_name": "user.x", "url": "o/r:x.safetensors"}, lambda d: None)

@@ -3,7 +3,7 @@ import re
 from collections import defaultdict
 
 def physical_device(source):
-    return source.rsplit(":", 1)[0] if source.endswith((":comfyui", ":ollama")) else source
+    return source.rsplit(":", 1)[0] if source.endswith((":comfyui", ":ollama", ":lemonade")) else source
 
 PATTERNS = (
     (r"krea.?2", "Krea 2"),  # before FLUX, which "Flux.1 Krea" belongs to
@@ -47,7 +47,7 @@ def enrich(records):
             seen_files.add(file_key)
         # Filename + size is only a *possible* duplicate, not proof of same bytes.
         key = (record["name"].casefold(), record["size_bytes"])
-        if record["size_bytes"] > 0 and not record["kind"].startswith("ollama/"):
+        if record["size_bytes"] > 0 and not record["kind"].startswith(("ollama/", "lemonade/")):
             groups[key].add(file_key or index)
     result = []
     for index, record in enumerate(records):
