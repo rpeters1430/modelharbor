@@ -21,6 +21,8 @@ The dashboard's **Devices** tab shows each PC's live state: scanning folders, ha
 
 **Scan now** asks that background task to start a sync. It checks for requests about every 20 seconds, so the scan starts shortly after. If the task isn't running, the request waits until it is. A scheduled sync and a requested one never run at the same time: whichever starts second is skipped.
 
+The background task works on four lanes at once: scan requests, deletes and cleanups; hash checks; downloads; and int8 conversions. A long download or conversion doesn't hold up the rest, so **Scan now** and deletes still start within about 20 seconds. Each lane runs its own jobs one after another, and when a lane finishes a job it starts the next queued one right away.
+
 ## Converting models that do not fit the GPU
 
 The dashboard's **Convert** tab lists 16- and 32-bit diffusion models and text encoders that are bigger than the PC's VRAM (less 2 GB for ComfyUI's working memory). **Convert** asks the background task to write a copy in ComfyUI's `int8_convrot` format next to the original, named `<name>_int8_convrot.safetensors` (a `bf16`/`fp16`/`fp32` in the name is replaced). It is about half the size and loads in ComfyUI like any model.

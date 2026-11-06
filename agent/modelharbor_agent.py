@@ -4,6 +4,7 @@ import json
 import logging
 import os
 import socket
+import threading
 import time
 from pathlib import Path
 import requests
@@ -134,50 +135,71 @@ def run_once(cfg, token, dry_run=False, reporter=None):
                                   (("Ollama", ollama), ("Lemonade", lemonade)) if found is not None))
 
 
-def run_hash_worker(cfg, token):
-    """Continuous worker for dashboard requests: hash checks and approved update downloads."""
+def _lane(name, interval, steps, stop):
+    """Poll one kind of dashboard job until stopped, on its own thread and requests session.
+
+    Each step returns True when it handled a job; the lane then polls again at once to drain its queue."""
+    with requests.Session() as session:
+        while not stop.is_set():
+            busy = False
+            for label, step in steps:
+                try:
+                    busy = bool(step(session)) or busy
+                except Exception as exc:  # noqa: BLE001 - keep the lane alive; retried next poll
+                    LOG.warning("%s poll failed; retrying: %s", label, exc)
+            if not busy:
+                stop.wait(interval)
+
+
+def worker_lanes(cfg, token):
+    """{lane name: [(label, step)]}. Long jobs get their own lane, so a multi-hour download or conversion
+    never holds up a hash check, a delete or a scan requested from the dashboard."""
+    device = (cfg.get("device") or socket.gethostname()) + ":comfyui"
+    roots = cfg.get("comfyui_models_dirs", []) or discover_roots()
+    server, agent = cfg["server"], device.rsplit(":", 1)[0]
+
+    def scan_request(session):
+        res = session.get(server.rstrip("/") + "/api/agents/" + requests.utils.quote(agent, safe="") + "/scan-request",
+                          headers={"X-ModelHarbor-Token": token}, timeout=20)
+        if res.ok and res.json().get("scan"):
+            LOG.info("Scan requested from the dashboard")
+            sync(cfg, token)
+        return False  # not a queue to drain
+
+    control = [("Scan request", scan_request)]
+    if cfg.get("deletes_enabled", True):
+        control.append(("Delete", lambda s: download_worker.process_delete(s, server, token, agent, roots)))
+    if cfg.get("downloads_enabled", True):
+        control.append(("Cleanup", lambda s: download_worker.process_cleanup(s, server, token, agent, roots)))
+    lanes = {"control": control,
+             "hashes": [("Hash job", lambda s: process_one(s, server, token, device, roots))]}
+    if cfg.get("downloads_enabled", True):
+        lanes["downloads"] = [("Download", lambda s: download_worker.process_one(
+            s, server, token, agent, roots, cfg.get("ollama_url", "http://127.0.0.1:11434"),
+            cfg.get("lemonade_url", lemonade_scan.DEFAULT_URL), cfg.get("lemonade_load_after_pull", True)))]
+    if cfg.get("converts_enabled", True):
+        lanes["converts"] = [("Conversion", lambda s: convert_worker.process_convert(s, server, token, agent, roots, cfg))]
+    return lanes
+
+
+def run_hash_worker(cfg, token, stop=None):
+    """Continuous worker for dashboard requests: scans, hash checks, deletes, downloads and conversions,
+    each kind on its own thread."""
     if not cfg.get("hash_verification_enabled", True):
         LOG.info("Hash verification worker disabled in config")
         return
-    device=(cfg.get("device") or socket.gethostname())+":comfyui"
-    roots=cfg.get("comfyui_models_dirs", []) or discover_roots()
-    interval=max(10,int(cfg.get("hash_poll_seconds",20)))
-    server=cfg["server"]
-    agent = device.rsplit(":",1)[0]
-    with requests.Session() as session:
-        while True:
-            try:
-                res = session.get(server.rstrip("/")+"/api/agents/"+requests.utils.quote(agent,safe="")+"/scan-request",
-                                  headers={"X-ModelHarbor-Token":token},timeout=20)
-                if res.ok and res.json().get("scan"):
-                    LOG.info("Scan requested from the dashboard")
-                    sync(cfg,token)
-            except Exception as exc:  # noqa: BLE001 - keep the worker alive; retried next poll
-                LOG.warning("Scan request poll or sync failed: %s",exc)
-            try:
-                process_one(session,server,token,device,roots)
-            except Exception as exc:  # noqa: BLE001 - keep the worker alive; retried next poll
-                LOG.warning("Hash job poll failed; retrying: %s",exc)
-            if cfg.get("downloads_enabled", True):
-                try:
-                    download_worker.process_one(session,server,token,device.rsplit(":",1)[0],roots,
-                                                cfg.get("ollama_url","http://127.0.0.1:11434"),
-                                                cfg.get("lemonade_url",lemonade_scan.DEFAULT_URL),
-                                                cfg.get("lemonade_load_after_pull",True))
-                    download_worker.process_cleanup(session,server,token,agent,roots)
-                except Exception as exc:  # noqa: BLE001 - keep the worker alive; retried next poll
-                    LOG.warning("Download poll failed; retrying: %s",exc)
-            if cfg.get("deletes_enabled", True):
-                try:
-                    download_worker.process_delete(session,server,token,agent,roots)
-                except Exception as exc:  # noqa: BLE001 - keep the worker alive; retried next poll
-                    LOG.warning("Delete poll failed; retrying: %s",exc)
-            if cfg.get("converts_enabled", True):
-                try:
-                    convert_worker.process_convert(session,server,token,agent,roots,cfg)
-                except Exception as exc:  # noqa: BLE001 - keep the worker alive; retried next poll
-                    LOG.warning("Conversion poll failed; retrying: %s",exc)
-            time.sleep(interval)
+    interval = max(10, int(cfg.get("hash_poll_seconds", 20)))
+    stop = stop or threading.Event()
+    threads = [threading.Thread(target=_lane, args=(name, interval, steps, stop), name="lane-" + name, daemon=True)
+               for name, steps in worker_lanes(cfg, token).items()]
+    for thread in threads:
+        thread.start()
+    try:
+        while any(t.is_alive() for t in threads):
+            for thread in threads:
+                thread.join(1)
+    except KeyboardInterrupt:
+        stop.set()
 
 def main():
     p = argparse.ArgumentParser(description="ModelHarbor background inventory sync")
