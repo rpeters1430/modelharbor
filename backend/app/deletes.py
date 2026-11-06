@@ -50,7 +50,15 @@ def request(db, device, path):
     return get(db, job_id)
 
 
+STALE_SECONDS = 3600  # far longer than re-hashing one file takes
+
+
 def claim(db, agent):
+    # A delete running this long was cut off by a crash or restart. Failing it is safe to retry: the agent
+    # re-hashes before deleting, so a retry never removes the wrong file.
+    now = int(time.time())
+    db.execute("UPDATE delete_jobs SET state='failed',error=?,updated_at=? WHERE agent=? AND state='running' AND updated_at<?",
+               ("Interrupted: the PC's background task stopped before it finished. Try again.", now, agent, now - STALE_SECONDS))
     row = db.execute("""SELECT id,paths,sha256 FROM delete_jobs WHERE agent=? AND state='queued'
         ORDER BY created_at LIMIT 1""", (agent,)).fetchone()
     if not row or db.execute("UPDATE delete_jobs SET state='running',updated_at=? WHERE id=? AND state='queued'",

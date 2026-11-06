@@ -225,3 +225,20 @@ def test_weight_recorded_on_lookup_and_backfilled(db):
     calls.clear()
     run_pass(db, get, now=10**10, pause=0)
     assert not any("model-versions/10" in c for c in calls)
+
+def test_malformed_civitai_reply_does_not_stop_other_lookups(db):
+    add(db, "C:/m/loras/bad.safetensors", sha="e" * 64)
+    add(db, "C:/m/loras/cool.safetensors")
+    calls = []
+    get = fake({f"https://civitai.com/api/v1/model-versions/by-hash/{'e' * 64}": b"<html>not json",
+                f"https://civitai.com/api/v1/model-versions/by-hash/{SHA}": OLD}, calls)
+    run_pass(db, get, pause=0, now=1_000_000)
+    by_path = {r["path"]: r for r in records(db)}
+    assert by_path["C:/m/loras/cool.safetensors"]["source"]["model_name"] == "Cool LoRA"
+    assert by_path["C:/m/loras/bad.safetensors"]["source_checked"] is True  # retried next week, not every pass
+
+def test_malformed_stored_trigger_words_do_not_break_the_inventory(db):
+    add(db, "C:/m/loras/hf.safetensors")
+    db.execute("""INSERT INTO selected_matches (device,path,repository,remote_path,sha256,local_size,local_modified_ns,
+        selected_at,trigger_words) VALUES ('pc:comfyui','C:/m/loras/hf.safetensors','a/b','hf.safetensors',?,100,1,1,'[oops')""", (SHA,))
+    assert records(db)[0]["source"]["trained_words"] == ["[oops"]

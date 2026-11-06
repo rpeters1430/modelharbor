@@ -126,3 +126,15 @@ def test_conversion_inherits_a_hugging_face_link(db):
               "sha256": NEW, "size_bytes": 12, "modified_ns": 5}
     source = annotate(db, [record])[0]["source"]
     assert (source["provider"], source["model_name"], source["base_model"]) == ("huggingface", "krea/krea-2", "Krea 2")
+
+
+def test_conversion_cut_off_by_a_restart_can_be_retried(db):
+    path = "C:/m/diffusion_models/big_bf16.safetensors"
+    db.execute("INSERT INTO models VALUES ('pc:comfyui',?,'big_bf16.safetensors','diffusion',24,1,NULL,?)", (path, SRC))
+    job = converts.request(db, "pc:comfyui", path)
+    assert converts.claim(db, "pc")["id"] == job["id"]
+    assert converts.claim(db, "pc") is None and converts.get(db, job["id"])["state"] == "running"
+    db.execute("UPDATE convert_jobs SET updated_at=0")
+    assert converts.claim(db, "pc") is None
+    assert converts.get(db, job["id"])["state"] == "failed"
+    assert converts.request(db, "pc:comfyui", path)["state"] == "queued"

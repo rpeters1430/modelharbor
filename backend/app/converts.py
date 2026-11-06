@@ -67,7 +67,15 @@ def request(db, device, path):
     return get(db, job_id)
 
 
+# The agent stops a conversion after 3 hours, so one running much longer was cut off by a crash or restart.
+STALE_SECONDS = 4 * 3600
+INTERRUPTED = "Interrupted: the PC's background task stopped before it finished. Try again."
+
+
 def claim(db, agent):
+    now = int(time.time())
+    db.execute("UPDATE convert_jobs SET state='failed',error=?,updated_at=? WHERE agent=? AND state='running' AND updated_at<?",
+               (INTERRUPTED, now, agent, now - STALE_SECONDS))
     row = db.execute("""SELECT id,path,sha256 FROM convert_jobs WHERE agent=? AND state='queued'
         ORDER BY created_at LIMIT 1""", (agent,)).fetchone()
     if not row or db.execute("UPDATE convert_jobs SET state='running',updated_at=? WHERE id=? AND state='queued'",

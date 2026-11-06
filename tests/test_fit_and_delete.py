@@ -116,3 +116,15 @@ def test_comfy_org_quant_names_group_together():
     files = [{"path": p, "name": p.rsplit("/", 1)[1], "size_bytes": int(s * GB)} for p, s in names]
     fit.annotate_listing({"files": files}, AMD)
     assert [f["name"] for f in files if f.get("best")] == ["qwen_image_2.1_int8_convrot.safetensors", "qwen3vl_8b_int8_convrot.safetensors"]
+
+
+def test_delete_cut_off_by_a_restart_can_be_retried(db):
+    db.execute("INSERT INTO models VALUES ('pc:comfyui','C:/m/loras/a.safetensors','n','lora',5,1,NULL,?)", ("a" * 64,))
+    job = deletes.request(db, "pc:comfyui", "C:/m/loras/a.safetensors")
+    assert deletes.claim(db, "pc")["id"] == job["id"]
+    assert deletes.claim(db, "pc") is None and deletes.get(db, job["id"])["state"] == "running"  # still in progress
+    # The agent restarted before reporting; a later poll fails the orphan instead of leaving it running forever.
+    db.execute("UPDATE delete_jobs SET updated_at=0")
+    assert deletes.claim(db, "pc") is None
+    assert deletes.get(db, job["id"])["state"] == "failed"
+    assert deletes.request(db, "pc:comfyui", "C:/m/loras/a.safetensors")["id"] != job["id"]

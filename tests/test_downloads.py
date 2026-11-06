@@ -171,3 +171,19 @@ def test_ollama_import_job_is_claimed_and_deduplicated(db):
     claimed = downloads.claim(db, "pc")
     assert (claimed["provider"], claimed["file_name"], claimed["url"]) == ("ollama", "hf.co/o/r:model-Q8_0.gguf", None)
     assert downloads.finish(db, job["id"], "pc", None, None, "ollama://hf.co/o/r:model-Q8_0.gguf")["state"] == "done"
+
+def test_partial_left_by_a_crash_does_not_block_the_retry(tmp_path):
+    job = agent_job(tmp_path, b"new weights")
+    (tmp_path / "cool_v2.safetensors.partial").write_bytes(b"half")  # the agent stopped mid-download
+    sha, path = download_file(FakeSession(FakeResponse(b"new weights")), job, [str(tmp_path)], lambda d: None)
+    assert Path(path).read_bytes() == b"new weights" and not (tmp_path / "cool_v2.safetensors.partial").exists()
+
+def test_cleanup_cut_off_by_a_restart_can_be_retried(db):
+    now = 1
+    db.execute("""INSERT INTO download_jobs (id,agent,device,path,provider,file_name,state,created_at,updated_at,
+        result_path,expected_sha,cleanup) VALUES ('j','pc','pc:comfyui','C:/m/cool.safetensors','civitai','n','done',?,?,
+        'C:/m/new.safetensors',?,'running')""", (now, now, NEW_SHA))
+    assert downloads.claim_cleanup(db, "pc") is None  # running since 1970: cut off
+    row = db.execute("SELECT cleanup,cleanup_error FROM download_jobs WHERE id='j'").fetchone()
+    assert row[0] == "failed" and "Interrupted" in row[1]
+    assert downloads.request_cleanup(db, "j")["cleanup"] == "queued"
