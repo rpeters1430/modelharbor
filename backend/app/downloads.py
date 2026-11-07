@@ -15,7 +15,7 @@ SAFE_NAME = re.compile(r"^[\w .()+,-]{1,200}\.(?:safetensors|ckpt|pt|pth|bin|ggu
 ACTIVE = ("queued", "running")
 STALE_SECONDS = 1800
 FIELDS = ("id", "device", "path", "provider", "file_name", "size_bytes", "state", "bytes_done",
-          "error", "result_path", "created_at", "updated_at", "cleanup", "cleanup_error", "target_folder", "source_ref", "base_model", "trigger_words")
+          "error", "result_path", "created_at", "updated_at", "cleanup", "cleanup_error", "target_folder", "source_ref", "base_model", "trigger_words", "runtime_job_id")
 
 def ensure_tables(db):
     db.execute("""CREATE TABLE IF NOT EXISTS download_jobs (
@@ -26,7 +26,7 @@ def ensure_tables(db):
     columns = [row[1] for row in db.execute("PRAGMA table_info(download_jobs)")]
     # cleanup: NULL, then queued -> running -> done | failed when the user deletes the old file.
     # target_folder/source_ref: new downloads from Browse, which have no old file next to them.
-    for column in ("old_sha", "cleanup", "cleanup_error", "target_folder", "source_ref", "base_model", "trigger_words"):
+    for column in ("old_sha", "cleanup", "cleanup_error", "target_folder", "source_ref", "base_model", "trigger_words", "runtime_job_id"):
         if column not in columns:
             db.execute(f"ALTER TABLE download_jobs ADD COLUMN {column} TEXT")
 
@@ -65,8 +65,8 @@ def create(db, device, path):
     record = _record(db, device, path)
     if not record["update"]:
         raise HTTPException(409, "No update is available for this model")
-    if record["update"]["provider"] == "lemonade":
-        raise HTTPException(409, "Lemonade keeps its own copy; update the model from Lemonade")
+    if record["update"]["provider"] in ("lemonade", "lmstudio"):
+        raise HTTPException(409, "This runtime manages its own model copy; update it from the runtime")
     url, file_name, expected, size = _plan(db, record)
     if url and not SAFE_NAME.fullmatch(file_name or ""):
         raise HTTPException(422, "Unsafe file name from provider")
@@ -84,16 +84,16 @@ def claim(db, agent):
     # A download whose agent stopped reporting progress is handed out again.
     db.execute("UPDATE download_jobs SET state='queued' WHERE agent=? AND state='running' AND updated_at<?",
                (agent, now - STALE_SECONDS))
-    row = db.execute("""SELECT id,device,path,provider,url,file_name,expected_sha,size_bytes,target_folder FROM download_jobs
+    row = db.execute("""SELECT id,device,path,provider,url,file_name,expected_sha,size_bytes,target_folder,runtime_job_id FROM download_jobs
         WHERE agent=? AND state='queued' ORDER BY created_at LIMIT 1""", (agent,)).fetchone()
     if not row or db.execute("UPDATE download_jobs SET state='running',bytes_done=0,updated_at=? WHERE id=? AND state='queued'",
                              (now, row[0])).rowcount != 1:
         return None
-    return dict(zip(("id", "device", "path", "provider", "url", "file_name", "expected_sha", "size_bytes", "target_folder"), row))
+    return dict(zip(("id", "device", "path", "provider", "url", "file_name", "expected_sha", "size_bytes", "target_folder", "runtime_job_id"), row))
 
-def progress(db, job_id, agent, bytes_done):
-    if db.execute("UPDATE download_jobs SET bytes_done=?,updated_at=? WHERE id=? AND agent=? AND state='running'",
-                  (bytes_done, int(time.time()), job_id, agent)).rowcount != 1:
+def progress(db, job_id, agent, bytes_done, runtime_job_id=None):
+    if db.execute("UPDATE download_jobs SET bytes_done=?,runtime_job_id=COALESCE(?,runtime_job_id),updated_at=? WHERE id=? AND agent=? AND state='running'",
+                  (bytes_done, runtime_job_id, int(time.time()), job_id, agent)).rowcount != 1:
         raise HTTPException(409, "Download is no longer running for this agent")
     return {"ok": True}
 
@@ -141,7 +141,7 @@ def request_cleanup(db, job_id):
     if not row:
         raise HTTPException(404, "Unknown download")
     device, path, provider, state, result_path, cleanup = row
-    if provider in ("ollama", "lemonade"):
+    if provider in ("ollama", "lemonade", "lmstudio", "lmstudio-load", "lmstudio-unload"):
         raise HTTPException(409, "The LLM server manages its own model files")
     if state != "done" or not result_path:
         raise HTTPException(409, "The new version must finish downloading and pass its hash check first")
@@ -234,6 +234,59 @@ def create_lemonade(db, agent, repo, remote_path, size_bytes=None):
     db.execute("""INSERT INTO download_jobs (id,agent,device,path,provider,url,file_name,size_bytes,state,created_at,updated_at,source_ref)
         VALUES (?,?,?,'','lemonade',?,?,?,'queued',?,?,?)""",
         (job_id, agent, agent + ":lemonade", checkpoint, name, size_bytes, now, now, source_ref))
+    return dict(zip(FIELDS, db.execute(f"SELECT {','.join(FIELDS)} FROM download_jobs WHERE id=?", (job_id,)).fetchone()))
+
+LMSTUDIO_QUANT = re.compile(r"(?i)(?<![a-z0-9])(IQ[1-4]_(?:XXS|XS|S|M|NL)|Q[2-8]_[K0-9]+(?:_[SML])?|BF16|F16|F32)(?![a-z0-9])")
+
+def lmstudio_quantization(remote_path):
+    file_name = _single_gguf(remote_path, "LM Studio")
+    match = LMSTUDIO_QUANT.search(file_name.stem)
+    if not match:
+        raise HTTPException(422, "LM Studio needs a GGUF filename with a supported quantization such as Q4_K_M")
+    return match.group(1).upper()
+
+def create_lmstudio(db, agent, repo, remote_path, files):
+    """Queue LM Studio's native Hugging Face repository + quantization download."""
+    quantization = lmstudio_quantization(remote_path)
+    matches = [f for f in files if f.get("path") == remote_path]
+    if len(matches) != 1:
+        raise HTTPException(404, "File not found in that Hugging Face repository")
+    same_quant = []
+    for item in files:
+        path = item.get("path") or ""
+        if not path.lower().endswith(".gguf"):
+            continue
+        match = LMSTUDIO_QUANT.search(PurePosixPath(path).stem)
+        if match and match.group(1).upper() == quantization:
+            same_quant.append(item)
+    if len(same_quant) != 1:
+        raise HTTPException(422, "LM Studio selects by quantization; this repository has more than one matching GGUF")
+    source_ref = f"lmstudio:{repo}:{quantization}"
+    existing = db.execute(f"SELECT {','.join(FIELDS)} FROM download_jobs WHERE source_ref=? AND agent=? AND state IN (?,?)",
+                          (source_ref, agent, *ACTIVE)).fetchone()
+    if existing:
+        return dict(zip(FIELDS, existing))
+    now, job_id = int(time.time()), uuid.uuid4().hex
+    db.execute("""INSERT INTO download_jobs (id,agent,device,path,provider,url,file_name,size_bytes,state,created_at,updated_at,source_ref)
+        VALUES (?,?,?,'','lmstudio',?,?,?,'queued',?,?,?)""",
+        (job_id, agent, agent + ":lmstudio", "https://huggingface.co/" + quote(repo, safe="/"), quantization,
+         same_quant[0].get("size_bytes"), now, now, source_ref))
+    return dict(zip(FIELDS, db.execute(f"SELECT {','.join(FIELDS)} FROM download_jobs WHERE id=?", (job_id,)).fetchone()))
+
+def create_lmstudio_action(db, agent, device, path, action, model_key, instance_id=None, context_length=None):
+    if action not in ("load", "unload"):
+        raise HTTPException(422, "Unsupported LM Studio action")
+    provider = "lmstudio-" + action
+    payload = {"instance_id": instance_id, "context_length": context_length}
+    source_ref = f"{provider}:{device}:{path}:{instance_id or context_length or ''}"
+    existing = db.execute(f"SELECT {','.join(FIELDS)} FROM download_jobs WHERE source_ref=? AND agent=? AND state IN (?,?)",
+                          (source_ref, agent, *ACTIVE)).fetchone()
+    if existing:
+        return dict(zip(FIELDS, existing))
+    now, job_id = int(time.time()), uuid.uuid4().hex
+    db.execute("""INSERT INTO download_jobs (id,agent,device,path,provider,url,file_name,state,created_at,updated_at,source_ref)
+        VALUES (?,?,?,?,?,?,?,'queued',?,?,?)""",
+        (job_id, agent, device, path, provider, json.dumps(payload, separators=(",", ":")), model_key, now, now, source_ref))
     return dict(zip(FIELDS, db.execute(f"SELECT {','.join(FIELDS)} FROM download_jobs WHERE id=?", (job_id,)).fetchone()))
 
 def create_new(db, agent, url, file_name, expected_sha, size_bytes, folder, source_ref, provider, base_model=None, trigger_words=None):

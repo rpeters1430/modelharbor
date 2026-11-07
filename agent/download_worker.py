@@ -11,6 +11,7 @@ import requests
 from hash_worker import allowed_file
 from hash_cache import sha256_file
 from lemonade_scan import auth_headers as lemonade_headers
+from lmstudio_scan import auth_headers as lmstudio_headers
 
 ALLOWED_HOSTS = {"civitai.com", "civitai.red", "huggingface.co", "modelscope.cn", "www.modelscope.cn"}
 SAFE_NAME = re.compile(r"^[\w .()+,-]{1,200}\.(?:safetensors|ckpt|pt|pth|bin|gguf|onnx)$")
@@ -193,7 +194,98 @@ def pull_lemonade(session, lemonade_url, job, report_progress, load=True):
             raise ValueError("Downloaded into Lemonade, but loading failed: " + _lemonade_error(response))
     return None, "lemonade://" + name
 
-def process_one(session, server, token, agent, roots, ollama_url, lemonade_url=None, lemonade_load=True):
+def _lmstudio_error(response):
+    if response.status_code in (401, 403):
+        return "LM Studio refused the request; set LMSTUDIO_API_KEY in the Windows user environment"
+    try:
+        body = response.json()
+    except ValueError:
+        return f"LM Studio returned HTTP {response.status_code}"
+    message = body.get("error") or body.get("message") if isinstance(body, dict) else None
+    if isinstance(message, dict):
+        message = message.get("message")
+    return str(message or f"LM Studio returned HTTP {response.status_code}")[:250]
+
+def _lmstudio_json(session, method, url, **kwargs):
+    response = getattr(session, method)(url, headers=lmstudio_headers(), timeout=(20, 120), **kwargs)
+    if response.status_code < 200 or response.status_code >= 300:
+        raise ValueError(_lmstudio_error(response))
+    try:
+        payload = response.json()
+    except ValueError as exc:
+        raise ValueError("LM Studio returned an invalid response") from exc
+    if not isinstance(payload, dict):
+        raise ValueError("LM Studio returned an invalid response")
+    return payload
+
+def pull_lmstudio(session, lmstudio_url, job, report_progress):
+    """Download a selected Hugging Face quantization through LM Studio and persist its runtime job ID."""
+    source = urlsplit(job.get("url") or "")
+    if (source.scheme != "https" or source.hostname != "huggingface.co" or source.port
+            or not re.fullmatch(r"/[A-Za-z0-9][A-Za-z0-9_.-]{0,95}/[A-Za-z0-9][A-Za-z0-9_.-]{0,95}/?", source.path)):
+        raise ValueError("LM Studio download must name a Hugging Face model repository")
+    quantization = job.get("file_name") or ""
+    if not re.fullmatch(r"(?:Q[2-8]_[A-Z0-9]+|IQ[1-4]_(?:XXS|XS|S|M|NL)|BF16|F16|F32)", quantization):
+        raise ValueError("Unsupported LM Studio quantization")
+    base = lmstudio_url.rstrip("/") + "/api/v1/models/"
+    runtime_job_id = job.get("runtime_job_id")
+    if runtime_job_id:
+        if not re.fullmatch(r"[A-Za-z0-9_-]{1,200}", runtime_job_id):
+            raise ValueError("LM Studio returned an invalid download job ID")
+        status = _lmstudio_json(session, "get", base + "download/status/" + runtime_job_id)
+    else:
+        status = _lmstudio_json(session, "post", base + "download",
+                                json={"model": job["url"], "quantization": quantization})
+        runtime_job_id = status.get("job_id")
+    state = status.get("status")
+    if state == "already_downloaded":
+        return None, "lmstudio://" + source.path.strip("/") + "/" + quantization
+    if state == "failed":
+        raise ValueError(str(status.get("error") or "LM Studio download failed")[:250])
+    if state == "completed":
+        return None, "lmstudio://" + source.path.strip("/") + "/" + quantization
+    if not runtime_job_id:
+        raise ValueError("LM Studio started a download without returning a job ID")
+    if state not in ("downloading", "paused"):
+        raise ValueError("LM Studio returned an unsupported download status")
+    last_done = 0
+    while state in ("downloading", "paused"):
+        done = max(0, int(status.get("downloaded_bytes") or 0))
+        last_done = max(last_done, done)
+        report_progress(last_done, runtime_job_id)
+        time.sleep(5)
+        status = _lmstudio_json(session, "get", base + "download/status/" + runtime_job_id)
+        state = status.get("status")
+        if state == "failed":
+            raise ValueError(str(status.get("error") or "LM Studio download failed")[:250])
+        if state not in ("downloading", "paused", "completed"):
+            raise ValueError("LM Studio returned an unsupported download status")
+    report_progress(max(last_done, int(status.get("downloaded_bytes") or 0)), runtime_job_id)
+    return None, "lmstudio://" + source.path.strip("/") + "/" + quantization
+
+def run_lmstudio_action(session, lmstudio_url, job):
+    try:
+        action = json.loads(job.get("url") or "{}")
+    except ValueError as exc:
+        raise ValueError("Invalid LM Studio action payload") from exc
+    if not isinstance(action, dict) or not isinstance(job.get("file_name"), str) or not job["file_name"]:
+        raise ValueError("Invalid LM Studio action")
+    base = lmstudio_url.rstrip("/") + "/api/v1/models/"
+    if job["provider"] == "lmstudio-load":
+        context_length = action.get("context_length")
+        if not isinstance(context_length, int) or context_length < 1:
+            raise ValueError("LM Studio load requires a valid context length")
+        _lmstudio_json(session, "post", base + "load", json={"model": job["file_name"], "context_length": context_length})
+    elif job["provider"] == "lmstudio-unload":
+        instance_id = action.get("instance_id")
+        if not isinstance(instance_id, str) or not instance_id:
+            raise ValueError("LM Studio unload requires a loaded model instance")
+        _lmstudio_json(session, "post", base + "unload", json={"instance_id": instance_id})
+    else:
+        raise ValueError("Unsupported LM Studio action")
+    return None, "lmstudio://" + job["file_name"]
+
+def process_one(session, server, token, agent, roots, ollama_url, lemonade_url=None, lemonade_load=True, lmstudio_url="http://127.0.0.1:1234"):
     headers = {"X-ModelHarbor-Token": token}
     base = server.rstrip("/") + "/api/downloads/"
     res = session.get(base + "next", params={"agent": agent}, headers=headers, timeout=20)
@@ -201,11 +293,11 @@ def process_one(session, server, token, agent, roots, ollama_url, lemonade_url=N
     job = res.json().get("job")
     if not job:
         return False
-    def report_progress(done):
+    def report_progress(done, runtime_job_id=None):
         # Best effort: a NAS hiccup must not abort a download that is going fine.
         try:
             session.post(base + job["id"] + "/progress", headers=headers,
-                         json={"agent": agent, "bytes_done": done}, timeout=20)
+                         json={"agent": agent, "bytes_done": done, "runtime_job_id": runtime_job_id}, timeout=20)
         except requests.RequestException:
             pass
     result = {"agent": agent, "sha256": None, "error": None, "result_path": None}
@@ -215,6 +307,10 @@ def process_one(session, server, token, agent, roots, ollama_url, lemonade_url=N
         elif job["provider"] == "lemonade":
             result["sha256"], result["result_path"] = pull_lemonade(
                 session, lemonade_url or "http://127.0.0.1:13305", job, report_progress, lemonade_load)
+        elif job["provider"] == "lmstudio":
+            result["sha256"], result["result_path"] = pull_lmstudio(session, lmstudio_url, job, report_progress)
+        elif job["provider"] in ("lmstudio-load", "lmstudio-unload"):
+            result["sha256"], result["result_path"] = run_lmstudio_action(session, lmstudio_url, job)
         else:
             result["sha256"], result["result_path"] = download_file(session, job, roots, report_progress)
     except (OSError, ValueError, requests.RequestException) as exc:
