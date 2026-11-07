@@ -74,6 +74,7 @@ class ModelRecord(BaseModel):
     # LLM servers: where the model came from (Lemonade "owner/repo:variant" or a local path).
     checkpoint: str | None = Field(default=None, max_length=1024)
     update_available: bool | None = None
+    runtime_meta: dict | None = None
 
 class Hardware(BaseModel):
     gpu: str | None = Field(default=None, max_length=120)
@@ -89,12 +90,23 @@ class LemonadeInfo(BaseModel):
     ram_bytes: int | None = Field(default=None, ge=0)
     free_bytes: int | None = Field(default=None, ge=0)
 
+class LMStudioInfo(BaseModel):
+    status: str | None = Field(default=None, pattern=r"^(connected|unavailable|disabled)$")
+    error: str | None = Field(default=None, max_length=250)
+    host: str | None = Field(default=None, max_length=253)
+    gpu: str | None = Field(default=None, max_length=120)
+    vendor: str | None = Field(default=None, pattern=r"^(nvidia|amd|intel|other)$")
+    vram_bytes: int | None = Field(default=None, ge=0)
+    ram_bytes: int | None = Field(default=None, ge=0)
+
 class Heartbeat(BaseModel):
     device: str = Field(min_length=1, max_length=100)
     comfyui_count: int = Field(ge=0)
     ollama_count: int | None = Field(default=None, ge=0)
     lemonade_count: int | None = Field(default=None, ge=0)
     lemonade: LemonadeInfo | None = None  # the Lemonade PC, which may not be the agent's PC
+    lmstudio_count: int | None = Field(default=None, ge=0)
+    lmstudio: LMStudioInfo | None = None
     hardware: Hardware | None = None
 
 class Inventory(BaseModel):
@@ -110,7 +122,7 @@ def connect():
         PRIMARY KEY (device, path))""")
     columns = [row[1] for row in db.execute("PRAGMA table_info(models)")]
     for column in ("file_id", "sha256", "weights_sha256", "trigger_words", "base_model_guess", "meta_title",
-                   "checkpoint", "update_available"):
+                   "checkpoint", "update_available", "runtime_meta"):
         if column not in columns:
             db.execute(f"ALTER TABLE models ADD COLUMN {column} TEXT")
     db.execute("""CREATE TABLE IF NOT EXISTS agent_heartbeats
@@ -123,6 +135,10 @@ def connect():
         db.execute("ALTER TABLE agent_heartbeats ADD COLUMN lemonade_count INTEGER")
     if "lemonade" not in heartbeat_columns:
         db.execute("ALTER TABLE agent_heartbeats ADD COLUMN lemonade TEXT")  # JSON from the agent
+    if "lmstudio_count" not in heartbeat_columns:
+        db.execute("ALTER TABLE agent_heartbeats ADD COLUMN lmstudio_count INTEGER")
+    if "lmstudio" not in heartbeat_columns:
+        db.execute("ALTER TABLE agent_heartbeats ADD COLUMN lmstudio TEXT")
     db.execute("""CREATE TABLE IF NOT EXISTS agent_status (
         device TEXT PRIMARY KEY, phase TEXT NOT NULL, done INTEGER, total INTEGER,
         done_bytes INTEGER, total_bytes INTEGER, current TEXT, message TEXT,
@@ -144,9 +160,15 @@ def models(x_modelharbor_token: str | None = Header(default=None)):
     authorize(x_modelharbor_token)
     with closing(connect()) as db:
         fields = ("device","path","name","kind","size_bytes","modified_ns","file_id","sha256","trigger_words","base_model_guess","meta_title",
-                  "checkpoint","update_available")
+                  "checkpoint","update_available","runtime_meta")
         rows = db.execute(f"SELECT {','.join(fields)} FROM models ORDER BY device,kind,name").fetchall()
-        return enrich(annotate(db, [dict(zip(fields, row)) for row in rows]))
+        records = [dict(zip(fields, row)) for row in rows]
+        for record in records:
+            try:
+                record["runtime_meta"] = json.loads(record["runtime_meta"]) if record["runtime_meta"] else None
+            except (TypeError, ValueError):
+                record["runtime_meta"] = None
+        return enrich(annotate(db, records))
 
 def authorize(value):
     if not TOKEN or not hmac.compare_digest((value or "").encode(), TOKEN.encode()):
@@ -160,10 +182,11 @@ def inventory(payload: Inventory, x_modelharbor_token: str | None = Header(defau
     with closing(connect()) as db:
         with db:
             db.execute("DELETE FROM models WHERE device=?", (payload.device,))
-            db.executemany("""INSERT INTO models (device,path,name,kind,size_bytes,modified_ns,file_id,sha256,weights_sha256,trigger_words,base_model_guess,meta_title,checkpoint,update_available)
-                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+            db.executemany("""INSERT INTO models (device,path,name,kind,size_bytes,modified_ns,file_id,sha256,weights_sha256,trigger_words,base_model_guess,meta_title,checkpoint,update_available,runtime_meta)
+                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                 [(m.device,m.path,m.name,m.kind,m.size_bytes,m.modified_ns,m.file_id,m.sha256,m.weights_sha256,json.dumps(m.trigger_words) if isinstance(m.trigger_words, list) else m.trigger_words,m.base_model_guess,m.meta_title,
-                  m.checkpoint,None if m.update_available is None else int(m.update_available)) for m in payload.models])
+                  m.checkpoint,None if m.update_available is None else int(m.update_available),
+                  json.dumps(m.runtime_meta, separators=(",", ":")) if m.runtime_meta is not None else None) for m in payload.models])
             db.execute("""UPDATE selected_matches SET local_size=(SELECT size_bytes FROM models WHERE models.device=selected_matches.device AND models.path=selected_matches.path), local_modified_ns=(SELECT modified_ns FROM models WHERE models.device=selected_matches.device AND models.path=selected_matches.path) WHERE EXISTS (SELECT 1 FROM models WHERE models.device=selected_matches.device AND models.path=selected_matches.path)""")
     return {"device": payload.device, "count": len(payload.models)}
 
@@ -174,14 +197,17 @@ def heartbeat(payload: Heartbeat, x_modelharbor_token: str | None = Header(defau
         with db:
             hardware = payload.hardware and payload.hardware.model_dump_json()
             lemonade = payload.lemonade and payload.lemonade.model_dump_json()
-            db.execute("""INSERT INTO agent_heartbeats (device,last_seen,comfyui_count,ollama_count,lemonade_count,lemonade,hardware)
-                VALUES (?,?,?,?,?,?,?) ON CONFLICT(device) DO UPDATE SET last_seen=excluded.last_seen,
+            lmstudio = payload.lmstudio and payload.lmstudio.model_dump_json()
+            db.execute("""INSERT INTO agent_heartbeats (device,last_seen,comfyui_count,ollama_count,lemonade_count,lemonade,hardware,lmstudio_count,lmstudio)
+                VALUES (?,?,?,?,?,?,?,?,?) ON CONFLICT(device) DO UPDATE SET last_seen=excluded.last_seen,
                 comfyui_count=excluded.comfyui_count,ollama_count=excluded.ollama_count,
                 lemonade_count=excluded.lemonade_count,
                 lemonade=COALESCE(excluded.lemonade,agent_heartbeats.lemonade),
-                hardware=COALESCE(excluded.hardware,agent_heartbeats.hardware)""",
+                hardware=COALESCE(excluded.hardware,agent_heartbeats.hardware),
+                lmstudio_count=COALESCE(excluded.lmstudio_count,agent_heartbeats.lmstudio_count),
+                lmstudio=COALESCE(excluded.lmstudio,agent_heartbeats.lmstudio)""",
                 (payload.device, int(time.time()), payload.comfyui_count, payload.ollama_count,
-                 payload.lemonade_count, lemonade, hardware))
+                 payload.lemonade_count, lemonade, hardware, payload.lmstudio_count, lmstudio))
     return {"ok": True}
 
 @app.get("/api/agents")
@@ -190,7 +216,7 @@ def agents(x_modelharbor_token: str | None = Header(default=None)):
     with closing(connect()) as db:
         rows = db.execute("""SELECT h.device,h.last_seen,h.comfyui_count,h.ollama_count,
             s.phase,s.done,s.total,s.done_bytes,s.total_bytes,s.current,s.message,s.started_at,s.updated_at,
-            s.worker_seen,s.scan_requested_at,h.hardware,h.lemonade_count,h.lemonade
+            s.worker_seen,s.scan_requested_at,h.hardware,h.lemonade_count,h.lemonade,h.lmstudio_count,h.lmstudio
             FROM agent_heartbeats h LEFT JOIN agent_status s ON s.device=h.device ORDER BY h.device""").fetchall()
     now = int(time.time())
     result = []
@@ -201,6 +227,7 @@ def agents(x_modelharbor_token: str | None = Header(default=None)):
         result.append({"device": r[0], "last_seen": r[1], "online": now - max(r[1], worker_seen) <= 3900,
             "comfyui_count": r[2], "ollama_count": r[3], "lemonade_count": r[16],
             "lemonade": json.loads(r[17]) if r[17] else None, "status": status,
+            "lmstudio_count": r[18], "lmstudio": json.loads(r[19]) if r[19] else None,
             # The worker polls every ~20 s, so two minutes of silence means it is not running.
             "worker_running": now - worker_seen <= 120, "worker_seen": worker_seen or None,
             "scan_requested": bool(r[14]), "hardware": json.loads(r[15]) if r[15] else None})
@@ -210,9 +237,12 @@ def _hardware(db, agent):
     row = db.execute("SELECT hardware FROM agent_heartbeats WHERE device=?", (agent,)).fetchone() if agent else None
     return json.loads(row[0]) if row and row[0] else None
 
-def _lemonade_hardware(db, agent):
-    """The Lemonade PC's GPU, RAM and free disk as the agent last reported them."""
+def _llm_hardware(db, agent):
+    """Hardware reported for a remote LLM runtime, when the agent can identify it."""
     row = db.execute("SELECT lemonade FROM agent_heartbeats WHERE device=?", (agent,)).fetchone() if agent else None
+    if row and row[0]:
+        return json.loads(row[0])
+    row = db.execute("SELECT lmstudio FROM agent_heartbeats WHERE device=?", (agent,)).fetchone() if agent else None
     return json.loads(row[0]) if row and row[0] else None
 
 class AgentStatus(BaseModel):
@@ -288,8 +318,10 @@ def huggingface_inspect(url: str, agent: str = "", x_modelharbor_token: str | No
     except (OSError, ValueError) as exc:
         raise HTTPException(502, f"Hugging Face is unavailable right now: {exc}") from exc
     with closing(connect()) as db:
-        shas, hw, llm_hw = browse.local_shas(db), _hardware(db, agent), _lemonade_hardware(db, agent)
-    annotated = fit.annotate_listing(browse.mark_huggingface({"files": data["files"]}, shas), hw, llm_hw)
+        shas, hw, llm_hw = browse.local_shas(db), _hardware(db, agent), _llm_hardware(db, agent)
+        lmstudio_hw_row = db.execute("SELECT lmstudio FROM agent_heartbeats WHERE device=?", (agent,)).fetchone() if agent else None
+        lmstudio_hw = json.loads(lmstudio_hw_row[0]) if lmstudio_hw_row and lmstudio_hw_row[0] else None
+    annotated = fit.annotate_listing(browse.mark_huggingface({"files": data["files"]}, shas), hw, llm_hw, lmstudio_hw)
     data["files"] = annotated["files"]
     if data.get("primary_file"):
         match = next((f for f in data["files"] if f["path"] == data["primary_file"]["path"]), None)
@@ -359,6 +391,7 @@ class DownloadRequest(BaseModel):
 class DownloadProgress(BaseModel):
     agent: str = Field(min_length=1, max_length=100)
     bytes_done: int = Field(ge=0)
+    runtime_job_id: str | None = Field(default=None, max_length=200)
 
 class DownloadResult(BaseModel):
     agent: str = Field(min_length=1, max_length=100)
@@ -391,7 +424,7 @@ def download_progress(job_id: str, payload: DownloadProgress, x_modelharbor_toke
     authorize(x_modelharbor_token)
     with closing(connect()) as db:
         with db:
-            return downloads.progress(db, job_id, payload.agent, payload.bytes_done)
+            return downloads.progress(db, job_id, payload.agent, payload.bytes_done, payload.runtime_job_id)
 
 @app.post("/api/downloads/{job_id}/result")
 def download_result(job_id: str, payload: DownloadResult, x_modelharbor_token: str | None = Header(default=None)):
@@ -574,7 +607,7 @@ def browse_civitai(q: str = "", type: str = "", base: str = "", sort: str = "Mos
 
 class NewDownload(BaseModel):
     agent: str = Field(min_length=1, max_length=100)
-    provider: str = Field(pattern=r"^(civitai|huggingface|modelscope|ollama|lemonade)$")
+    provider: str = Field(pattern=r"^(civitai|huggingface|modelscope|ollama|lemonade|lmstudio)$")
     model_id: int | None = Field(default=None, ge=1)
     version_id: int | None = Field(default=None, ge=1)
     file_id: int | None = Field(default=None, ge=1)
@@ -589,7 +622,7 @@ def new_download(payload: NewDownload, x_modelharbor_token: str | None = Header(
     """Download a model that is not on the PC. URL, file name and hash come from the provider, not the client."""
     authorize(x_modelharbor_token)
     extra = {}
-    if payload.provider in ("ollama", "lemonade"):  # a Hugging Face GGUF, pulled by the PC's LLM server
+    if payload.provider in ("ollama", "lemonade", "lmstudio"):  # a Hugging Face GGUF, pulled by the PC's LLM server
         repo = validate_repo(payload.repository or "")
         files = list_model_files(repo)["files"]
         if not any(f["path"] == payload.remote_path for f in files):
@@ -597,13 +630,16 @@ def new_download(payload: NewDownload, x_modelharbor_token: str | None = Header(
         selected_name = PurePosixPath(payload.remote_path or "").name.casefold()
         same_name = [f for f in files if PurePosixPath(f["path"]).name.casefold() == selected_name]
         if len(same_name) > 1:
-            runtime = "Ollama" if payload.provider == "ollama" else "Lemonade"
-            raise HTTPException(422, f"{runtime}'s Hugging Face import identifies files by filename; this repository has duplicate filenames")
+            if payload.provider in ("ollama", "lemonade"):
+                runtime = "Ollama" if payload.provider == "ollama" else "Lemonade"
+                raise HTTPException(422, f"{runtime}'s Hugging Face import identifies files by filename; this repository has duplicate filenames")
         with closing(connect()) as db:
             with db:
                 if payload.provider == "lemonade":
                     size = next(f.get("size_bytes") for f in files if f["path"] == payload.remote_path)
                     return downloads.create_lemonade(db, payload.agent, repo, payload.remote_path, size)
+                if payload.provider == "lmstudio":
+                    return downloads.create_lmstudio(db, payload.agent, repo, payload.remote_path, files)
                 return downloads.create_ollama(db, payload.agent, repo, payload.remote_path)
     if payload.provider == "civitai":
         try:
@@ -640,6 +676,54 @@ def new_download(payload: NewDownload, x_modelharbor_token: str | None = Header(
     with closing(connect()) as db:
         with db:
             return downloads.create_new(db, payload.agent, *args, payload.provider, **extra)
+
+class LMStudioActionRequest(BaseModel):
+    device: str = Field(min_length=1, max_length=100)
+    path: str = Field(min_length=1, max_length=4096)
+    action: str = Field(pattern=r"^(load|unload)$")
+    instance_id: str | None = Field(default=None, max_length=512)
+    context_length: int | None = Field(default=None, ge=1, le=1_000_000)
+
+@app.post("/api/lmstudio/actions", status_code=202)
+def lmstudio_action(payload: LMStudioActionRequest, x_modelharbor_token: str | None = Header(default=None)):
+    authorize(x_modelharbor_token)
+    if not payload.device.endswith(":lmstudio"):
+        raise HTTPException(422, "Choose an LM Studio model")
+    with closing(connect()) as db:
+        with db:
+            row = db.execute("SELECT kind,runtime_meta FROM models WHERE device=? AND path=?",
+                             (payload.device, payload.path)).fetchone()
+            if not row or not row[0].startswith("lmstudio/"):
+                raise HTTPException(404, "LM Studio model not found in inventory")
+            try:
+                meta = json.loads(row[1]) if row[1] else {}
+            except (TypeError, ValueError):
+                meta = {}
+            heartbeat = db.execute("SELECT last_seen,lmstudio FROM agent_heartbeats WHERE device=?", (payload.device.rsplit(":", 1)[0],)).fetchone()
+            try:
+                runtime_status = json.loads(heartbeat[1]).get("status") if heartbeat and heartbeat[1] else None
+            except (TypeError, ValueError, AttributeError):
+                runtime_status = None
+            if runtime_status != "connected" or not heartbeat or int(time.time()) - heartbeat[0] > 3900:
+                raise HTTPException(409, "LM Studio is not currently reachable from its Windows agent")
+            model_key = meta.get("model_key")
+            if not isinstance(model_key, str) or not model_key:
+                raise HTTPException(409, "LM Studio model key is missing; refresh its inventory")
+            instances = meta.get("loaded_instances") if isinstance(meta.get("loaded_instances"), list) else []
+            if payload.action == "load":
+                maximum = meta.get("max_context_length")
+                if instances:
+                    raise HTTPException(409, "This model is already loaded in LM Studio")
+                if not payload.context_length or not isinstance(maximum, int) or payload.context_length > maximum:
+                    raise HTTPException(422, "Choose a context length at or below LM Studio's reported model limit")
+                instance_id = None
+            else:
+                if not payload.instance_id or not any(isinstance(x, dict) and x.get("id") == payload.instance_id for x in instances):
+                    raise HTTPException(409, "That loaded model instance is no longer in the inventory; refresh first")
+                instance_id = payload.instance_id
+                payload.context_length = None
+            return downloads.create_lmstudio_action(db, downloads.physical_device(payload.device), payload.device,
+                payload.path, payload.action, model_key, instance_id, payload.context_length)
 
 class ConvertRequest(BaseModel):
     device: str = Field(min_length=1, max_length=100)

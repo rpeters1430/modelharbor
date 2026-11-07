@@ -7,6 +7,8 @@
   "lemonade_enabled": true,
   "lemonade_url": "http://127.0.0.1:13305",
   "lemonade_load_after_pull": true,
+  "lmstudio_enabled": false,
+  "lmstudio_url": "http://127.0.0.1:1234",
   "sync_interval_seconds": 1800,
   "hash_models": true
 }

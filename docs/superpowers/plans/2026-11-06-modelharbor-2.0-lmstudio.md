@@ -42,10 +42,10 @@
 - Each record uses a unique path such as `lmstudio://{model_key}`, `kind=lmstudio/{type}`, reported `size_bytes`, `checkpoint=model_key`, and supported metadata including architecture, quantization, context limit, format, and loaded instances.
 - Config adds `lmstudio_enabled` (default `false`) and `lmstudio_url` (default `http://127.0.0.1:1234`).
 
-- [ ] Normalize `GET /api/v1/models` responses for LLMs, embedding models, and decision models.
-- [ ] Keep loaded instance identifiers and configured context length in a JSON-safe inventory field.
-- [ ] Reject malformed model records without aborting the entire scan.
-- [ ] Use bounded HTTP timeouts and produce a readable 401/403 message that names the environment variable, never its value.
+- [x] Normalize `GET /api/v1/models` responses for LLMs, embedding models, and decision models.
+- [x] Keep loaded instance identifiers and configured context length in a JSON-safe inventory field.
+- [x] Reject malformed model records without aborting the entire scan.
+- [x] Use bounded HTTP timeouts and produce a readable 401/403 message that names the environment variable, never its value.
 
 **Completion check:** A dry-run scan produces stable `:lmstudio` records from representative documented API responses and leaves the local model store untouched.
 
@@ -63,10 +63,10 @@
 - The heartbeat schema stores LM Studio endpoint host and connection status separately from Lemonade hardware data.
 - The Devices view displays the LM Studio runtime and its latest count/status.
 
-- [ ] Add optional LM Studio collection without changing current ComfyUI/Ollama/Lemonade failure behavior.
-- [ ] Preserve existing LM Studio inventory if the endpoint is temporarily unavailable.
-- [ ] When the user disables LM Studio, clear only the `:lmstudio` inventory for that agent.
-- [ ] Show LM Studio as its own source in the Devices view and report its last contact.
+- [x] Add optional LM Studio collection without changing current ComfyUI/Ollama/Lemonade failure behavior.
+- [x] Preserve existing LM Studio inventory if the endpoint is temporarily unavailable.
+- [x] When the user disables LM Studio, clear only the `:lmstudio` inventory for that agent.
+- [x] Show LM Studio as its own source in the Devices view and report its last contact.
 
 **Completion check:** Enabling/disabling or losing the LM Studio endpoint cannot change other runtime records or their device status.
 
@@ -83,11 +83,11 @@
 - Load accepts the LM Studio model key and an optional context length within the server-reported maximum.
 - Unload accepts the selected loaded instance ID.
 
-- [ ] Implement download job creation, status reconciliation, and progress reporting for documented LM Studio status values.
-- [ ] Handle `already_downloaded` as a successful no-op and avoid duplicate jobs when a job is still active.
-- [ ] Implement explicit load and unload requests; do not load as a download side effect unless the user selected “download and load.”
-- [ ] Map provider errors to bounded user-visible messages.
-- [ ] Keep authorization headers scoped to the configured endpoint and omit them from logs/results.
+- [x] Implement download job creation, status reconciliation, and progress reporting for documented LM Studio status values.
+- [x] Handle `already_downloaded` as a successful no-op and avoid duplicate jobs when a job is still active.
+- [x] Implement explicit load and unload requests; do not load as a download side effect unless the user selected “download and load.”
+- [x] Map provider errors to bounded user-visible messages.
+- [x] Keep authorization headers scoped to the configured endpoint and omit them from logs/results.
 
 **Completion check:** Each LM Studio action maps to one user request and one runtime-confirmed result; failures do not delete the downloaded model.
 
@@ -106,11 +106,11 @@
 - Model details show loaded/unloaded status and offer explicit Load/Unload actions.
 - Load configuration exposes a context length with a default taken from current runtime configuration when available.
 
-- [ ] Add LM Studio to Browse only for supported single-repository GGUF downloads and show the chosen quantization.
-- [ ] Display a review step with target device, model, quantization, and estimated bytes before queueing.
-- [ ] Add load/unload controls for models with a valid key and instance state.
-- [ ] Refresh inventory/status after completed operations.
-- [ ] Display “not available” for unsupported operations instead of silently falling back to another provider.
+- [x] Add LM Studio to Browse only for supported single-repository GGUF downloads and show the chosen quantization.
+- [x] Display a review step with target device, model, quantization, and estimated bytes before queueing.
+- [x] Add load/unload controls for models with a valid key and instance state.
+- [x] Refresh inventory/status after completed operations.
+- [x] Display “not available” for unsupported operations instead of silently falling back to another provider.
 
 **Completion check:** Users can tell which PC/runtime will receive an action and can distinguish queued, running, completed, and failed operations.
 
@@ -120,10 +120,10 @@
 - Create: `docs/LMSTUDIO.md`
 - Modify: `README.md`
 
-- [ ] Document opt-in configuration, supported LM Studio API version, server startup, remote endpoint use, API-key environment setup, and troubleshooting.
-- [ ] Document that the native API download is managed by LM Studio and is not the same as ModelHarbor's SHA-verified direct file download.
-- [ ] Update README features and roadmap to reflect current ComfyUI, Ollama, Lemonade, source browsing, verified downloads, conversions, and this connector.
-- [ ] Keep the LAN/Tailscale security guidance consistent with the API-key recommendation for remotely accessible LM Studio.
+- [x] Document opt-in configuration, supported LM Studio API version, server startup, remote endpoint use, API-key environment setup, and troubleshooting.
+- [x] Document that the native API download is managed by LM Studio and is not the same as ModelHarbor's SHA-verified direct file download.
+- [x] Update README features and roadmap to reflect current ComfyUI, Ollama, Lemonade, source browsing, verified downloads, conversions, and this connector.
+- [x] Keep the LAN/Tailscale security guidance consistent with the API-key recommendation for remotely accessible LM Studio.
 
 **Completion check:** A user following the README and LM Studio guide can configure the connector without guessing a URL or exposing an API key in a config file.
 

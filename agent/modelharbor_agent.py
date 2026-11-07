@@ -11,6 +11,7 @@ import requests
 from scan import scan
 from ollama_scan import collect
 import lemonade_scan
+import lmstudio_scan
 from hash_worker import process_one
 from hash_cache import fill_hashes
 from hardware import detect as detect_hardware
@@ -103,9 +104,24 @@ def run_once(cfg, token, dry_run=False, reporter=None):
                     lemonade_info = lemonade_scan.system_info(session, lemonade_url)
                 except (requests.RequestException, ValueError, KeyError, TypeError) as exc:
                     LOG.warning("Lemonade system info unavailable: %s", exc)
-        LOG.info("Found %d ComfyUI models, %s Ollama models and %s Lemonade models", len(comfy),
-                 len(ollama) if ollama is not None else "unavailable", len(lemonade) if lemonade is not None else "unavailable")
-        llms = (ollama or []) + (lemonade or [])
+        lmstudio = None
+        lmstudio_info = {"status": "disabled"}
+        if cfg.get("lmstudio_enabled", False):
+            lmstudio_url = cfg.get("lmstudio_url", "http://127.0.0.1:1234")
+            try:
+                lmstudio = lmstudio_scan.collect(session, lmstudio_url, device + ":lmstudio")
+                lmstudio_info = lmstudio_scan.endpoint_info(lmstudio_url)
+                lmstudio_info["status"] = "connected"
+                if lmstudio_info["local"]:
+                    lmstudio_info.update(detect_hardware())
+                lmstudio_info.pop("local", None)
+            except (requests.RequestException, ValueError) as exc:
+                lmstudio_info = {"status": "unavailable", "error": str(exc)[:250]}
+                LOG.warning("LM Studio unavailable; preserving previous inventory: %s", exc)
+        LOG.info("Found %d ComfyUI models, %s Ollama models, %s Lemonade models and %s LM Studio models", len(comfy),
+                 len(ollama) if ollama is not None else "unavailable", len(lemonade) if lemonade is not None else "unavailable",
+                 len(lmstudio) if lmstudio is not None else "disabled or unavailable")
+        llms = (ollama or []) + (lemonade or []) + (lmstudio or [])
         if dry_run:
             for m in (comfy + llms)[:25]:
                 print(m["kind"], m["name"])
@@ -118,8 +134,8 @@ def run_once(cfg, token, dry_run=False, reporter=None):
         else:
             LOG.warning("No ComfyUI roots discovered; set comfyui_models_dirs in config")
         # A runtime switched off in config is gone from this PC: clear its old inventory.
-        for runtime, found in (("ollama", ollama), ("lemonade", lemonade)):
-            if found is not None or not cfg.get(runtime + "_enabled", True):
+        for runtime, found in (("ollama", ollama), ("lemonade", lemonade), ("lmstudio", lmstudio)):
+            if found is not None or not cfg.get(runtime + "_enabled", runtime != "lmstudio"):
                 post_inventory(session, server, token, device + ":" + runtime, found or [])
         # Heartbeat is independent of inventory; never modifies model files.
         response = session.post(server.rstrip("/") + "/api/agents/heartbeat",
@@ -127,12 +143,14 @@ def run_once(cfg, token, dry_run=False, reporter=None):
             json={"device": device, "comfyui_count": len(comfy),
                   "ollama_count": len(ollama) if ollama is not None else None,
                   "lemonade_count": len(lemonade) if lemonade is not None else None,
+                  "lmstudio_count": len(lmstudio) if lmstudio is not None else 0 if not cfg.get("lmstudio_enabled", False) else None,
                   "lemonade": lemonade_info,
+                  "lmstudio": lmstudio_info,
                   "hardware": detect_hardware()}, timeout=20)
         response.raise_for_status()
         reporter.update("idle", done=len(comfy), total=len(comfy), message=f"Synced {len(comfy)} ComfyUI files"
                         + "".join(f", {len(found)} {label} models" for label, found in
-                                  (("Ollama", ollama), ("Lemonade", lemonade)) if found is not None))
+                                  (("Ollama", ollama), ("Lemonade", lemonade), ("LM Studio", lmstudio)) if found is not None))
 
 
 def _lane(name, interval, steps, stop):
@@ -176,7 +194,8 @@ def worker_lanes(cfg, token):
     if cfg.get("downloads_enabled", True):
         lanes["downloads"] = [("Download", lambda s: download_worker.process_one(
             s, server, token, agent, roots, cfg.get("ollama_url", "http://127.0.0.1:11434"),
-            cfg.get("lemonade_url", lemonade_scan.DEFAULT_URL), cfg.get("lemonade_load_after_pull", True)))]
+            cfg.get("lemonade_url", lemonade_scan.DEFAULT_URL), cfg.get("lemonade_load_after_pull", True),
+            cfg.get("lmstudio_url", "http://127.0.0.1:1234")))]
     if cfg.get("converts_enabled", True):
         lanes["converts"] = [("Conversion", lambda s: convert_worker.process_convert(s, server, token, agent, roots, cfg))]
     return lanes
