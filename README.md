@@ -1,6 +1,6 @@
 # ModelHarbor
 
-Self-hosted, mobile-friendly AI model inventory dashboard for **ComfyUI**, **Lemonade Server** and **Ollama**. Designed for a lightweight Docker deployment on NAS hardware, with a read-only Windows scanner.
+Self-hosted, mobile-friendly AI model inventory and management dashboard for **ComfyUI**, **Ollama**, **Lemonade Server** and **LM Studio**. Designed for a lightweight Docker deployment on NAS hardware, with a read-only Windows scanner.
 
 ## Features
 
@@ -9,10 +9,10 @@ Self-hosted, mobile-friendly AI model inventory dashboard for **ComfyUI**, **Lem
 - SQLite-backed inventory API with token authentication.
 - Windows ComfyUI scanner (read-only).
 - Convert tab: shrink diffusion models and text encoders that don't fit the GPU to ComfyUI's `int8_convrot` format on the PC, and recognise your own conversions. See [docs/WINDOWS_AGENT.md](docs/WINDOWS_AGENT.md).
-- Ollama and Lemonade Server inventory, update checks, and one-click import of Hugging Face GGUF files into either. Each is shown only while the PC's agent can reach it.
+- Ollama, Lemonade and LM Studio inventory from their local APIs, with one-click import of Hugging Face GGUF files. Each is shown only while the PC's agent can reach it. LM Studio also supports queued load/unload actions; see [LM Studio setup](docs/LMSTUDIO.md).
 - Multi-platform Docker image published to GitHub Container Registry (GHCR).
 
-> **Current scope:** Inventory dashboard with exact SHA-256 source identification (Civitai, Hugging Face) and update checks (Civitai, Ollama, Hugging Face). See [docs/SOURCES_AND_UPDATES.md](docs/SOURCES_AND_UPDATES.md). Approved updates can be downloaded next to the old file after a SHA-256 check.
+> **Current scope:** Exact SHA-256 source identification applies to files with accessible local hashes. Runtime-managed Ollama, Lemonade and LM Studio models use their respective APIs; LM Studio downloads are provider-managed and are not SHA-256 verified by ModelHarbor. See [docs/SOURCES_AND_UPDATES.md](docs/SOURCES_AND_UPDATES.md).
 
 ## Docker Compose — UGREEN NAS / Dockhand
 
@@ -90,7 +90,7 @@ pip install -r agent/requirements.txt
 python agent/scan.py --models-dir "C:\\path\\to\\ComfyUI\\models"
 ```
 
-That only previews what is found. `agent/modelharbor_agent.py` does the uploading; see [Windows agent setup](docs/WINDOWS_AGENT.md). For LLM servers, see [Lemonade setup](docs/LEMONADE.md) and [Ollama setup](docs/OLLAMA.md). See [Dashboard setup](docs/DASHBOARD.md) and [Phase 1 instructions](docs/PHASE1.md) for details.
+That only previews what is found. `agent/modelharbor_agent.py` does the uploading; see [Windows agent setup](docs/WINDOWS_AGENT.md). For LLM servers, see [Lemonade setup](docs/LEMONADE.md), [Ollama setup](docs/OLLAMA.md) and [LM Studio setup](docs/LMSTUDIO.md). See [Dashboard setup](docs/DASHBOARD.md) and [Phase 1 instructions](docs/PHASE1.md) for details.
 
 ## Container publishing
 
@@ -98,9 +98,9 @@ That only previews what is found. `agent/modelharbor_agent.py` does the uploadin
 
 ## Roadmap
 
-1. Read-only local inventory and mobile dashboard.
-2. Ollama inventory and model metadata enrichment.
-3. Hugging Face/Civitai discovery and source-aware version checks.
-4. Verified, approval-based downloads and rollback.
+- **ModelHarbor 2.0 foundation:** LM Studio inventory, Hugging Face GGUF download, and explicit load/unload controls. See [LM Studio setup](docs/LMSTUDIO.md).
+- **Model sets:** save named collections and see missing or unknown model requirements per device/runtime.
+- **Fit and storage insight:** add explainable context-aware LLM fit estimates and fleet-wide duplicate/storage reporting.
+- **Job recovery:** improve reconciliation and safe controls for long-running operations.
 
 Licensed as specified in the repository. No license is implied by this README.

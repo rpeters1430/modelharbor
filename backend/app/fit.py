@@ -74,13 +74,13 @@ def variant_key(path):
 LLM_OVERHEAD = 1.5 * GB
 LLM_OVERHEAD_RATIO = 1.1
 
-def rate_llm(name, size, hw):
-    """Like rate(), for a GGUF the Lemonade PC would run: its GPU, RAM and free disk, with context headroom."""
+def rate_llm(name, size, hw, runtime="Lemonade"):
+    """Rate a GGUF for an LLM runtime PC using its GPU, RAM, and optional free disk with context headroom."""
     if not hw or not size or not name.lower().endswith(".gguf"):
         return None
     gpu, vram, ram, free = hw.get("gpu") or "GPU", hw.get("vram_bytes") or 0, hw.get("ram_bytes") or 0, hw.get("free_bytes")
     if free is not None and size + HEADROOM > free:
-        return {"level": "bad", "note": f"Not enough free disk on the Lemonade PC ({_gb(free)} free)"}
+        return {"level": "bad", "note": f"Not enough free disk on the {runtime} PC ({_gb(free)} free)"}
     needed = size * LLM_OVERHEAD_RATIO + LLM_OVERHEAD
     if vram and needed <= vram:
         return {"level": "good", "note": f"Fits in the {gpu}'s {_gb(vram)} of VRAM with room for an 8K context"}
@@ -103,9 +103,8 @@ def mark_best(files, key, fit_field="fit", best_field="best"):
         pick[best_field] = True
 
 
-def annotate_listing(listing, hw, llm_hw=None):
-    """Rate a Hugging Face or ModelScope file listing in place: "fit" for the agent's PC (ComfyUI) and,
-    for GGUF files, "llm_fit" for the Lemonade PC."""
+def annotate_listing(listing, hw, llm_hw=None, lmstudio_hw=None):
+    """Rate files for ComfyUI and any configured Lemonade or LM Studio runtime hardware."""
     if hw:
         for f in listing["files"]:
             f["fit"] = rate(f["name"], f.get("size_bytes"), hw)
@@ -114,4 +113,8 @@ def annotate_listing(listing, hw, llm_hw=None):
         for f in listing["files"]:
             f["llm_fit"] = rate_llm(f["name"], f.get("size_bytes"), llm_hw)
         mark_best(listing["files"], lambda f: variant_key(f["path"]), "llm_fit", "llm_best")
+    if lmstudio_hw:
+        for f in listing["files"]:
+            f["lmstudio_fit"] = rate_llm(f["name"], f.get("size_bytes"), lmstudio_hw, "LM Studio")
+        mark_best(listing["files"], lambda f: variant_key(f["path"]), "lmstudio_fit", "lmstudio_best")
     return listing
