@@ -66,6 +66,22 @@ def test_agent_status_and_scan_request(tmp_path, monkeypatch):
     [agent] = client.get("/api/agents", headers=headers).json()
     assert agent["worker_running"] is True and agent["scan_requested"] is False
 
+def test_models_of_unreachable_llm_servers_are_hidden_until_they_return(tmp_path, monkeypatch):
+    from backend.app import main
+    monkeypatch.setattr(main, "DB", tmp_path / "hidden.sqlite3")
+    client, headers = TestClient(app), {"X-ModelHarbor-Token": "test-token"}
+    for runtime in ("comfyui", "ollama", "lemonade", "lmstudio"):
+        model = {"device": "pc:" + runtime, "path": runtime + "://m", "name": "m", "kind": runtime + "/x", "size_bytes": 1, "modified_ns": 0}
+        client.post("/api/inventory", headers=headers, json={"device": "pc:" + runtime, "models": [model]})
+    beat = {"device": "pc", "comfyui_count": 1, "ollama_count": 1, "lemonade_count": None, "lmstudio_count": None,
+            "lmstudio": {"status": "unavailable"}}
+    client.post("/api/agents/heartbeat", headers=headers, json=beat)
+    shown = lambda: sorted(m["device"] for m in client.get("/api/models", headers=headers).json())
+    assert shown() == ["pc:comfyui", "pc:ollama"]
+    client.post("/api/agents/heartbeat", headers=headers, json={**beat, "lemonade_count": 1, "lmstudio_count": 1,
+                                                                "lmstudio": {"status": "connected"}})
+    assert shown() == ["pc:comfyui", "pc:lemonade", "pc:lmstudio", "pc:ollama"]
+
 def test_new_download_endpoint_builds_job_from_provider_data(tmp_path, monkeypatch):
     from backend.app import main
     monkeypatch.setattr(main, "DB", tmp_path / "new.sqlite3")

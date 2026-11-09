@@ -170,13 +170,32 @@ def models(x_modelharbor_token: str | None = Header(default=None)):
         fields = ("device","path","name","kind","size_bytes","modified_ns","file_id","sha256","trigger_words","base_model_guess","meta_title",
                   "checkpoint","update_available","runtime_meta")
         rows = db.execute(f"SELECT {','.join(fields)} FROM models ORDER BY device,kind,name").fetchall()
-        records = [dict(zip(fields, row)) for row in rows]
+        hidden = _unreachable_runtimes(db)
+        records = [dict(zip(fields, row)) for row in rows if row[0] not in hidden]
         for record in records:
             try:
                 record["runtime_meta"] = json.loads(record["runtime_meta"]) if record["runtime_meta"] else None
             except (TypeError, ValueError):
                 record["runtime_meta"] = None
         return enrich(annotate(db, records))
+
+def _unreachable_runtimes(db):
+    """Inventory devices ("pc:lemonade") of LLM servers the agent could not reach on its last sync.
+    The agent keeps their old list so it returns when the server is back; until then it is not shown."""
+    hidden = set()
+    for device, ollama, lemonade, lmstudio in db.execute(
+            "SELECT device,ollama_count,lemonade_count,lmstudio FROM agent_heartbeats"):
+        if ollama is None:
+            hidden.add(device + ":ollama")
+        if lemonade is None:
+            hidden.add(device + ":lemonade")
+        # The LM Studio count is kept across failed syncs, so its reported status decides.
+        try:
+            if lmstudio and json.loads(lmstudio).get("status") != "connected":
+                hidden.add(device + ":lmstudio")
+        except (TypeError, ValueError, AttributeError):
+            pass
+    return hidden
 
 def authorize(value):
     if not TOKEN or not hmac.compare_digest((value or "").encode(), TOKEN.encode()):
