@@ -9,7 +9,7 @@ Self-hosted, mobile-friendly AI model inventory dashboard for **ComfyUI**, **Lem
 - SQLite-backed inventory API with token authentication.
 - Windows ComfyUI scanner (read-only).
 - Convert tab: shrink diffusion models and text encoders that don't fit the GPU to ComfyUI's `int8_convrot` format on the PC, and recognise your own conversions. See [docs/WINDOWS_AGENT.md](docs/WINDOWS_AGENT.md).
-- Ollama model inventory scanner (if merged from its separate PR).
+- Ollama and Lemonade Server inventory, update checks, and one-click import of Hugging Face GGUF files into either. Each is shown only while the PC's agent can reach it.
 - Multi-platform Docker image published to GitHub Container Registry (GHCR).
 
 > **Current scope:** Inventory dashboard with exact SHA-256 source identification (Civitai, Hugging Face) and update checks (Civitai, Ollama, Hugging Face). See [docs/SOURCES_AND_UPDATES.md](docs/SOURCES_AND_UPDATES.md). Approved updates can be downloaded next to the old file after a SHA-256 check.
@@ -87,10 +87,10 @@ Install Python 3.11+ and the agent dependencies:
 
 ```powershell
 pip install -r agent/requirements.txt
-python agent/scan.py --models-dir "C:\\path\\to\\ComfyUI\\models" --dry-run
+python agent/scan.py --models-dir "C:\\path\\to\\ComfyUI\\models"
 ```
 
-For LLM servers, see [Lemonade setup](docs/LEMONADE.md) and [Ollama setup](docs/OLLAMA.md). See [Dashboard setup](docs/DASHBOARD.md) and [Phase 1 instructions](docs/PHASE1.md) for details.
+That only previews what is found. `agent/modelharbor_agent.py` does the uploading; see [Windows agent setup](docs/WINDOWS_AGENT.md). For LLM servers, see [Lemonade setup](docs/LEMONADE.md) and [Ollama setup](docs/OLLAMA.md). See [Dashboard setup](docs/DASHBOARD.md) and [Phase 1 instructions](docs/PHASE1.md) for details.
 
 ## Container publishing
 

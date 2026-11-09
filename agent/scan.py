@@ -1,9 +1,7 @@
 """Read-only ComfyUI model inventory uploader for Windows."""
 import argparse
 import os
-import socket
 from pathlib import Path
-import requests
 
 EXTENSIONS = {".safetensors", ".ckpt", ".pt", ".pth", ".bin", ".gguf", ".onnx"}
 KINDS = {"checkpoints":"checkpoint", "loras":"lora", "vae":"vae",
@@ -37,26 +35,15 @@ def scan(root: Path, device: str):
     return found
 
 def main():
-    p = argparse.ArgumentParser()
+    # Preview only: modelharbor_agent.py uploads, under the device name in its config.
+    p = argparse.ArgumentParser(description="Preview the ComfyUI models the agent would find")
     p.add_argument("--models-dir", type=Path, required=True)
-    p.add_argument("--server", default="http://127.0.0.1:8096")
-    p.add_argument("--device", default=socket.gethostname())
-    p.add_argument("--dry-run", action="store_true")
+    p.add_argument("--dry-run", action="store_true", help="Accepted for older instructions; this script never uploads")
     args = p.parse_args()
-    models = scan(args.models_dir, args.device)
+    models = scan(args.models_dir, "preview:comfyui")
     print(f"Found {len(models)} models")
-    if args.dry_run:
-        for model in models[:20]:
-            print(model["kind"], model["name"])
-        return
-    token = os.environ.get("MODELHARBOR_AGENT_TOKEN")
-    if not token:
-        p.error("MODELHARBOR_AGENT_TOKEN environment variable is required")
-    response = requests.post(args.server.rstrip("/") + "/api/inventory",
-        headers={"X-ModelHarbor-Token":token},
-        json={"device":args.device,"models":models}, timeout=120)
-    response.raise_for_status()
-    print(response.json())
+    for model in models[:20]:
+        print(model["kind"], model["name"])
 
 if __name__ == "__main__":
     main()

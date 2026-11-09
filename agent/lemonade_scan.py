@@ -3,7 +3,6 @@ import argparse
 import hashlib
 import os
 import re
-import socket
 from urllib.parse import urlsplit
 import requests
 
@@ -74,29 +73,16 @@ def collect(session, base_url, device):
     return records
 
 def main():
-    parser = argparse.ArgumentParser(description="Inventory Lemonade Server models without changing them")
+    # Preview only: modelharbor_agent.py uploads, under the device name in its config.
+    parser = argparse.ArgumentParser(description="Preview the Lemonade Server models the agent would find")
     parser.add_argument("--lemonade-url", default=DEFAULT_URL)
-    parser.add_argument("--server", default="http://127.0.0.1:8096")
-    parser.add_argument("--device", default=socket.gethostname())
-    parser.add_argument("--dry-run", action="store_true")
+    parser.add_argument("--dry-run", action="store_true", help="Accepted for older instructions; this script never uploads")
     args = parser.parse_args()
-    # Separate namespace prevents replacing ComfyUI or Ollama inventory on the same host.
-    device = args.device + ":lemonade"
     with requests.Session() as session:
-        models = collect(session, args.lemonade_url, device)
-        print(f"Found {len(models)} Lemonade models")
-        if args.dry_run:
-            for model in models:
-                print(model["name"], model["kind"], model["size_bytes"])
-            return
-        token = os.environ.get("MODELHARBOR_AGENT_TOKEN")
-        if not token:
-            parser.error("MODELHARBOR_AGENT_TOKEN is required")
-        response = session.post(args.server.rstrip("/") + "/api/inventory",
-            headers={"X-ModelHarbor-Token": token},
-            json={"device": device, "models": models}, timeout=120)
-        response.raise_for_status()
-        print(response.json())
+        models = collect(session, args.lemonade_url, "preview:lemonade")
+    print(f"Found {len(models)} Lemonade models")
+    for model in models:
+        print(model["name"], model["kind"], model["size_bytes"])
 
 if __name__ == "__main__":
     main()

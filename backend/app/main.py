@@ -101,9 +101,18 @@ class Inventory(BaseModel):
     device: str
     models: list[ModelRecord]
 
+# shortcut: database paths this process already set up; a file deleted while running needs a restart.
+_migrated = set()
+
 def connect():
     DB.parent.mkdir(parents=True, exist_ok=True)
     db = sqlite3.connect(DB, timeout=30)
+    if DB not in _migrated:
+        _migrate(db)
+        _migrated.add(DB)
+    return db
+
+def _migrate(db):
     db.execute("""CREATE TABLE IF NOT EXISTS models (
         device TEXT NOT NULL, path TEXT NOT NULL, name TEXT NOT NULL,
         kind TEXT NOT NULL, size_bytes INTEGER NOT NULL, modified_ns INTEGER NOT NULL,
@@ -133,7 +142,6 @@ def connect():
     deletes.ensure_tables(db)
     converts.ensure_tables(db)
     db.commit()
-    return db
 
 @app.get("/api/health")
 def health():
@@ -206,13 +214,10 @@ def agents(x_modelharbor_token: str | None = Header(default=None)):
             "scan_requested": bool(r[14]), "hardware": json.loads(r[15]) if r[15] else None})
     return result
 
-def _hardware(db, agent):
-    row = db.execute("SELECT hardware FROM agent_heartbeats WHERE device=?", (agent,)).fetchone() if agent else None
-    return json.loads(row[0]) if row and row[0] else None
-
-def _lemonade_hardware(db, agent):
-    """The Lemonade PC's GPU, RAM and free disk as the agent last reported them."""
-    row = db.execute("SELECT lemonade FROM agent_heartbeats WHERE device=?", (agent,)).fetchone() if agent else None
+def _hardware(db, agent, column="hardware"):
+    """The agent PC's hardware, or with column="lemonade" the Lemonade PC's GPU, RAM and free disk,
+    as the agent last reported them."""
+    row = db.execute(f"SELECT {column} FROM agent_heartbeats WHERE device=?", (agent,)).fetchone() if agent else None
     return json.loads(row[0]) if row and row[0] else None
 
 class AgentStatus(BaseModel):
@@ -288,7 +293,7 @@ def huggingface_inspect(url: str, agent: str = "", x_modelharbor_token: str | No
     except (OSError, ValueError) as exc:
         raise HTTPException(502, f"Hugging Face is unavailable right now: {exc}") from exc
     with closing(connect()) as db:
-        shas, hw, llm_hw = browse.local_shas(db), _hardware(db, agent), _lemonade_hardware(db, agent)
+        shas, hw, llm_hw = browse.local_shas(db), _hardware(db, agent), _hardware(db, agent, "lemonade")
     annotated = fit.annotate_listing(browse.mark_huggingface({"files": data["files"]}, shas), hw, llm_hw)
     data["files"] = annotated["files"]
     if data.get("primary_file"):

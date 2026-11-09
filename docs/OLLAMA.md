@@ -1,22 +1,14 @@
 # Ollama inventory — Phase 2
 
-The Windows agent can query the Ollama `/api/tags` endpoint and upload model inventory to ModelHarbor. No model pull, delete, or update operations are performed.
+The Windows agent (`modelharbor_agent.py`) queries the Ollama `/api/tags` endpoint on every sync and uploads the list under the agent's device name with an `:ollama` suffix, so it cannot overwrite the ComfyUI scan for the same machine. Set `ollama_enabled` and `ollama_url` in `agent.json`.
 
-## Dry run (Windows PowerShell)
-
-```powershell
-python agent/ollama_scan.py --ollama-url http://127.0.0.1:11434 --dry-run
-```
-
-## Upload to NAS
-
-Set the same `MODELHARBOR_AGENT_TOKEN` used by the NAS container, then:
+## Preview (Windows PowerShell)
 
 ```powershell
-python agent/ollama_scan.py --ollama-url http://127.0.0.1:11434 --server http://192.168.8.137:8096
+python agent/ollama_scan.py --ollama-url http://127.0.0.1:11434
 ```
 
-The Ollama inventory uses a distinct device suffix (`:ollama`) so it cannot overwrite the ComfyUI scan for the same machine.
+This only prints what the agent would find; it never uploads.
 
 ## Import a Hugging Face GGUF into Ollama
 

@@ -463,7 +463,7 @@ function renderAgents(){
   card.append(text("div",agentStatusText(a),"agent-status"+(s&&s.phase==="error"?" agent-error":"")));
   if(s&&s.phase==="hashing"&&s.total_bytes){const bar=text("div","","bar");const inner=text("span");inner.style.width=Math.min(100,s.done_bytes/s.total_bytes*100)+"%";bar.append(inner);card.append(bar);}
   if(a.hardware)card.append(text("div",[a.hardware.gpu,a.hardware.vram_bytes?Math.round(a.hardware.vram_bytes/2**30)+" GB VRAM":"",a.hardware.ram_bytes?Math.round(a.hardware.ram_bytes/2**30)+" GB RAM":""].filter(Boolean).join(" · "),"model-sub"));
-  card.append(text("div","ComfyUI: "+a.comfyui_count+(a.ollama_count!=null?" · Ollama: "+a.ollama_count:"")+" · Lemonade: "+(a.lemonade_count ?? "unavailable")+" · last full sync "+ago(a.last_seen),"model-sub"));
+  card.append(text("div","ComfyUI: "+a.comfyui_count+(a.ollama_count!=null?" · Ollama: "+a.ollama_count:"")+(a.lemonade_count!=null?" · Lemonade: "+a.lemonade_count:"")+" · last full sync "+ago(a.last_seen),"model-sub"));
   const lem=a.lemonade;
   if(lem)card.append(text("div","Lemonade PC"+(lem.host?" ("+lem.host+")":"")+": "+[lem.gpu,lem.vram_bytes?Math.round(lem.vram_bytes/2**30)+" GB VRAM":"",lem.ram_bytes?Math.round(lem.ram_bytes/2**30)+" GB RAM":"",lem.free_bytes!=null?fmt(lem.free_bytes)+" free":""].filter(Boolean).join(" · "),"model-sub"));
   card.append(text("div",a.worker_running?"Background task running (checks for scan requests and downloads)":busy?"Background task paused while a scan runs"+(a.worker_seen?" · last seen "+ago(a.worker_seen):"")+" (it checks for jobs again when the scan ends)":"Background task not running"+(a.worker_seen?" · last seen "+ago(a.worker_seen):"")+". Start “ModelHarbor Hash Worker” in Task Scheduler.","model-sub"));
@@ -615,16 +615,16 @@ function hfInspectCard(data){
  const hasGguf=data.files.some(f=>isOllamaCompatiblePath(f.path));
  const primaryCanOllama=!!data.primary_file&&isOllamaCompatiblePath(data.primary_file.path)&&
   data.files.filter(f=>f.path.split("/").pop().toLowerCase()===data.primary_file.path.split("/").pop().toLowerCase()).length===1;
- (data.available_folders||[data.target_folder,"loras","checkpoints"]).forEach(f=>{
-  const opt=new Option(f,f);if(f===data.target_folder&&!primaryCanOllama)opt.selected=true;folderSelect.append(opt);
- });
+ // Each LLM server is offered only while the PC's last sync could reach it.
+ const agent=agents.find(a=>a.device===browseAgent());
+ const ollamaUp=hasGguf&&(!agent||agent.ollama_count!=null),lemonadeUp=hasGguf&&(!agent||agent.lemonade_count!=null);
  // Default to an LLM server only when the selected file can actually be imported there.
- // Ollama is offered only while the PC's last sync could reach it.
- if(hasGguf){
-  const agent=agents.find(a=>a.device===browseAgent());
-  if(!agent||agent.ollama_count!=null)folderSelect.prepend(new Option("Ollama (import GGUF)","ollama"));
-  folderSelect.prepend(new Option("Lemonade (download & load GGUF)","lemonade",primaryCanOllama,primaryCanOllama));
- }
+ const llmDefault=primaryCanOllama?(lemonadeUp?"lemonade":ollamaUp?"ollama":null):null;
+ (data.available_folders||[data.target_folder,"loras","checkpoints"]).forEach(f=>{
+  const opt=new Option(f,f);if(f===data.target_folder&&!llmDefault)opt.selected=true;folderSelect.append(opt);
+ });
+ if(ollamaUp)folderSelect.prepend(new Option("Ollama (import GGUF)","ollama",llmDefault==="ollama",llmDefault==="ollama"));
+ if(lemonadeUp)folderSelect.prepend(new Option("Lemonade (download & load GGUF)","lemonade",llmDefault==="lemonade",llmDefault==="lemonade"));
  folderRow.append(folderSelect);
  const llm=()=>LLM_SERVERS[folderSelect.value];
  const hfRequest=f=>({repository:data.repository,remote_path:f.path,base_model:data.base_model,trigger_words:data.trigger_words,

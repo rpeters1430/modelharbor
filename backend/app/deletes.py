@@ -40,8 +40,9 @@ def request(db, device, path):
     # Hard links (the same file in a family folder) go together, or the data would stay on disk.
     paths = [r[0] for r in db.execute("SELECT path FROM models WHERE device=? AND file_id=? ORDER BY path",
                                       (device, file_id))] if file_id else [path]
-    active = db.execute(f"""SELECT {','.join(FIELDS)} FROM delete_jobs WHERE device=? AND sha256=?
-        AND state IN ('queued','running')""", (device, sha)).fetchone()
+    # Same paths, not just same contents: a second copy of a duplicate is its own delete.
+    active = db.execute(f"""SELECT {','.join(FIELDS)} FROM delete_jobs WHERE device=? AND sha256=? AND paths=?
+        AND state IN ('queued','running')""", (device, sha, json.dumps(paths))).fetchone()
     if active:
         return _job(active)
     now, job_id = int(time.time()), uuid.uuid4().hex

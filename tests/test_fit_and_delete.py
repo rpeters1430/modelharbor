@@ -87,6 +87,14 @@ def test_delete_takes_hard_links_and_updates_inventory(db):
     assert db.execute("SELECT scan_requested_at FROM agent_status WHERE device='pc'").fetchone()[0]
 
 
+def test_second_copy_of_a_duplicate_gets_its_own_delete(db):
+    rows = [("C:/m/loras/a.safetensors", "1:9"), ("C:/m/loras/old/a.safetensors", "1:7")]  # same bytes, two files
+    db.executemany("INSERT INTO models VALUES ('pc:comfyui',?,'n','lora',5,1,?,?)", [(p, i, "a" * 64) for p, i in rows])
+    first = deletes.request(db, "pc:comfyui", rows[0][0])
+    second = deletes.request(db, "pc:comfyui", rows[1][0])
+    assert first["id"] != second["id"] and second["paths"] == [rows[1][0]]
+
+
 def test_agent_deletes_only_the_inventoried_file(tmp_path):
     loras = tmp_path / "loras"
     (loras / "SDXL").mkdir(parents=True)

@@ -10,7 +10,7 @@ from urllib.parse import urlsplit
 import requests
 from hash_worker import allowed_file
 from hash_cache import sha256_file
-from lemonade_scan import auth_headers as lemonade_headers
+from lemonade_scan import DEFAULT_URL as LEMONADE_URL, auth_headers as lemonade_headers
 
 ALLOWED_HOSTS = {"civitai.com", "civitai.red", "huggingface.co", "modelscope.cn", "www.modelscope.cn"}
 SAFE_NAME = re.compile(r"^[\w .()+,-]{1,200}\.(?:safetensors|ckpt|pt|pth|bin|gguf|onnx)$")
@@ -193,7 +193,7 @@ def pull_lemonade(session, lemonade_url, job, report_progress, load=True):
             raise ValueError("Downloaded into Lemonade, but loading failed: " + _lemonade_error(response))
     return None, "lemonade://" + name
 
-def process_one(session, server, token, agent, roots, ollama_url, lemonade_url=None, lemonade_load=True):
+def process_one(session, server, token, agent, roots, ollama_url, lemonade_url=LEMONADE_URL, lemonade_load=True):
     headers = {"X-ModelHarbor-Token": token}
     base = server.rstrip("/") + "/api/downloads/"
     res = session.get(base + "next", params={"agent": agent}, headers=headers, timeout=20)
@@ -214,7 +214,7 @@ def process_one(session, server, token, agent, roots, ollama_url, lemonade_url=N
             result["sha256"], result["result_path"] = pull_ollama(session, ollama_url, job["file_name"], report_progress)
         elif job["provider"] == "lemonade":
             result["sha256"], result["result_path"] = pull_lemonade(
-                session, lemonade_url or "http://127.0.0.1:13305", job, report_progress, lemonade_load)
+                session, lemonade_url, job, report_progress, lemonade_load)
         else:
             result["sha256"], result["result_path"] = download_file(session, job, roots, report_progress)
     except (OSError, ValueError, requests.RequestException) as exc:

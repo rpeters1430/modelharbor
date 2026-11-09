@@ -1,8 +1,5 @@
 """Read-only Ollama inventory collection and ModelHarbor upload."""
 import argparse
-import os
-import socket
-from urllib.parse import urlparse
 import requests
 
 def collect(session, base_url, device):
@@ -27,29 +24,16 @@ def collect(session, base_url, device):
     return records
 
 def main():
-    parser = argparse.ArgumentParser(description="Inventory Ollama models without changing them")
+    # Preview only: modelharbor_agent.py uploads, under the device name in its config.
+    parser = argparse.ArgumentParser(description="Preview the Ollama models the agent would find")
     parser.add_argument("--ollama-url", default="http://127.0.0.1:11434")
-    parser.add_argument("--server", default="http://127.0.0.1:8096")
-    parser.add_argument("--device", default=socket.gethostname())
-    parser.add_argument("--dry-run", action="store_true")
+    parser.add_argument("--dry-run", action="store_true", help="Accepted for older instructions; this script never uploads")
     args = parser.parse_args()
-    # Separate namespace prevents replacing ComfyUI inventory on the same host.
-    device = args.device + ":ollama"
     with requests.Session() as session:
-        models = collect(session, args.ollama_url, device)
-        print(f"Found {len(models)} Ollama models")
-        if args.dry_run:
-            for model in models:
-                print(model["name"], model["size_bytes"])
-            return
-        token = os.environ.get("MODELHARBOR_AGENT_TOKEN")
-        if not token:
-            parser.error("MODELHARBOR_AGENT_TOKEN is required")
-        response = session.post(args.server.rstrip("/") + "/api/inventory",
-            headers={"X-ModelHarbor-Token": token},
-            json={"device": device, "models": models}, timeout=120)
-        response.raise_for_status()
-        print(response.json())
+        models = collect(session, args.ollama_url, "preview:ollama")
+    print(f"Found {len(models)} Ollama models")
+    for model in models:
+        print(model["name"], model["size_bytes"])
 
 if __name__ == "__main__":
     main()

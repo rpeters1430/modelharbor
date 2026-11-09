@@ -22,11 +22,13 @@ If Lemonade was started with an API key (it answers `Invalid or missing API key`
 [Environment]::SetEnvironmentVariable("LEMONADE_API_KEY", "<your key>", "User")
 ```
 
-## Dry run (Windows PowerShell)
+## Preview (Windows PowerShell)
 
 ```powershell
-python agent/lemonade_scan.py --lemonade-url http://127.0.0.1:13305 --dry-run
+python agent/lemonade_scan.py --lemonade-url http://127.0.0.1:13305
 ```
+
+This only prints what the agent would find; the agent itself uploads on every sync.
 
 ## Download and load a Hugging Face GGUF
 

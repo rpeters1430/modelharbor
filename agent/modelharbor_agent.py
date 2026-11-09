@@ -56,7 +56,7 @@ def sync(cfg, token, dry_run=False):
     with requests.Session() as session:
         reporter = NullReporter() if dry_run else Reporter(session, cfg["server"], token, device)
         try:
-            run_once(cfg, token, dry_run, reporter)
+            run_once(cfg, token, dry_run, reporter, None if dry_run else lock)
         except Exception as exc:
             reporter.update("error", message=str(exc)[:300])
             raise
@@ -64,7 +64,7 @@ def sync(cfg, token, dry_run=False):
             if not dry_run:
                 release_lock(lock)
 
-def run_once(cfg, token, dry_run=False, reporter=None):
+def run_once(cfg, token, dry_run=False, reporter=None, lock=None):
     reporter = reporter or NullReporter()
     device = cfg.get("device") or socket.gethostname()
     server = cfg["server"]
@@ -84,6 +84,11 @@ def run_once(cfg, token, dry_run=False, reporter=None):
             def hashing(done, total, done_bytes, total_bytes, path):
                 reporter.update("hashing", done=done, total=total, done_bytes=done_bytes,
                                 total_bytes=total_bytes, current=path)
+                if lock:  # a first hash of a big library outlasts the stale-lock limit; show it is still alive
+                    try:
+                        os.utime(lock)
+                    except OSError:
+                        pass
             fill_hashes(comfy, cfg.get("hash_cache") or DEFAULT_CONFIG.with_name("hashes.json"), progress=hashing)
         ollama = None
         if cfg.get("ollama_enabled", True):
@@ -166,13 +171,16 @@ def worker_lanes(cfg, token):
             sync(cfg, token)
         return False  # not a queue to drain
 
-    control = [("Scan request", scan_request)]
+    # A scan can hash new files for many minutes, so it never shares a lane with deletes and cleanups.
+    control = []
     if cfg.get("deletes_enabled", True):
         control.append(("Delete", lambda s: download_worker.process_delete(s, server, token, agent, roots)))
     if cfg.get("downloads_enabled", True):
         control.append(("Cleanup", lambda s: download_worker.process_cleanup(s, server, token, agent, roots)))
-    lanes = {"control": control,
+    lanes = {"scan": [("Scan request", scan_request)],
              "hashes": [("Hash job", lambda s: process_one(s, server, token, device, roots))]}
+    if control:
+        lanes["control"] = control
     if cfg.get("downloads_enabled", True):
         lanes["downloads"] = [("Download", lambda s: download_worker.process_one(
             s, server, token, agent, roots, cfg.get("ollama_url", "http://127.0.0.1:11434"),
