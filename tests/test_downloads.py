@@ -136,6 +136,35 @@ def test_cleanup_only_after_verified_download_and_triggers_rescan(db):
     assert downloads.finish_cleanup(db, job["id"], "pc", None)["cleanup"] == "done"
     assert db.execute("SELECT scan_requested_at FROM agent_status WHERE device='pc'").fetchone()[0]
 
+def test_verified_civitai_update_replaces_the_old_version(db):
+    civitai_update(db)
+    job = downloads.create(db, "pc:comfyui", "C:/m/cool.safetensors")
+    downloads.claim(db, "pc")
+    downloads.finish(db, job["id"], "pc", NEW_SHA, None, "C:/m/cool_v2.safetensors")
+    assert downloads.claim_cleanup(db, "pc")["old_sha"] == OLD_SHA  # old version queued for deletion at once
+    new = db.execute("SELECT found,version_id,version_name,verified,latest_version_id FROM civitai_files WHERE sha256=?",
+                     (NEW_SHA,)).fetchone()
+    assert new == (1, 12, "v2.0", None, None)  # identified as the new version, with no update left
+
+def test_hand_linked_file_is_not_deleted_automatically(db):
+    civitai_update(db)
+    db.execute("UPDATE civitai_files SET verified=0 WHERE sha256=?", (OLD_SHA,))  # e.g. the user's own conversion
+    job = downloads.create(db, "pc:comfyui", "C:/m/cool.safetensors")
+    downloads.claim(db, "pc")
+    downloads.finish(db, job["id"], "pc", NEW_SHA, None, "C:/m/cool_v2.safetensors")
+    assert downloads.claim_cleanup(db, "pc") is None
+
+def test_verified_huggingface_update_moves_the_link_and_replaces_the_old_file(db):
+    db.execute("""INSERT INTO selected_matches (device,path,repository,remote_path,sha256,local_size,
+        local_modified_ns,selected_at,latest_sha) VALUES ('pc:comfyui','C:/m/cool.safetensors','o/r','cool.safetensors',?,5,1,0,?)""",
+        (OLD_SHA, NEW_SHA))
+    job = downloads.create(db, "pc:comfyui", "C:/m/cool.safetensors")
+    downloads.claim(db, "pc")
+    downloads.finish(db, job["id"], "pc", NEW_SHA, None, "C:/m/cool.bbbbbbbb.safetensors")
+    link = db.execute("SELECT repository,sha256,latest_sha FROM selected_matches WHERE path='C:/m/cool.bbbbbbbb.safetensors'").fetchone()
+    assert link == ("o/r", NEW_SHA, NEW_SHA)
+    assert downloads.claim_cleanup(db, "pc")["new_path"] == "C:/m/cool.bbbbbbbb.safetensors"
+
 def test_agent_deletes_old_only_when_both_hashes_still_match(tmp_path):
     from download_worker import delete_old
     old, new = tmp_path / "cool.safetensors", tmp_path / "cool_v2.safetensors"
