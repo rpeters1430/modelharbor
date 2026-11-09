@@ -199,14 +199,14 @@ function fill(target,items,empty){target.replaceChildren();if(!items.length)targ
 const providerName=p=>({civitai:"Civitai",huggingface:"Hugging Face",modelscope:"ModelScope",ollama:"Ollama",lemonade:"Lemonade",lmstudio:"LM Studio"})[p]||p;
 function linkRow(dl,label,caption,url){const a=document.createElement("a");a.href=url;a.target="_blank";a.rel="noopener noreferrer";a.textContent=caption;const dd=document.createElement("dd");dd.append(a);dl.append(text("dt",label),dd);}
 function downloadStatus(j){
- if(!j)return "Saved next to the current file after its SHA-256 is checked. The old file stays until you choose to delete it.";
+ if(!j)return "Saved next to the current file. Once its SHA-256 matches the published file, the old version is deleted.";
  if(j.state==="queued")return "Waiting for the Windows agent…";
  if(j.state==="running")return j.provider==="ollama"?"Ollama is pulling the newer build…":"Downloading "+fmt(j.bytes_done)+(j.size_bytes?" of "+fmt(j.size_bytes):"")+"…";
  if(j.state==="done"&&j.provider==="ollama")return "Pulled the newer build.";
  if(j.state==="done"){
   const saved="Saved and verified: "+j.result_path+". ";
   if(j.cleanup==="queued"||j.cleanup==="running")return saved+"Re-checking both files, then deleting the old version…";
-  if(j.cleanup==="done")return saved+"The old version was deleted.";
+  if(j.cleanup==="done")return saved+"The old version was deleted. Up to date.";
   if(j.cleanup==="failed")return saved+"The old version was not deleted: "+(j.cleanup_error||"unknown error");
   return saved+"The old version is still there.";
  }
@@ -235,13 +235,16 @@ async function renderDownload(m){
  if(m.update.provider==="lemonade"){box.append(text("p","Lemonade keeps its own copy of this model. Update it from Lemonade, which downloads the newer file from Hugging Face.","muted"));return;}
  const button=text("button","Download update","primary");button.type="button";const status=text("p","","muted");box.append(button,status);
  if(m.source&&m.source.provider==="civitai"&&!m.source.verified)box.prepend(text("p","Your file differs from the published one (a converted copy, for example). The update downloads the original format: convert it again before deleting your old file.","muted"));
- let job=null;
+ let job=null,wasActive=false;
  const remove=text("button","Delete old version","repo-action danger");remove.type="button";remove.hidden=true;box.append(remove);
  const show=j=>{job=j||job;status.textContent=downloadStatus(job);
   const cleaning=job&&(job.cleanup==="queued"||job.cleanup==="running");
   const active=job&&(job.state==="queued"||job.state==="running")||cleaning;
-  button.disabled=!!active||!!job&&job.state==="done";
-  remove.hidden=!(job&&job.state==="done"&&job.provider!=="ollama"&&job.cleanup!=="done");remove.disabled=!!cleaning;
+  button.disabled=!!active;button.hidden=!!job&&job.state==="done";  // nothing left to download
+  // Shown only when the automatic delete was skipped (a hand-linked file) or failed.
+  remove.hidden=!(job&&job.state==="done"&&job.provider!=="ollama"&&(!job.cleanup||job.cleanup==="failed"));
+  if(wasActive&&!active)pollAgents();  // the agent rescans now; the dashboard reloads when that finishes
+  wasActive=!!active;
   if(active)setTimeout(poll,3000);};
  remove.addEventListener("click",async()=>{
   if(!confirm("Permanently delete the old version?\n\n"+m.path+"\n\nThe new version passed its SHA-256 check:\n"+job.result_path+"\n\nBoth files are re-checked first. This cannot be undone."))return;
@@ -469,6 +472,8 @@ function details(m){
    prefill = parts[parts.length - 2].replace(/\.(safetensors|ckpt|gguf|pt|pth|bin|onnx)$/i,"").replace(/[_-]+/g," ").replace(CONVERSION_WORDS,"").replace(/\s+/g," ").trim();
   }
  }
+ // Searching only helps files that are not identified yet, or linked by hand to a different file.
+ document.querySelector("#detail-dialog .discovery").hidden=!!m.source&&m.source.verified!==false;
  $("provider-query").value = (prefill || m.name).slice(0, 120);
  $("provider-results").replaceChildren();$("repo-files").replaceChildren();$("repo-status").textContent="";$("repo-filter").value="";
  renderDownload(m);renderLinkTools(m);renderDelete(m);renderLmStudio(m);

@@ -127,8 +127,45 @@ def finish(db, job_id, agent, sha256, error, result_path):
                     base_model=COALESCE(excluded.base_model, selected_matches.base_model),
                     trigger_words=COALESCE(excluded.trigger_words, selected_matches.trigger_words)""",
                     (job[2], result_path, repo, remote_path, digest, size, now, digest, now, bm, tw))
+        _replace_old(db, job_id, result_path, sha256)
         _request_scan(db, agent)  # list the new file without waiting for the scheduled sync
     return {"id": job_id, "state": state}
+
+def _replace_old(db, job_id, result_path, sha256):
+    """A verified update takes over the old file's source link and the old file is queued for deletion.
+
+    Skipped when the old file only resembles the published one (linked by hand to different contents, such as
+    a conversion): the user decides then, as the update is in the original format."""
+    device, path, provider, folder, size = db.execute(
+        "SELECT device,path,provider,target_folder,size_bytes FROM download_jobs WHERE id=?", (job_id,)).fetchone()
+    if folder or not path or provider not in ("civitai", "huggingface") or not sha256 or not result_path:
+        return  # a new download from Browse, or an LLM server pull: no old file
+    old = db.execute("SELECT sha256 FROM models WHERE device=? AND path=?", (device, path)).fetchone()
+    if not old or not old[0]:
+        return
+    now, digest = int(time.time()), sha256.lower()
+    if provider == "civitai":
+        link = db.execute("""SELECT verified,model_id,model_name,base_model,trained_words,nsfw,file_type,
+            latest_version_id,latest_version_name,latest_published_at FROM civitai_files WHERE sha256=? AND found=1""",
+            (old[0],)).fetchone()
+        if not link or link[0] == 0 or not link[7]:
+            return
+        # The new file's hash is Civitai's own, so it is that version exactly: shown as identified at once,
+        # with no update, instead of waiting for the next lookup by hash.
+        db.execute("""INSERT OR IGNORE INTO civitai_files (sha256,found,checked_at,model_id,version_id,model_name,
+            version_name,base_model,trained_words,published_at,nsfw,file_type,verified,latest_checked_at)
+            VALUES (?,1,?,?,?,?,?,?,?,?,?,?,NULL,?)""",
+            (digest, now, link[1], link[7], link[2], link[8], link[3], link[4], link[9], link[5], link[6], now))
+    else:
+        link = db.execute("""SELECT repository,remote_path,sha256,base_model,trigger_words FROM selected_matches
+            WHERE device=? AND path=?""", (device, path)).fetchone()
+        if not link or link[2] != old[0]:
+            return
+        db.execute("""INSERT OR REPLACE INTO selected_matches (device,path,repository,remote_path,sha256,local_size,
+            local_modified_ns,selected_at,latest_sha,latest_checked_at,base_model,trigger_words)
+            VALUES (?,?,?,?,?,?,0,?,?,?,?,?)""",
+            (device, result_path, link[0], link[1], digest, size or 0, now, digest, now, link[3], link[4]))
+    request_cleanup(db, job_id)  # the agent re-hashes both files and deletes nothing that changed
 
 def recent(db, limit=100):
     rows = db.execute(f"SELECT {','.join(FIELDS)} FROM download_jobs ORDER BY created_at DESC LIMIT ?", (limit,))
