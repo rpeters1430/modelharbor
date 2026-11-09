@@ -240,7 +240,7 @@ async function renderDownload(m){
  const show=j=>{job=j||job;status.textContent=downloadStatus(job);
   const cleaning=job&&(job.cleanup==="queued"||job.cleanup==="running");
   const active=job&&(job.state==="queued"||job.state==="running")||cleaning;
-  button.disabled=!!active||!!job&&job.state==="done";
+  button.disabled=!!active;button.hidden=!!job&&job.state==="done";  // nothing left to download
   remove.hidden=!(job&&job.state==="done"&&job.provider!=="ollama"&&job.cleanup!=="done");remove.disabled=!!cleaning;
   if(active)setTimeout(poll,3000);};
  remove.addEventListener("click",async()=>{
@@ -469,6 +469,8 @@ function details(m){
    prefill = parts[parts.length - 2].replace(/\.(safetensors|ckpt|gguf|pt|pth|bin|onnx)$/i,"").replace(/[_-]+/g," ").replace(CONVERSION_WORDS,"").replace(/\s+/g," ").trim();
   }
  }
+ // Searching only helps files that are not identified yet, or linked by hand to a different file.
+ document.querySelector("#detail-dialog .discovery").hidden=!!m.source&&m.source.verified!==false;
  $("provider-query").value = (prefill || m.name).slice(0, 120);
  $("provider-results").replaceChildren();$("repo-files").replaceChildren();$("repo-status").textContent="";$("repo-filter").value="";
  renderDownload(m);renderLinkTools(m);renderDelete(m);renderLmStudio(m);
