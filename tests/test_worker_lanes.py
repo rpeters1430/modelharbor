@@ -12,12 +12,12 @@ def test_lanes_split_long_jobs_from_quick_ones(monkeypatch):
     monkeypatch.setattr(agent, "discover_roots", lambda: [])
     lanes = agent.worker_lanes({"server": "http://nas", "device": "pc"}, "t")
     labels = {name: [label for label, _ in steps] for name, steps in lanes.items()}
-    assert labels == {"control": ["Scan request", "Delete", "Cleanup"], "hashes": ["Hash job"],
+    assert labels == {"scan": ["Scan request"], "control": ["Delete", "Cleanup"], "hashes": ["Hash job"],
                       "downloads": ["Download"], "converts": ["Conversion"]}
     off = agent.worker_lanes({"server": "http://nas", "device": "pc", "downloads_enabled": False,
                               "converts_enabled": False, "deletes_enabled": False}, "t")
     assert {name: [label for label, _ in steps] for name, steps in off.items()} == {
-        "control": ["Scan request"], "hashes": ["Hash job"]}
+        "scan": ["Scan request"], "hashes": ["Hash job"]}
 
 
 def test_lane_drains_its_queue_and_survives_errors():

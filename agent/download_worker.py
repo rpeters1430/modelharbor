@@ -10,7 +10,7 @@ from urllib.parse import urlsplit
 import requests
 from hash_worker import allowed_file
 from hash_cache import sha256_file
-from lemonade_scan import auth_headers as lemonade_headers
+from lemonade_scan import DEFAULT_URL as LEMONADE_URL, auth_headers as lemonade_headers
 from lmstudio_scan import auth_headers as lmstudio_headers
 
 ALLOWED_HOSTS = {"civitai.com", "civitai.red", "huggingface.co", "modelscope.cn", "www.modelscope.cn"}
@@ -285,7 +285,8 @@ def run_lmstudio_action(session, lmstudio_url, job):
         raise ValueError("Unsupported LM Studio action")
     return None, "lmstudio://" + job["file_name"]
 
-def process_one(session, server, token, agent, roots, ollama_url, lemonade_url=None, lemonade_load=True, lmstudio_url="http://127.0.0.1:1234"):
+def process_one(session, server, token, agent, roots, ollama_url, lemonade_url=LEMONADE_URL, lemonade_load=True,
+                lmstudio_url="http://127.0.0.1:1234"):
     headers = {"X-ModelHarbor-Token": token}
     base = server.rstrip("/") + "/api/downloads/"
     res = session.get(base + "next", params={"agent": agent}, headers=headers, timeout=20)
@@ -306,7 +307,7 @@ def process_one(session, server, token, agent, roots, ollama_url, lemonade_url=N
             result["sha256"], result["result_path"] = pull_ollama(session, ollama_url, job["file_name"], report_progress)
         elif job["provider"] == "lemonade":
             result["sha256"], result["result_path"] = pull_lemonade(
-                session, lemonade_url or "http://127.0.0.1:13305", job, report_progress, lemonade_load)
+                session, lemonade_url, job, report_progress, lemonade_load)
         elif job["provider"] == "lmstudio":
             result["sha256"], result["result_path"] = pull_lmstudio(session, lmstudio_url, job, report_progress)
         elif job["provider"] in ("lmstudio-load", "lmstudio-unload"):

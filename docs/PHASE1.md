@@ -7,13 +7,13 @@ Health: `http://NAS-IP:8096/api/health`.
 
 ## Windows
 Install Python 3.11+ and `pip install -r agent/requirements.txt`.
-Run a dry scan first:
+Preview what the scanner finds (it never uploads):
 
 ```powershell
-python agent/scan.py --models-dir "C:\\path\\to\\ComfyUI\\models" --dry-run
+python agent/scan.py --models-dir "C:\\path\\to\\ComfyUI\\models"
 ```
 
-Set `MODELHARBOR_AGENT_TOKEN` in the Windows environment, then omit `--dry-run` and pass `--server http://NAS-IP:8096`.
+To upload, set up the agent as described in [WINDOWS_AGENT.md](WINDOWS_AGENT.md).
 The scanner reads files' metadata only; it does not hash or modify large model files.
 
 ## Known limitations

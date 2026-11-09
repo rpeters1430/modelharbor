@@ -9,7 +9,7 @@ Self-hosted, mobile-friendly AI model inventory and management dashboard for **C
 - SQLite-backed inventory API with token authentication.
 - Windows ComfyUI scanner (read-only).
 - Convert tab: shrink diffusion models and text encoders that don't fit the GPU to ComfyUI's `int8_convrot` format on the PC, and recognise your own conversions. See [docs/WINDOWS_AGENT.md](docs/WINDOWS_AGENT.md).
-- Ollama, Lemonade and LM Studio inventory from their local APIs. LM Studio also supports Hugging Face GGUF downloads and queued load/unload actions; see [LM Studio setup](docs/LMSTUDIO.md).
+- Ollama, Lemonade and LM Studio inventory from their local APIs, with one-click import of Hugging Face GGUF files. Each is shown only while the PC's agent can reach it. LM Studio also supports queued load/unload actions; see [LM Studio setup](docs/LMSTUDIO.md).
 - Multi-platform Docker image published to GitHub Container Registry (GHCR).
 
 > **Current scope:** Exact SHA-256 source identification applies to files with accessible local hashes. Runtime-managed Ollama, Lemonade and LM Studio models use their respective APIs; LM Studio downloads are provider-managed and are not SHA-256 verified by ModelHarbor. See [docs/SOURCES_AND_UPDATES.md](docs/SOURCES_AND_UPDATES.md).
@@ -87,10 +87,10 @@ Install Python 3.11+ and the agent dependencies:
 
 ```powershell
 pip install -r agent/requirements.txt
-python agent/scan.py --models-dir "C:\\path\\to\\ComfyUI\\models" --dry-run
+python agent/scan.py --models-dir "C:\\path\\to\\ComfyUI\\models"
 ```
 
-For LLM servers, see [Lemonade setup](docs/LEMONADE.md), [Ollama setup](docs/OLLAMA.md) and [LM Studio setup](docs/LMSTUDIO.md). See [Dashboard setup](docs/DASHBOARD.md) and [Phase 1 instructions](docs/PHASE1.md) for details.
+That only previews what is found. `agent/modelharbor_agent.py` does the uploading; see [Windows agent setup](docs/WINDOWS_AGENT.md). For LLM servers, see [Lemonade setup](docs/LEMONADE.md), [Ollama setup](docs/OLLAMA.md) and [LM Studio setup](docs/LMSTUDIO.md). See [Dashboard setup](docs/DASHBOARD.md) and [Phase 1 instructions](docs/PHASE1.md) for details.
 
 ## Container publishing
 
