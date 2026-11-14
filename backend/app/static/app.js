@@ -25,6 +25,30 @@ $("civitai-token-save").onclick=async()=>{
 $("civitai-token-remove").onclick=async()=>{try{await apiRequest("/api/settings/civitai","DELETE");$("civitai-token-status").textContent="Token removed";}catch(e){$("civitai-token-status").textContent=e.message;}};
 $("civitai-token-test").onclick=async()=>{try{const x=await apiRequest("/api/settings/civitai/test","POST");$("civitai-token-status").textContent=x.note;}catch(e){$("civitai-token-status").textContent=e.message;}};
 
+$("workflow-check").onclick=async()=>{
+ const file=$("workflow-file").files[0],target=$("workflow-results");
+ if(!file){target.textContent="Choose a workflow JSON first";return;}
+ if(file.size>2_000_000){target.textContent="Workflow exceeds 2 MB";return;}
+ const button=$("workflow-check");button.disabled=true;target.replaceChildren(text("p","Checking workflow…","muted"));
+ try{
+  const workflow=JSON.parse(await file.text());
+  const result=await apiRequest("/api/workflows/audit","POST",{workflow});
+  target.replaceChildren(text("p",result.total+" referenced model files · "+result.missing+" missing","model-sub"));
+  for(const dep of result.dependencies){
+   const row=text("div","","workflow-dependency");
+   row.append(text("strong",(dep.status==="installed"?"✓ ":dep.status==="possible_match"?"? ":"✕ ")+dep.name));
+   row.append(text("span"," · "+dep.status.replace("_"," ")+" · "+dep.nodes.join(", "),"model-sub"));
+   if(dep.status==="missing"){
+    const find=text("button","Find in Browse","repo-action");find.type="button";
+    find.onclick=()=>{$("browse-q").value=dep.name.replace(/\.[^.]+$/,"").replace(/[_-]+/g," ");$("browse-go").click();};
+    row.append(find);
+   }
+   target.append(row);
+  }
+  target.append(text("p",result.note,"muted"));
+ }catch(e){target.replaceChildren(text("p","Could not analyze workflow: "+e.message,"muted"));}
+ finally{button.disabled=false;}
+};
 const fmt = n => { if (!Number.isFinite(n)) return "—"; if (n === 0) return "0 B"; const u = ["B","KB","MB","GB","TB","PB"]; const i = Math.min(Math.floor(Math.log(n)/Math.log(1000)),u.length-1); return (n/Math.pow(1000,i)).toFixed(i ? 1 : 0)+" "+u[i]; };
 const text = (tag,value,cls) => { const e=document.createElement(tag); e.textContent=value; if(cls)e.className=cls; return e; };
 function showNotice(message){ $("notice").textContent=message; $("notice").hidden=!message; }
