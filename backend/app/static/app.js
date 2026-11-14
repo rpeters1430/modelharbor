@@ -691,6 +691,7 @@ function repoCard(repo){
  const chips=text("div","","repo-chips");
  if(task)chips.append(text("span",task.replace(/-/g," "),"repo-chip"));
  if(isLora)chips.append(text("span","LoRA","repo-chip"));
+ if(isHF)chips.append(text("span",repo.base_label||"Unknown / unverified","repo-chip"+(repo.base_family?"":" repo-chip-warning")));
  if(repo.gated)chips.append(text("span","Access approval may be required","repo-chip repo-chip-warning"));
  const format=tags.find(t=>["gguf","safetensors","diffusers","transformers"].includes(t.toLowerCase()));
  if(format)chips.append(text("span",format.toUpperCase(),"repo-chip"));
@@ -870,7 +871,7 @@ async function browseSearch(more){
  try{
   browseJobs=await apiRequest("/api/downloads").catch(()=>[]);
   if(provider==="huggingface"){
-   const data=await apiRequest("/api/browse/huggingface?"+new URLSearchParams({q,type:$("browse-hf-type").value,sort:$("browse-hf-sort").value}));
+   const data=await apiRequest("/api/browse/huggingface?"+new URLSearchParams({q,type:$("browse-hf-type").value,base:$("browse-hf-base").value,sort:$("browse-hf-sort").value}));
    list.replaceChildren(...data.items.map(repoCard));$("browse-more").hidden=true;
    $("browse-results").textContent=data.items.length+" repositories";
   }else if(provider==="modelscope"){
@@ -900,7 +901,7 @@ $("browse-link").addEventListener("keydown",e=>{if(e.key==="Enter")inspectLink($
 $("browse-go").addEventListener("click",()=>browseSearch(false));
 $("browse-more").addEventListener("click",()=>browseSearch(true));
 $("browse-q").addEventListener("keydown",e=>{if(e.key==="Enter")browseSearch(false);});
-$("browse-provider").addEventListener("change",()=>{const site=$("browse-provider").value;["browse-type","browse-base","browse-sort"].forEach(id=>$(id).hidden=site!=="civitai");["browse-hf-type","browse-hf-sort"].forEach(id=>$(id).hidden=site!=="huggingface");["browse-ms-type","browse-ms-sort"].forEach(id=>$(id).hidden=site!=="modelscope");});
+$("browse-provider").addEventListener("change",()=>{const site=$("browse-provider").value;["browse-type","browse-base","browse-sort"].forEach(id=>$(id).hidden=site!=="civitai");["browse-hf-type","browse-hf-base","browse-hf-sort"].forEach(id=>$(id).hidden=site!=="huggingface");["browse-ms-type","browse-ms-sort"].forEach(id=>$(id).hidden=site!=="modelscope");});
 try{$("browse-mature").checked=localStorage.getItem("modelharbor_mature")==="1";}catch(_){}
 $("browse-mature").addEventListener("change",()=>{try{localStorage.setItem("modelharbor_mature",$("browse-mature").checked?"1":"0");}catch(_){}});
 try{$("browse-compatible").checked=localStorage.getItem("modelharbor_browse_compatible")==="1";}catch(_){}
