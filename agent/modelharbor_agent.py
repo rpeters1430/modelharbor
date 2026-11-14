@@ -1,4 +1,4 @@
-"""Windows-friendly read-only background inventory sync. Standard library + requests."""
+"""Background inventory sync and dashboard job worker for Windows and Linux PCs. Standard library + requests."""
 import argparse
 import json
 import logging
@@ -20,16 +20,27 @@ import convert_worker
 from status import NullReporter, Reporter, acquire_lock, release_lock
 
 LOG = logging.getLogger("modelharbor")
-DEFAULT_CONFIG = Path(os.environ.get("APPDATA", str(Path.home()))) / "ModelHarbor" / "agent.json"
 
-def discover_roots():
+
+def config_dir():
+    """%APPDATA%\\ModelHarbor on Windows, $XDG_CONFIG_HOME/ModelHarbor (~/.config/ModelHarbor) elsewhere."""
+    if os.name == "nt":
+        return Path(os.environ.get("APPDATA", str(Path.home()))) / "ModelHarbor"
+    return Path(os.environ.get("XDG_CONFIG_HOME") or Path.home() / ".config") / "ModelHarbor"
+
+DEFAULT_CONFIG = config_dir() / "agent.json"
+
+def discover_roots(home=None):
     """Find common model roots; custom installs should be set in config."""
+    home = home or Path.home()
+    candidates = [home / "ComfyUI" / "models",
+                  home / "Documents" / "ComfyUI" / "models",
+                  home / "AppData" / "Roaming" / "ComfyUI" / "models"]
+    # Linux installs are usually a git clone one folder down, such as ~/AI/ComfyUI or ~/src/ComfyUI.
+    candidates += sorted(home.glob("*/ComfyUI/models"))
     roots = []
-    home = Path.home()
-    for root in (home / "ComfyUI" / "models",
-                 home / "Documents" / "ComfyUI" / "models",
-                 home / "AppData" / "Roaming" / "ComfyUI" / "models"):
-        if root.is_dir():
+    for root in candidates:
+        if root.is_dir() and str(root) not in roots:
             roots.append(str(root))
     return roots
 
@@ -118,7 +129,7 @@ def run_once(cfg, token, dry_run=False, reporter=None, lock=None):
                 lmstudio_info = lmstudio_scan.endpoint_info(lmstudio_url)
                 lmstudio_info["status"] = "connected"
                 if lmstudio_info["local"]:
-                    lmstudio_info.update(detect_hardware())
+                    lmstudio_info.update(detect_hardware() or {})
                 lmstudio_info.pop("local", None)
             except (requests.RequestException, ValueError) as exc:
                 lmstudio_info = {"status": "unavailable", "error": str(exc)[:250]}
@@ -239,7 +250,7 @@ def main():
     cfg = load_config(args.config)
     token = os.environ.get("MODELHARBOR_AGENT_TOKEN", "")
     if not args.dry_run and not token:
-        p.error("MODELHARBOR_AGENT_TOKEN must be set in the Windows environment")
+        p.error("MODELHARBOR_AGENT_TOKEN must be set in the agent's environment")
     if args.hash_worker:
         if args.dry_run or args.once:
             p.error("--hash-worker runs continuously and cannot use --once or --dry-run")

@@ -7,7 +7,7 @@ import requests
 
 
 def auth_headers():
-    """Read the optional LM Studio API key from the Windows user environment."""
+    """Read the optional LM Studio API key from the agent's environment."""
     key = os.environ.get("LMSTUDIO_API_KEY")
     return {"Authorization": "Bearer " + key} if key else {}
 
@@ -23,7 +23,7 @@ def _api_root(base_url):
 
 def _raise_for_status(response):
     if response.status_code in (401, 403):
-        raise ValueError("LM Studio refused the request; set LMSTUDIO_API_KEY in the Windows user environment")
+        raise ValueError("LM Studio refused the request; set LMSTUDIO_API_KEY in the agent's environment")
     response.raise_for_status()
 
 

@@ -1,13 +1,13 @@
 # ModelHarbor
 
-Self-hosted, mobile-friendly AI model inventory and management dashboard for **ComfyUI**, **Ollama**, **Lemonade Server** and **LM Studio**. Designed for a lightweight Docker deployment on NAS hardware, with a read-only Windows scanner.
+Self-hosted, mobile-friendly AI model inventory and management dashboard for **ComfyUI**, **Ollama**, **Lemonade Server** and **LM Studio**. Designed for a lightweight Docker deployment on NAS hardware, with an inventory agent for Windows and Linux PCs.
 
 ## Features
 
 - Responsive, dark-themed model inventory dashboard for mobile and desktop.
 - Search, model type filters, device filters, and model detail views.
 - SQLite-backed inventory API with token authentication.
-- Windows ComfyUI scanner (read-only).
+- ComfyUI scanner and job agent for Windows and Linux. Downloads go straight into the matching ComfyUI model folder. See [Linux agent setup](docs/LINUX_AGENT.md).
 - Convert tab: shrink diffusion models and text encoders that don't fit the GPU to ComfyUI's `int8_convrot` format on the PC, and recognise your own conversions. See [docs/WINDOWS_AGENT.md](docs/WINDOWS_AGENT.md).
 - Ollama, Lemonade and LM Studio inventory from their local APIs, with one-click import of Hugging Face GGUF files. Each is shown only while the PC's agent can reach it. LM Studio also supports queued load/unload actions; see [LM Studio setup](docs/LMSTUDIO.md).
 - Multi-platform Docker image published to GitHub Container Registry (GHCR).
@@ -81,7 +81,9 @@ In **Dockhand**, use its pull/redeploy functionality on the ModelHarbor stack. I
 - The dashboard stores the API token in browser session storage.
 - No installed models are changed by inventory scans.
 
-## Windows inventory agents
+## Inventory agents
+
+On Linux, follow [Linux agent setup](docs/LINUX_AGENT.md). On Windows:
 
 Install Python 3.11+ and the agent dependencies:
 

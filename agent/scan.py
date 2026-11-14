@@ -1,4 +1,4 @@
-"""Read-only ComfyUI model inventory uploader for Windows."""
+"""Read-only ComfyUI model folder scanner (Windows and Linux)."""
 import argparse
 import os
 from pathlib import Path

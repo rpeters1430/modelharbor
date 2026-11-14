@@ -10,14 +10,14 @@ DEFAULT_URL = "http://127.0.0.1:13305"  # Lemonade 9+; older releases listened o
 
 def auth_headers():
     """Lemonade started with an API key wants it as a bearer token. Like other keys, it lives in
-    the Windows user environment (LEMONADE_API_KEY), never in config files or on the NAS."""
+    the agent's environment (LEMONADE_API_KEY), never in config files or on the NAS."""
     key = os.environ.get("LEMONADE_API_KEY")
     return {"Authorization": "Bearer " + key} if key else {}
 
 def raise_for_status(response):
     if response.status_code in (401, 403):
         raise ValueError(f"Lemonade refused the request (HTTP {response.status_code}); "
-                         "set LEMONADE_API_KEY in the Windows user environment to the server's API key")
+                         "set LEMONADE_API_KEY in the agent's environment to the server's API key")
     response.raise_for_status()
 
 def _vram(gpu):

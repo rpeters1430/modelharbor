@@ -24,7 +24,7 @@ NEW_FOLDERS = {"checkpoints", "loras", "embeddings", "vae", "controlnet", "upsca
                "text_encoders", "diffusion_models"}
 
 def auth_headers(host):
-    # Keys live in the Windows user environment, never in the NAS database or config files.
+    # Keys live in the agent's environment, never in the NAS database or config files.
     name = "CIVITAI_API_TOKEN" if host.startswith("civitai.") else "HF_TOKEN" if host == "huggingface.co" else None
     token = name and os.environ.get(name)
     return {"Authorization": "Bearer " + token} if token else {}
@@ -34,8 +34,22 @@ def explain(status, host):
         if "modelscope" in host:
             return f"{host} refused the download (HTTP {status}); the model may need you to accept its license on the site"
         name = "CIVITAI_API_TOKEN" if host.startswith("civitai.") else "HF_TOKEN"
-        return f"{host} refused the download (HTTP {status}); set {name} in your Windows user environment"
+        return f"{host} refused the download (HTTP {status}); set {name} in the agent's environment"
     return f"{host} returned HTTP {status}"
+
+def existing_folder(root, parent, family):
+    """root/parent/family, reusing a folder already there under another case ("loras/sdxl" for "loras/SDXL").
+    Linux file names are case-sensitive, so without this a second, empty-looking folder would appear in ComfyUI."""
+    directory = root
+    for part in (parent, family):
+        if not part:
+            continue
+        match = directory / part
+        if not match.is_dir() and directory.is_dir():
+            match = next((d for d in sorted(directory.iterdir()) if d.name.casefold() == part.casefold()
+                          and d.is_dir() and not d.is_symlink()), match)
+        directory = match
+    return directory
 
 def download_file(session, job, roots, report_progress):
     """Return (sha256, final_path). Raises ValueError with a readable reason."""
@@ -44,7 +58,7 @@ def download_file(session, job, roots, report_progress):
         parent, _, family = job["target_folder"].partition("/")
         if parent not in NEW_FOLDERS or family and not FAMILY.fullmatch(family) or not roots:
             raise ValueError("Download folder is not allowed")
-        directory = Path(roots[0]).resolve(strict=True) / parent / family
+        directory = existing_folder(Path(roots[0]).resolve(strict=True), parent, family)
         directory.mkdir(parents=True, exist_ok=True)
     else:
         directory = allowed_file(job["path"], roots).parent
@@ -120,7 +134,7 @@ LEMONADE_CHECKPOINT = re.compile(r"^[\w.-]{1,96}/[\w.-]{1,96}:[\w .()+,-]{1,200}
 
 def _lemonade_error(response):
     if response.status_code in (401, 403):
-        return f"HTTP {response.status_code}; set LEMONADE_API_KEY in the Windows user environment to the server's API key"
+        return f"HTTP {response.status_code}; set LEMONADE_API_KEY in the agent's environment to the server's API key"
     try:
         body = response.json()
     except ValueError:
@@ -196,7 +210,7 @@ def pull_lemonade(session, lemonade_url, job, report_progress, load=True):
 
 def _lmstudio_error(response):
     if response.status_code in (401, 403):
-        return "LM Studio refused the request; set LMSTUDIO_API_KEY in the Windows user environment"
+        return "LM Studio refused the request; set LMSTUDIO_API_KEY in the agent's environment"
     try:
         body = response.json()
     except ValueError:
