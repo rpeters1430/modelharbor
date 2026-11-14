@@ -17,7 +17,7 @@ from urllib.parse import quote
 from .hf_repository import list_model_files, validate_repo
 from .hf_inspect import inspect_huggingface
 from .suggest_matches import suggest_matches, link_huggingface
-from . import browse, converts, deletes, downloads, fit
+from . import browse, converts, deletes, downloads, fit, civitai_credentials
 from .sources import _civitai_model, _file_sha, fetch
 from .sources import annotate, ignore_key, civitai_check, civitai_link, civitai_unlink, civitai_versions, ensure_tables as ensure_source_tables, start_worker
 from .hash_matches import ensure_tables, queue_job, claim_job, finish_job, get_job, select_match, selected_for_inventory
@@ -155,6 +155,7 @@ def _migrate(db):
     ensure_tables(db)
     ensure_source_tables(db)
     downloads.ensure_tables(db)
+    civitai_credentials.ensure_tables(db)
     deletes.ensure_tables(db)
     converts.ensure_tables(db)
     db.commit()
@@ -463,12 +464,62 @@ def list_downloads(x_modelharbor_token: str | None = Header(default=None)):
     with closing(connect()) as db:
         return downloads.recent(db)
 
+
+class CivitaiTokenInput(BaseModel):
+    token: str = Field(min_length=1, max_length=512)
+
+@app.get("/api/settings/civitai")
+def civitai_token_status(x_modelharbor_token: str | None = Header(default=None)):
+    authorize(x_modelharbor_token)
+    with closing(connect()) as db:
+        return {"configured": civitai_credentials.configured(db)}
+
+@app.put("/api/settings/civitai")
+def civitai_token_save(payload: CivitaiTokenInput, x_modelharbor_token: str | None = Header(default=None)):
+    authorize(x_modelharbor_token)
+    with closing(connect()) as db:
+        with db:
+            civitai_credentials.set_token(db, payload.token)
+    return {"configured": True}
+
+@app.delete("/api/settings/civitai")
+def civitai_token_remove(x_modelharbor_token: str | None = Header(default=None)):
+    authorize(x_modelharbor_token)
+    with closing(connect()) as db:
+        with db:
+            civitai_credentials.delete_token(db)
+    return {"configured": False}
+
+@app.post("/api/settings/civitai/test")
+def civitai_token_test(x_modelharbor_token: str | None = Header(default=None)):
+    authorize(x_modelharbor_token)
+    with closing(connect()) as db:
+        secret = civitai_credentials.get_token(db)
+    if not secret:
+        raise HTTPException(409, "No Civitai token configured")
+    import urllib.request
+    import urllib.error
+    try:
+        req = urllib.request.Request("https://civitai.com/api/v1/models?limit=1",
+            headers={"Authorization": "Bearer " + secret, "User-Agent": "ModelHarbor/1.0"})
+        with urllib.request.urlopen(req, timeout=12) as response:
+            if response.status != 200:
+                raise HTTPException(502, "Civitai test failed")
+    except urllib.error.HTTPError as exc:
+        raise HTTPException(400, "Civitai rejected the request") from exc
+    except urllib.error.URLError as exc:
+        raise HTTPException(503, "Civitai is unreachable") from exc
+    return {"reachable": True, "note": "API reachable; download permissions may differ"}
+
 @app.get("/api/downloads/next")
 def next_download(agent: str, x_modelharbor_token: str | None = Header(default=None)):
     authorize(x_modelharbor_token)
     with closing(connect()) as db:
         with db:
-            return {"job": downloads.claim(db, agent)}
+            job = downloads.claim(db, agent)
+            if job and job["provider"] == "civitai":
+                job["civitai_token"] = civitai_credentials.get_token(db)
+            return {"job": job}
 
 @app.post("/api/downloads/{job_id}/progress")
 def download_progress(job_id: str, payload: DownloadProgress, x_modelharbor_token: str | None = Header(default=None)):
