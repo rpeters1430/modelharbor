@@ -3,7 +3,7 @@ import json
 import re
 from urllib.parse import quote, urlencode
 from fastapi import HTTPException
-from .fit import mark_best, rate
+from .fit import mark_recommended, rate, recommend_file
 from .sources import CIVITAI_HOSTS, MAIN_FILE_TYPES, _file_sha, civitai_url, fetch
 from .hf_repository import _EXTENSIONS, validate_repo
 
@@ -146,9 +146,10 @@ def search_civitai(query, model_type, base_model, sort, cursor, shas, get=fetch,
                 files.append({"id": f["id"], "name": str(f.get("name") or "")[:200], "type": f.get("type"),
                               "primary": bool(f.get("primary")), "size_bytes": int(float(f.get("sizeKB") or 0) * 1024),
                               "on_pc": sha in shas, "folder": folder_for(m.get("type"), f.get("type"), v.get("baseModel")),
-                              "fit": rate(str(f.get("name") or ""), int(float(f.get("sizeKB") or 0) * 1024), hw, f.get("metadata"))})
+                              "fit": rate(str(f.get("name") or ""), int(float(f.get("sizeKB") or 0) * 1024), hw, f.get("metadata")),
+                              "recommendation": recommend_file(str(f.get("name") or ""), int(float(f.get("sizeKB") or 0) * 1024), hw, f.get("metadata"))})
             # Pruned/full and fp16/fp32 copies of the weights are variants; VAEs and text encoders are not.
-            mark_best(files, lambda f: "main" if f["type"] in MAIN_FILE_TYPES else f["type"])
+            mark_recommended(files, lambda f: "main" if f["type"] in MAIN_FILE_TYPES else f["type"])
             if any(f["on_pc"] for f in files) and installed is None:
                 installed = str(v.get("name") or "")
             versions.append({"id": v.get("id"), "name": str(v.get("name") or "")[:250], "base_model": v.get("baseModel"),
