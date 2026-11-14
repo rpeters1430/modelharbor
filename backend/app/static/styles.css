@@ -170,3 +170,5 @@
 #browse-list .repo-file-choice .browse-file{margin-top:8px;grid-template-columns:minmax(0,1fr) auto}
 #browse-list .repo-file-choice .browse-file .repo-action{max-width:100%;white-space:normal}
 @media(max-width:640px){#browse-list .repo-discovery-hero{min-height:105px}#browse-list .repo-file-panel{padding:12px}}
+
+#browse-list .repo-gguf-notice{padding:9px 10px;margin-top:8px;border-radius:9px;background:#283b55;color:#c8d9f4;font-size:12px;line-height:1.5}
