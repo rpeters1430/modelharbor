@@ -586,7 +586,7 @@ function fileRow(label,onPc,ref,request,f={},behavior={}){
  const allowed=()=>!behavior.isAllowed||behavior.isAllowed();
  const show=j=>{
   if(!j){status.textContent="";button.hidden=false;return;}
-  status.textContent=newDownloadStatus(j);button.hidden=j.state!=="failed";
+  status.textContent=newDownloadStatus(j);button.hidden=j.state!=="failed";button.textContent=j.state==="failed"?"Retry download":"Download";
   if(j&&j.state==="done"&&j.provider==="lmstudio")refresh();
   if((j.state==="queued"||j.state==="running")&&j.source_ref===currentRef())setTimeout(async()=>{
    if(view!=="browse"||j.source_ref!==currentRef())return;
@@ -600,7 +600,7 @@ function fileRow(label,onPc,ref,request,f={},behavior={}){
   status.classList.remove("on-pc");
   if(installed()){status.textContent=server?"✓ In "+server.label:"✓ On your PC";status.classList.add("on-pc");button.hidden=true;return;}
   button.hidden=false;
-  show(browseJobs.find(j=>j.source_ref===currentRef()&&j.state!=="failed"));
+  show(browseJobs.find(j=>j.source_ref===currentRef()&&j.state!=="failed")||browseJobs.find(j=>j.source_ref===currentRef()&&j.state==="failed"));
   if(!browseAgent()){button.disabled=true;status.textContent="No PC agent connected";}
   else button.disabled=false;
  };
@@ -622,9 +622,17 @@ function civitaiCard(item){
  if(item.image&&(item.image.nsfw_level<=1||mature)){const img=document.createElement("img");img.src=item.image.url;img.alt="";img.loading="lazy";img.referrerPolicy="no-referrer";card.append(img);}
  const info=text("div","","browse-info");
  info.append(text("strong",item.name),text("div",[item.type,item.creator,item.downloads!=null?"↓ "+Number(item.downloads).toLocaleString():""].filter(Boolean).join(" · "),"model-sub"));
- info.append(text("div",item.installed_version?(item.latest_installed?"✓ On your PC ("+item.installed_version+")":"Other version on your PC ("+item.installed_version+")"):"Not on your PC","browse-badge"+(item.installed_version?" on-pc":"")));
+ const rated=item.versions.flatMap(v=>v.files).filter(f=>f.fit);
+  const good=rated.filter(f=>f.fit.level==="good"), best=good.find(f=>f.best)||good[0];
+  const recommendation=text("div","","discovery-reason");
+  if(item.installed_version)recommendation.textContent="✓ Already installed — check versions before downloading another copy";
+  else if(best)recommendation.textContent="✓ Hardware fit: "+best.fit.note+" · "+fmt(best.size_bytes);
+  else if(rated.length)recommendation.textContent="⚠ Review compatibility before downloading";
+  else recommendation.textContent="ℹ Hardware fit unavailable — inspect versions";
+  info.append(recommendation);
+  info.append(text("div",item.installed_version?(item.latest_installed?"✓ On your PC ("+item.installed_version+")":"Other version on your PC ("+item.installed_version+")"):"Not on your PC","browse-badge"+(item.installed_version?" on-pc":"")));
  const toggle=text("button","Versions & files","repo-action");toggle.type="button";const files=text("div","","browse-versions");files.hidden=true;
- toggle.addEventListener("click",()=>{files.hidden=!files.hidden;});
+ toggle.setAttribute("aria-expanded","false");toggle.addEventListener("click",()=>{files.hidden=!files.hidden;toggle.setAttribute("aria-expanded",String(!files.hidden));toggle.textContent=files.hidden?"Versions & files":"Hide versions";});
  item.versions.forEach(v=>{files.append(text("div",v.name+(v.base_model?" · "+v.base_model:"")+(v.published_at?" · "+v.published_at.slice(0,10):""),"version-name"));
   v.files.forEach(f=>files.append(fileRow(f.name+" · "+f.type+" · "+fmt(f.size_bytes)+" → "+f.folder,f.on_pc,"civitai:"+f.id,{provider:"civitai",model_id:item.id,version_id:v.id,file_id:f.id},f)));});
  const link=document.createElement("a");link.href=item.url;link.target="_blank";link.rel="noopener noreferrer";link.textContent="Open on Civitai ↗";link.className="model-sub";
