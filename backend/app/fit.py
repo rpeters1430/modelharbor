@@ -156,7 +156,7 @@ def annotate_listing(listing, hw, llm_hw=None, lmstudio_hw=None):
         for f in listing["files"]:
             f["fit"] = rate(f["name"], f.get("size_bytes"), hw)
             f["recommendation"] = recommend_file(f["name"], f.get("size_bytes"), hw)
-        mark_recommended(listing["files"], lambda f: variant_key(f["path"]))
+        # Preserve established variant selection until score-based selection is validated.\n        mark_best(listing["files"], lambda f: variant_key(f["path"]))
     if llm_hw:
         for f in listing["files"]:
             f["llm_fit"] = rate_llm(f["name"], f.get("size_bytes"), llm_hw)
