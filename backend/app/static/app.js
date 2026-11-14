@@ -728,19 +728,29 @@ function repoCard(repo){
    const render=()=>{
     results.replaceChildren();
     const needle=input.value.trim().toLowerCase();
-    const visible=listing.files.filter(f=>(!needle||f.path.toLowerCase().includes(needle))&&(!check.checked||(f.recommendation&&f.recommendation.score>=80)||f.best));
+    const visible=listing.files.filter(f=>{
+     if(needle&&!f.path.toLowerCase().includes(needle))return false;
+     if(!check.checked)return true;
+     const gguf=f.path.toLowerCase().endsWith(".gguf");
+     return gguf?((f.llm_recommendation&&f.llm_recommendation.score>=80)||f.llm_best||f.lmstudio_best)
+                :((f.recommendation&&f.recommendation.score>=80)||f.best);
+    });
     for(const f of visible.slice(0,80)){
      const item=text("div","","repo-file-choice");
      const top=text("div","","repo-file-heading");
      top.append(text("strong",f.name||f.path.split("/").pop()));
-     const rec=f.recommendation;
+     const gguf=f.path.toLowerCase().endsWith(".gguf");
+     const rec=gguf?f.llm_recommendation:f.recommendation;
+     const ratedFit=gguf?(f.llm_fit||f.lmstudio_fit):f.fit;
      if(f.on_pc)top.append(text("span","✓ Installed","repo-chip repo-chip-installed"));
-     else if(rec&&rec.score!=null)top.append(text("span",rec.score+"/100 · "+rec.label,"repo-chip"));
-     else if(f.fit&&f.fit.level)top.append(text("span",f.fit.level==="good"?"✓ Fits GPU":f.fit.level==="ok"?"△ May run":"⚠ Poor fit","repo-chip"));
+     else if(rec&&rec.score!=null)top.append(text("span",rec.score+"/100 · "+rec.label+(gguf?" · Lemonade estimate":""),"repo-chip"));
+     else if(ratedFit&&ratedFit.level)top.append(text("span",ratedFit.level==="good"?"✓ Fits GPU":ratedFit.level==="ok"?"△ May run":"⚠ Poor fit","repo-chip"));
+     else if(gguf)top.append(text("span","LLM fit unknown","repo-chip"));
      item.append(top);
      if(f.path!==(f.name||f.path.split("/").pop()))item.append(text("div",f.path,"model-sub"));
-     const note=(rec&&rec.reasons&&rec.reasons.length?rec.reasons.join(" · "):f.fit&&f.fit.note)||"Compatibility not verified";
+     const note=(rec&&rec.reasons&&rec.reasons.length?rec.reasons.join(" · "):ratedFit&&ratedFit.note)||"Compatibility not verified";
      item.append(text("div",(f.size_bytes?fmt(f.size_bytes)+" · ":"")+note,"model-sub"));
+     if(gguf)item.append(text("div","GGUF file · choose an LLM runtime using Inspect repository before downloading. ComfyUI destination is not automatically an Ollama/Lemonade import.","repo-gguf-notice"));
      item.append(fileRow("",f.on_pc,repo.provider+":"+repo.id+"/"+f.path,
       {provider:repo.provider,repository:repo.id,remote_path:f.path,get folder(){return folder.value;}},f));
      results.append(item);
