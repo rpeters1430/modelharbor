@@ -635,10 +635,10 @@ function civitaiCard(item){
  const info=text("div","","browse-info");
  info.append(text("strong",item.name),text("div",[item.type,item.creator,item.downloads!=null?"↓ "+Number(item.downloads).toLocaleString():""].filter(Boolean).join(" · "),"model-sub"));
  const rated=item.versions.flatMap(v=>v.files).filter(f=>f.fit);
-  const good=rated.filter(f=>f.fit.level==="good"), best=good.find(f=>f.best)||good[0];
+  const good=rated.filter(f=>f.fit.level==="good"), best=rated.find(f=>f.best)||good[0];
   const recommendation=text("div","","discovery-reason");
   if(item.installed_version)recommendation.textContent="✓ Already installed — check versions before downloading another copy";
-  else if(best)recommendation.textContent="✓ Hardware fit: "+best.fit.note+" · "+fmt(best.size_bytes);
+  else if(best){const rec=best.recommendation;recommendation.textContent=(rec&&rec.score!=null?"★ "+rec.score+"/100 · "+rec.label+" · ":"✓ Hardware fit: ")+best.fit.note+" · "+fmt(best.size_bytes);if(rec&&rec.reasons)recommendation.title=rec.reasons.join(" · ");}
   else if(rated.length)recommendation.textContent="⚠ Review compatibility before downloading";
   else recommendation.textContent="ℹ Hardware fit unavailable — inspect versions";
   info.append(recommendation);
