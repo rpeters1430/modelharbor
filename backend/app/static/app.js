@@ -676,15 +676,82 @@ function civitaiCard(item){
 }
 // A Hugging Face or ModelScope repository: both list files with a published SHA-256.
 function repoCard(repo){
- const card=text("div","","browse-card");const info=text("div","","browse-info"),site=providerName(repo.provider);
- info.append(text("strong",repo.id),text("div",site+(repo.downloads!=null?" · ↓ "+Number(repo.downloads).toLocaleString():"")+(repo.likes?" · ♥ "+Number(repo.likes).toLocaleString():"")+(repo.created_at?" · "+repo.created_at.slice(0,10):""),"model-sub"));
- const toggle=text("button","Show files","repo-action");toggle.type="button";const files=text("div","","browse-versions");files.hidden=true;
- const folder=document.createElement("select");folder.setAttribute("aria-label","Save into folder");["loras","checkpoints","diffusion_models","text_encoders","vae","embeddings","controlnet","upscale_models"].forEach(f=>folder.append(new Option("Save into "+f,f)));if(repo.folder)folder.value=repo.folder;
- toggle.addEventListener("click",async()=>{files.hidden=!files.hidden;if(files.hidden||files.childElementCount)return;files.append(text("p","Loading files…","muted"));
-  try{const listing=await apiRequest("/api/"+repo.provider+"/repository?"+new URLSearchParams({repo:repo.id,agent:browseAgent()||""}));files.replaceChildren(folder);
-   if(!listing.files.length)files.append(text("p","No model files in this repository.","muted"));
-   listing.files.forEach(f=>files.append(fileRow(f.path+(f.size_bytes?" · "+fmt(f.size_bytes):"")+(f.sha256?"":" · no published hash"),f.on_pc,repo.provider+":"+repo.id+"/"+f.path,{provider:repo.provider,repository:repo.id,remote_path:f.path,get folder(){return folder.value;}},f)));}
-  catch(err){files.replaceChildren(text("p",err.message,"muted"));}});
+ const card=text("article","","browse-card repo-discovery-card"),site=providerName(repo.provider);
+ const isHF=repo.provider==="huggingface";
+ const tags=Array.isArray(repo.tags)?repo.tags:[];
+ const task=repo.pipeline_tag||"";
+ const isLora=repo.folder==="loras"||tags.includes("lora");
+ const title=repo.id.split("/").pop(),author=repo.id.split("/")[0];
+ const hero=text("div","","repo-discovery-hero");
+ hero.append(text("span",isLora?"◈":/video/i.test(task)?"▣":/image/i.test(task)?"▧":"◇","repo-hero-icon"),
+             text("span",isLora?"LoRA":/video/i.test(task)?"Video":/image/i.test(task)?"Image model":"Model repository","repo-hero-type"));
+ if(isHF)card.append(hero);
+ const info=text("div","","browse-info");
+ info.append(text("strong",title,"repo-title"),text("div","by "+author+" · "+site,"model-sub"));
+ const chips=text("div","","repo-chips");
+ if(task)chips.append(text("span",task.replace(/-/g," "),"repo-chip"));
+ if(isLora)chips.append(text("span","LoRA","repo-chip"));
+ if(repo.gated)chips.append(text("span","Access approval may be required","repo-chip repo-chip-warning"));
+ const format=tags.find(t=>["gguf","safetensors","diffusers","transformers"].includes(t.toLowerCase()));
+ if(format)chips.append(text("span",format.toUpperCase(),"repo-chip"));
+ if(chips.childElementCount)info.append(chips);
+ const metrics=text("div","","repo-metrics");
+ if(repo.downloads!=null)metrics.append(text("span","↓ "+Number(repo.downloads).toLocaleString()+" downloads"));
+ if(repo.likes!=null)metrics.append(text("span","♥ "+Number(repo.likes).toLocaleString()+" likes"));
+ if(repo.updated_at||repo.created_at)metrics.append(text("span","Updated "+String(repo.updated_at||repo.created_at).slice(0,10)));
+ info.append(metrics);
+ if(isHF)info.append(text("p","Select files to check GPU fit, installed copies, and download options.","repo-explainer"));
+ const toggle=text("button","Explore model files","repo-action repo-explore");toggle.type="button";toggle.setAttribute("aria-expanded","false");
+ const files=text("div","","browse-versions repo-file-panel");files.hidden=true;
+ const folder=document.createElement("select");folder.setAttribute("aria-label","Save into folder");
+ ["loras","checkpoints","diffusion_models","text_encoders","vae","embeddings","controlnet","upscale_models"].forEach(f=>folder.append(new Option("Save into "+f,f)));
+ if(repo.folder)folder.value=repo.folder;
+ let loaded=false;
+ toggle.addEventListener("click",async()=>{
+  files.hidden=!files.hidden;
+  toggle.setAttribute("aria-expanded",String(!files.hidden));
+  toggle.textContent=files.hidden?"Explore model files":"Hide model files";
+  if(files.hidden||loaded)return;
+  files.replaceChildren(text("p","Loading repository files…","muted"));
+  try{
+   const listing=await apiRequest("/api/"+repo.provider+"/repository?"+new URLSearchParams({repo:repo.id,agent:browseAgent()||""}));
+   files.replaceChildren();
+   loaded=true;
+   if(!listing.files.length){files.append(text("p","No downloadable model files found.","muted"));return;}
+   const summary=text("div","","repo-file-summary");
+   const installed=listing.files.filter(f=>f.on_pc).length;
+   summary.append(text("strong",listing.files.length+" model files · "+installed+" already installed"));
+   const input=document.createElement("input");input.type="search";input.placeholder="Filter files or quantizations…";input.setAttribute("aria-label","Filter files in "+repo.id);
+   const compatible=document.createElement("label");compatible.className="repo-filter-toggle";
+   const check=document.createElement("input");check.type="checkbox";compatible.append(check,document.createTextNode(" Show recommended files only"));
+   const results=text("div","","repo-file-results");
+   const render=()=>{
+    results.replaceChildren();
+    const needle=input.value.trim().toLowerCase();
+    const visible=listing.files.filter(f=>(!needle||f.path.toLowerCase().includes(needle))&&(!check.checked||(f.recommendation&&f.recommendation.score>=80)||f.best));
+    for(const f of visible.slice(0,80)){
+     const item=text("div","","repo-file-choice");
+     const top=text("div","","repo-file-heading");
+     top.append(text("strong",f.name||f.path.split("/").pop()));
+     const rec=f.recommendation;
+     if(f.on_pc)top.append(text("span","✓ Installed","repo-chip repo-chip-installed"));
+     else if(rec&&rec.score!=null)top.append(text("span",rec.score+"/100 · "+rec.label,"repo-chip"));
+     else if(f.fit&&f.fit.level)top.append(text("span",f.fit.level==="good"?"✓ Fits GPU":f.fit.level==="ok"?"△ May run":"⚠ Poor fit","repo-chip"));
+     item.append(top);
+     if(f.path!==(f.name||f.path.split("/").pop()))item.append(text("div",f.path,"model-sub"));
+     const note=(rec&&rec.reasons&&rec.reasons.length?rec.reasons.join(" · "):f.fit&&f.fit.note)||"Compatibility not verified";
+     item.append(text("div",(f.size_bytes?fmt(f.size_bytes)+" · ":"")+note,"model-sub"));
+     item.append(fileRow("",f.on_pc,repo.provider+":"+repo.id+"/"+f.path,
+      {provider:repo.provider,repository:repo.id,remote_path:f.path,get folder(){return folder.value;}},f));
+     results.append(item);
+    }
+    if(!visible.length)results.append(text("p","No matching files.","muted"));
+    if(visible.length>80)results.append(text("p","Showing first 80 matches; refine the filter to see more.","muted"));
+   };
+   input.addEventListener("input",render);check.addEventListener("change",render);
+   files.append(summary,folder,input,compatible,results);render();
+  }catch(err){files.replaceChildren(text("p",err.message,"muted"));}
+ });
  const link=document.createElement("a");link.href=repo.url;link.target="_blank";link.rel="noopener noreferrer";link.textContent="Open on "+site+" ↗";link.className="model-sub";
  info.append(toggle,link);card.append(info,files);return card;
 }
