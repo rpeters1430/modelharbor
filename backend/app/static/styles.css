@@ -113,3 +113,11 @@
 }
 @media(max-width:360px){#browse-list{grid-template-columns:1fr}#browse-list .browse-card>img{height:190px}}
 @media(prefers-reduced-motion:reduce){#browse-list .browse-card{transition:none}#browse-list .browse-card:hover{transform:none}}
+
+/* Keep credential dialog usable on narrow phones. */
+#civitai-settings-dialog{box-sizing:border-box;max-width:min(94vw,480px);width:calc(100vw - 24px);padding:20px;overflow-x:hidden}
+#civitai-settings-dialog .detail{min-width:0;max-width:100%;box-sizing:border-box}
+#civitai-token-input{display:block;width:100%;min-width:0;box-sizing:border-box;min-height:44px;margin:8px 0 16px}
+#civitai-settings-dialog .dialog-actions{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px;margin-top:14px}
+#civitai-settings-dialog .dialog-actions button{min-width:0;min-height:44px;padding:10px 6px;white-space:normal}
+#civitai-token-status{overflow-wrap:anywhere;word-break:break-word}
