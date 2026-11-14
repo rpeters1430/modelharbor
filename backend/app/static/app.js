@@ -13,6 +13,18 @@ function saveToken(value, remember) {
  if (value) store(remember ? "localStorage" : "sessionStorage", s => s.setItem("modelharbor_token", value));
 }
 let view = "overview";
+$("civitai-settings").onclick=async()=>{
+ $("civitai-settings-dialog").showModal();$("civitai-token-input").value="";
+ try{const x=await apiRequest("/api/settings/civitai");$("civitai-token-status").textContent=x.configured?"Token configured":"No token configured";}catch(e){$("civitai-token-status").textContent=e.message;}
+};
+$("civitai-token-close").onclick=()=>$("civitai-settings-dialog").close();
+$("civitai-token-save").onclick=async()=>{
+ const value=$("civitai-token-input").value.trim();if(!value){$("civitai-token-status").textContent="Enter a token first";return;}
+ try{await apiRequest("/api/settings/civitai","PUT",{token:value});$("civitai-token-input").value="";$("civitai-token-status").textContent="Token saved";}catch(e){$("civitai-token-status").textContent=e.message;}
+};
+$("civitai-token-remove").onclick=async()=>{try{await apiRequest("/api/settings/civitai","DELETE");$("civitai-token-status").textContent="Token removed";}catch(e){$("civitai-token-status").textContent=e.message;}};
+$("civitai-token-test").onclick=async()=>{try{const x=await apiRequest("/api/settings/civitai/test","POST");$("civitai-token-status").textContent=x.note;}catch(e){$("civitai-token-status").textContent=e.message;}};
+
 const fmt = n => { if (!Number.isFinite(n)) return "—"; if (n === 0) return "0 B"; const u = ["B","KB","MB","GB","TB","PB"]; const i = Math.min(Math.floor(Math.log(n)/Math.log(1000)),u.length-1); return (n/Math.pow(1000,i)).toFixed(i ? 1 : 0)+" "+u[i]; };
 const text = (tag,value,cls) => { const e=document.createElement(tag); e.textContent=value; if(cls)e.className=cls; return e; };
 function showNotice(message){ $("notice").textContent=message; $("notice").hidden=!message; }

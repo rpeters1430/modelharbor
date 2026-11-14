@@ -77,7 +77,7 @@ def download_file(session, job, roots, report_progress):
         raise ValueError("Not enough free disk space")
     digest, done, last = hashlib.sha256(), 0, time.monotonic()
     # requests drops the Authorization header when a redirect leaves the original host (CDN links).
-    with session.get(job["url"], headers=auth_headers(url.hostname), stream=True, timeout=(30, 300)) as response:
+    with session.get(job["url"], headers=({"Authorization": "Bearer " + job["civitai_token"]} if url.hostname.startswith("civitai.") and job.get("civitai_token") else auth_headers(url.hostname)), stream=True, timeout=(30, 300)) as response:
         if response.status_code != 200:
             raise ValueError(explain(response.status_code, url.hostname))
         if "text/html" in response.headers.get("Content-Type", ""):
