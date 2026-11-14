@@ -103,15 +103,64 @@ def mark_best(files, key, fit_field="fit", best_field="best"):
         pick[best_field] = True
 
 
+
+def recommend_file(name, size, hw, meta=None, runtime="comfyui"):
+    """Explainable heuristic recommendation; never present estimates as benchmarks."""
+    fit = rate_llm(name, size, hw, runtime) if runtime != "comfyui" else rate(name, size, hw, meta)
+    if fit is None:
+        return {"score": None, "label": "Unknown", "reasons": ["Hardware or file size unavailable"], "confidence": "low"}
+    if fit["level"] == "bad":
+        return {"score": 0, "label": "Incompatible", "reasons": [fit["note"]], "confidence": "medium"}
+    score = 80 if fit["level"] == "good" else 45
+    reasons = [fit["note"]]
+    lower = name.lower()
+    if lower.endswith(".safetensors"):
+        score += 8
+        reasons.append("Safer tensor format")
+    if lower.endswith(PICKLE):
+        score -= 15
+        reasons.append("Legacy pickle format; prefer safetensors")
+    if re.search(r"(?<![a-z0-9])(fp32|f32)(?![a-z0-9])", lower):
+        score -= 12
+        reasons.append("FP32 may use substantially more memory than FP16")
+    if runtime != "comfyui" and re.search(r"q[2-3](?:_|\\b)|iq[1-3]_", lower):
+        score -= 12
+        reasons.append("Aggressive quantization may reduce quality")
+    if runtime != "comfyui" and re.search(r"q[45]_k_[ms]", lower):
+        score += 5
+        reasons.append("Balanced GGUF quantization candidate")
+    score = max(0, min(100, score))
+    return {"score": score, "label": "Recommended" if score >= 80 else "Usable with tradeoffs" if score >= 40 else "Not recommended",
+            "reasons": reasons, "confidence": "medium", "estimated": True}
+
+
+def mark_recommended(files, key, fit_field="fit", best_field="best"):
+    """Rank alternatives by fit and efficiency; do not recommend a known-incompatible variant."""
+    groups = {}
+    for f in files:
+        groups.setdefault(key(f), []).append(f)
+    for group in groups.values():
+        candidates = [f for f in group if f.get("recommendation", {}).get("score") is not None]
+        if len(group) < 2 or not candidates:
+            continue
+        eligible = [f for f in candidates if f["recommendation"]["score"] > 0]
+        if not eligible:
+            continue
+        # Prefer lower memory consumption on ties; do not mistake a larger file for higher quality.
+        chosen = max(eligible, key=lambda f: (f["recommendation"]["score"], -(f.get("size_bytes") or 0)))
+        chosen[best_field] = True
+
 def annotate_listing(listing, hw, llm_hw=None, lmstudio_hw=None):
     """Rate files for ComfyUI and any configured Lemonade or LM Studio runtime hardware."""
     if hw:
         for f in listing["files"]:
             f["fit"] = rate(f["name"], f.get("size_bytes"), hw)
-        mark_best(listing["files"], lambda f: variant_key(f["path"]))
+            f["recommendation"] = recommend_file(f["name"], f.get("size_bytes"), hw)
+        mark_recommended(listing["files"], lambda f: variant_key(f["path"]))
     if llm_hw:
         for f in listing["files"]:
             f["llm_fit"] = rate_llm(f["name"], f.get("size_bytes"), llm_hw)
+            f["llm_recommendation"] = recommend_file(f["name"], f.get("size_bytes"), llm_hw, runtime="Lemonade")
         mark_best(listing["files"], lambda f: variant_key(f["path"]), "llm_fit", "llm_best")
     if lmstudio_hw:
         for f in listing["files"]:
