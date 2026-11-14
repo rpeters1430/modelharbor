@@ -121,3 +121,27 @@
 #civitai-settings-dialog .dialog-actions{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px;margin-top:14px}
 #civitai-settings-dialog .dialog-actions button{min-width:0;min-height:44px;padding:10px 6px;white-space:normal}
 #civitai-token-status{overflow-wrap:anywhere;word-break:break-word}
+
+
+/* Mobile Browse regression: original .browse-card two-column grid was still active
+   inside each new gallery card, leaving a ~40px text column. */
+#browse-list .browse-card{display:flex;flex-direction:column;gap:0;padding:0;min-width:0}
+#browse-list .browse-card>img{flex:none;width:100%;max-width:100%;height:205px;border-radius:0;object-fit:cover}
+#browse-list .browse-card .browse-info{display:flex;flex-direction:column;min-width:0;width:100%;box-sizing:border-box}
+#browse-list .browse-card .browse-info>*{max-width:100%;min-width:0;box-sizing:border-box}
+#browse-list .browse-card .browse-info strong,
+#browse-list .browse-card .browse-info .model-sub,
+#browse-list .browse-card .browse-info .discovery-reason{overflow-wrap:break-word;word-break:normal;white-space:normal}
+#browse-list .browse-card .browse-versions{width:100%;box-sizing:border-box;min-width:0}
+#browse-list .browse-card .browse-file{grid-template-columns:minmax(0,1fr) auto}
+@media(max-width:640px){
+ #browse-list{grid-template-columns:minmax(0,1fr);gap:14px}
+ #browse-list .browse-card>img{height:220px}
+ #browse-list .browse-info{padding:14px}
+ #browse-list .browse-info>strong{font-size:16px}
+ #browse-list .browse-info .model-sub{font-size:12px}
+ #browse-list .discovery-reason{font-size:12px}
+}
+@media(min-width:641px) and (max-width:850px){
+ #browse-list{grid-template-columns:repeat(2,minmax(0,1fr))}
+}
