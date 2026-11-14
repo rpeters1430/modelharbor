@@ -111,8 +111,14 @@ def search_huggingface(query, kind, sort, get=fetch):
         if not repo or len(repo) > 193:
             continue
         lora = "lora" in (m.get("tags") or [])
+        tags = [str(t)[:80] for t in (m.get("tags") or []) if isinstance(t, str)]
+        pipeline = str(m.get("pipeline_tag") or "")[:80]
+        gated = bool(m.get("gated"))
+        # Listing metadata is advisory; file-level compatibility is determined after expansion.
         items.append({"provider": "huggingface", "id": repo, "url": "https://huggingface.co/" + repo,
                       "downloads": m.get("downloads"), "likes": m.get("likes"), "created_at": m.get("createdAt"),
+                      "updated_at": m.get("lastModified"), "pipeline_tag": pipeline,
+                      "tags": tags[:24], "gated": gated,
                       "folder": "loras" if lora else "checkpoints"})
     return {"items": items}
 
