@@ -470,7 +470,7 @@ def _local_hashes(db, device, path):
     if not row:
         raise HTTPException(404, "Model not found in inventory")
     if not row[0]:
-        raise HTTPException(409, "This file has not been hashed yet; wait for the next Windows sync")
+        raise HTTPException(409, "This file has not been hashed yet; wait for the agent's next sync")
     return row
 
 def _local_sha(db, device, path):
@@ -729,7 +729,7 @@ def lmstudio_action(payload: LMStudioActionRequest, x_modelharbor_token: str | N
             except (TypeError, ValueError, AttributeError):
                 runtime_status = None
             if runtime_status != "connected" or not heartbeat or int(time.time()) - heartbeat[0] > 3900:
-                raise HTTPException(409, "LM Studio is not currently reachable from its Windows agent")
+                raise HTTPException(409, "LM Studio is not currently reachable from the PC's agent")
             model_key = meta.get("model_key")
             if not isinstance(model_key, str) or not model_key:
                 raise HTTPException(409, "LM Studio model key is missing; refresh its inventory")

@@ -103,7 +103,7 @@ async function apiRequest(path,method="GET",body){
  return response.json();
 }
 async function requestVerification(file,local,status,button,controls){
- button.disabled=true;status.textContent="Verification queued; Windows hash worker will read the selected file…";
+ button.disabled=true;status.textContent="Verification queued; the PC's agent will read the selected file…";
  try{
   const job=await apiRequest("/api/hash-jobs","POST",{
    device:local.device,path:local.path,repository:repoListing.repository,remote_path:file.path
@@ -113,7 +113,7 @@ async function requestVerification(file,local,status,button,controls){
    try{
     const current=await apiRequest("/api/hash-jobs/"+encodeURIComponent(job.id));
     if(current.state==="queued"||current.state==="running"){
-     status.textContent=current.state==="running"?"Computing SHA-256 on Windows…":"Waiting for Windows hash worker…";
+     status.textContent=current.state==="running"?"Computing SHA-256 on the PC…":"Waiting for the PC's agent…";
      window.setTimeout(poll,5000);return;
     }
     if(current.state==="verified"){
@@ -200,7 +200,7 @@ const providerName=p=>({civitai:"Civitai",huggingface:"Hugging Face",modelscope:
 function linkRow(dl,label,caption,url){const a=document.createElement("a");a.href=url;a.target="_blank";a.rel="noopener noreferrer";a.textContent=caption;const dd=document.createElement("dd");dd.append(a);dl.append(text("dt",label),dd);}
 function downloadStatus(j){
  if(!j)return "Saved next to the current file. Once its SHA-256 matches the published file, the old version is deleted.";
- if(j.state==="queued")return "Waiting for the Windows agent…";
+ if(j.state==="queued")return "Waiting for the PC's agent…";
  if(j.state==="running")return j.provider==="ollama"?"Ollama is pulling the newer build…":"Downloading "+fmt(j.bytes_done)+(j.size_bytes?" of "+fmt(j.size_bytes):"")+"…";
  if(j.state==="done"&&j.provider==="ollama")return "Pulled the newer build.";
  if(j.state==="done"){
@@ -392,11 +392,11 @@ async function renderSuggestedMatches(m){
  }catch(_){box.hidden=true;}
 }
 async function queueLmStudioAction(model,action,instanceId,contextLength,status){
- status.textContent="Sending request to the Windows agent…";
+ status.textContent="Sending request to the PC's agent…";
  try{
   let job=await apiRequest("/api/lmstudio/actions","POST",{device:model.device,path:model.path,action,instance_id:instanceId||null,context_length:contextLength||null});
   const poll=async()=>{
-   status.textContent=job.state==="queued"?"Waiting for the Windows agent…":"LM Studio is processing the request…";
+   status.textContent=job.state==="queued"?"Waiting for the PC's agent…":"LM Studio is processing the request…";
    if(job.state==="queued"||job.state==="running"){
     setTimeout(async()=>{try{job=(await apiRequest("/api/downloads")).find(x=>x.id===job.id)||job;poll();}catch(err){status.textContent=err.message;}},2500);return;
    }
@@ -413,7 +413,7 @@ function renderLmStudio(m){
  const heading=text("h3","LM Studio","section-title");box.append(heading);
  box.append(text("p",[meta.architecture,meta.format,quant.name,meta.params_string,meta.max_context_length?"Max context "+Number(meta.max_context_length).toLocaleString():""].filter(Boolean).join(" · ")||"Runtime details unavailable","muted"));
  const status=text("p",runtime&&runtime.status==="unavailable"?(runtime.error||"LM Studio is unavailable"):"","muted");box.append(status);
- if(!runtimeAgent||!runtimeAgent.online||!runtime||runtime.status!=="connected"){box.append(text("p","LM Studio actions are unavailable until its Windows agent reconnects.","muted"));return;}
+ if(!runtimeAgent||!runtimeAgent.online||!runtime||runtime.status!=="connected"){box.append(text("p","LM Studio actions are unavailable until the PC's agent reconnects.","muted"));return;}
  if(loaded.length){
   loaded.forEach(instance=>{const row=text("div","","runtime-action-row");row.append(text("span","Loaded"+(instance.context_length?" · "+Number(instance.context_length).toLocaleString()+" context":""),"model-sub"));const button=text("button","Unload","repo-action");button.type="button";button.addEventListener("click",()=>queueLmStudioAction(m,"unload",instance.id,null,status));row.append(button);box.append(row);});
  }else{
@@ -494,7 +494,7 @@ function agentStatusText(a){
 }
 function renderAgents(){
  const list=$("agent-list");list.replaceChildren();
- if(!agents.length){list.append(text("p","No Windows agent has reported yet.","muted"));return;}
+ if(!agents.length){list.append(text("p","No PC agent has reported yet.","muted"));return;}
  agents.forEach(a=>{
   const card=text("div","","agent-card");const s=a.status;const busy=s&&["scanning","hashing","uploading"].includes(s.phase);
   card.append(text("strong",a.device),text("span",a.online?"● Online":"● Offline",a.online?"agent-online":"agent-offline"));
@@ -527,7 +527,7 @@ function fillBrowseAgents(){
  if(agents.some(a=>a.device===current))select.value=current;select.hidden=agents.length<2;
 }
 function newDownloadStatus(j){
- if(j.state==="queued")return "Waiting for the Windows agent…";
+ if(j.state==="queued")return "Waiting for the PC's agent…";
  if(j.state==="running"&&j.provider==="ollama")return "Ollama is pulling "+j.file_name+"…";
  if(j.state==="running"&&j.provider.startsWith("lmstudio-"))return "LM Studio is processing a "+j.provider.slice("lmstudio-".length)+" request…";
  if(j.state==="running"&&j.provider==="lmstudio")return "LM Studio is downloading "+(j.bytes_done?fmt(j.bytes_done)+(j.size_bytes?" of "+fmt(j.size_bytes):"")+" ":"")+j.file_name+"…";
@@ -590,7 +590,7 @@ function fileRow(label,onPc,ref,request,f={},behavior={}){
   if(installed()){status.textContent=server?"✓ In "+server.label:"✓ On your PC";status.classList.add("on-pc");button.hidden=true;return;}
   button.hidden=false;
   show(browseJobs.find(j=>j.source_ref===currentRef()&&j.state!=="failed"));
-  if(!browseAgent()){button.disabled=true;status.textContent="No Windows agent connected";}
+  if(!browseAgent()){button.disabled=true;status.textContent="No PC agent connected";}
   else button.disabled=false;
  };
  if(behavior.destination)behavior.destination.addEventListener("change",render);
@@ -782,7 +782,7 @@ function render(){
  $("updates-count").textContent=files.filter(m=>m.update).length.toLocaleString();
  $("identified-count").textContent=files.filter(m=>m.source).length+" of "+files.length+" files identified";
  const toMatch=files.filter(isUnmatched).length;$("unmatched-link").hidden=!toMatch;$("unmatched-link").textContent=toMatch+" to match →";
- fill($("recent"),models.slice(0,8),"No models indexed yet. Run the Windows inventory agent.");
+ fill($("recent"),models.slice(0,8),"No models indexed yet. Run the inventory agent on your PC.");
  const counts=new Map();models.forEach(m=>counts.set(m.kind,(counts.get(m.kind)||0)+1));
  $("types").replaceChildren();[...counts].sort((a,b)=>b[1]-a[1]).slice(0,10).forEach(([kind,count])=>{const row=text("div");const line=text("div","","type-line");line.append(text("span",kind),text("span",String(count)));const bar=text("div","","bar");const inner=text("span");inner.style.width=(count/Math.max(models.length,1)*100)+"%";bar.append(inner);row.append(line,bar);$("types").append(row);});
  if(!counts.size)$("types").append(text("p","Model categories will appear after the first inventory scan.","muted"));

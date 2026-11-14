@@ -1,5 +1,5 @@
 """User-approved update downloads. The NAS decides what to fetch and the expected SHA-256;
-the Windows agent downloads next to the old file and never overwrites it. The old file is
+the PC's agent downloads next to the old file and never overwrites it. The old file is
 deleted only when the user asks after a verified download (see request_cleanup)."""
 import json
 import re

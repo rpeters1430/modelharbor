@@ -411,7 +411,7 @@ def _word_list(raw):
     return [raw] if raw else []
 
 # Lemonade's checkpoint for a model it pulled itself: "owner/repo" plus an optional ":variant".
-# Local files are Windows paths ("C:\AI\x.gguf") and never match.
+# Local files are Windows or Linux paths ("C:\AI\x.gguf", "/home/me/x.gguf") and never match.
 HF_CHECKPOINT = re.compile(r"^([A-Za-z0-9][\w.-]{0,95}/[A-Za-z0-9][\w.-]{0,95})(?::([\w .()+,-]{1,200}))?$")
 
 def hf_checkpoint(checkpoint):

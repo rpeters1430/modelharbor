@@ -56,7 +56,7 @@ def request(db, device, path):
     if reason := ineligible(name, kind):
         raise HTTPException(422, reason)
     if not sha:
-        raise HTTPException(409, "This file has not been hashed yet; wait for the next Windows sync")
+        raise HTTPException(409, "This file has not been hashed yet; wait for the agent's next sync")
     active = db.execute(f"""SELECT {','.join(FIELDS)} FROM convert_jobs WHERE device=? AND sha256=?
         AND state IN ('queued','running')""", (device, sha)).fetchone()
     if active:

@@ -90,11 +90,11 @@ def test_agent_converts_next_to_the_source_and_never_changes_it(tmp_path):
     job = {"path": str(source), "sha256": hashlib.sha256(b"weights").hexdigest()}
 
     def ok(cmd, **kwargs):
-        Path(cmd[3]).write_bytes(b"int8")
+        Path(cmd[-2]).write_bytes(b"int8")
         return subprocess.CompletedProcess(cmd, 0, "", "")
 
     def broken(cmd, **kwargs):
-        Path(cmd[3]).write_bytes(b"half")
+        Path(cmd[-2]).write_bytes(b"half")
         return subprocess.CompletedProcess(cmd, 1, "", "Traceback...\nmodel.0.weight would lose too much precision")
 
     with pytest.raises(ValueError, match="precision"):

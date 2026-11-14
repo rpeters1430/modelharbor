@@ -11,8 +11,9 @@ SCRIPT = Path(__file__).with_name("convert_int8.py")
 HEADROOM = 2 * 1024**3
 TIMEOUT = 3 * 3600
 PRECISION = re.compile(r"(?<![a-z0-9])(bf16|fp16|fp32|f16|f32)(?![a-z0-9])", re.I)
-# Keep ComfyUI responsive while a conversion runs.
+# Keep ComfyUI responsive while a conversion runs: below-normal priority on Windows, `nice` on Linux.
 FLAGS = getattr(subprocess, "CREATE_NO_WINDOW", 0) | getattr(subprocess, "BELOW_NORMAL_PRIORITY_CLASS", 0)
+NICE = [] if os.name == "nt" or not shutil.which("nice") else ["nice", "-n", "10"]
 
 
 def find_python(cfg, roots):
@@ -23,7 +24,8 @@ def find_python(cfg, roots):
     for root in roots:
         comfy = Path(root).parent
         candidates += [comfy / ".venv/Scripts/python.exe", comfy / "venv/Scripts/python.exe",
-                       comfy.parent / "python_embeded/python.exe"]
+                       comfy.parent / "python_embeded/python.exe",
+                       comfy / ".venv/bin/python", comfy / "venv/bin/python"]  # a Linux git clone
     local = Path(os.environ.get("LOCALAPPDATA", Path.home() / "AppData/Local"))
     # ComfyUI Desktop keeps models in a shared folder, away from its install.
     candidates += sorted(local.glob("Comfy-Desktop/ComfyUI-Installs/*/ComfyUI/.venv/Scripts/python.exe"))
@@ -41,7 +43,7 @@ def target_name(name):
 def convert(job, roots, python, hasher=sha256_file, run=subprocess.run):
     """Return the new file's {path, sha256, size_bytes, modified_ns}. Raises ValueError with a readable reason."""
     if not python or not Path(python).is_file():
-        raise ValueError("ComfyUI's Python was not found; set convert_python in agent.json to its python.exe")
+        raise ValueError("ComfyUI's Python was not found; set convert_python in agent.json to its Python")
     source = allowed_file(job["path"], roots)
     if not source.name.lower().endswith(".safetensors"):
         raise ValueError("Only .safetensors files can be converted")
@@ -55,7 +57,7 @@ def convert(job, roots, python, hasher=sha256_file, run=subprocess.run):
     partial = target.with_name(target.name + ".partial")
     try:
         try:
-            done = run([str(python), str(SCRIPT), str(source), str(partial), job["sha256"]], capture_output=True,
+            done = run([*NICE, str(python), str(SCRIPT), str(source), str(partial), job["sha256"]], capture_output=True,
                        text=True, timeout=TIMEOUT, creationflags=FLAGS)
         except subprocess.TimeoutExpired:
             raise ValueError("The conversion took longer than three hours and was stopped") from None

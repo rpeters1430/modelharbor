@@ -35,7 +35,7 @@ def request(db, device, path):
     if not row:
         raise HTTPException(404, "Model not found in inventory")
     if not row[0]:
-        raise HTTPException(409, "This file has not been hashed yet; wait for the next Windows sync")
+        raise HTTPException(409, "This file has not been hashed yet; wait for the agent's next sync")
     sha, file_id = row
     # Hard links (the same file in a family folder) go together, or the data would stay on disk.
     paths = [r[0] for r in db.execute("SELECT path FROM models WHERE device=? AND file_id=? ORDER BY path",
