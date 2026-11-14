@@ -83,3 +83,33 @@
 .convert-row{cursor:default;flex-wrap:wrap}.convert-row:hover{border-color:#2b3956}.convert-row>button{margin-left:auto}.convert-jobs-head{margin-top:24px}@media(max-width:750px){.convert-row .model-text{flex-basis:calc(100% - 51px)}.convert-row>button{width:100%}}@media(max-width:420px){.tabs{gap:4px}.tab{padding:11px 2px;font-size:13px}}
 
 .runtime-action-row{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin:10px 0}.runtime-action-row label{font-size:.9rem;color:#9aa6c1}.runtime-action-row input[type=number]{width:120px}.runtime-box h3,.section-title{margin:8px 0;font-size:1rem}
+
+/* Discovery refresh: image-led cards, readable fit explanations and phone-friendly controls. */
+#browse-list{display:grid;grid-template-columns:repeat(auto-fill,minmax(min(100%,260px),1fr));gap:18px;align-items:start}
+#browse-list .browse-card{margin:0;min-width:0;border:1px solid #354565;border-radius:20px;overflow:hidden;background:linear-gradient(160deg,#202e4b,#18233b);box-shadow:0 8px 28px #05091438;transition:transform .15s ease,border-color .15s ease}
+#browse-list .browse-card:hover{border-color:#7288c7;transform:translateY(-2px)}
+#browse-list .browse-card>img{display:block;width:100%;height:205px;object-fit:cover;object-position:center top}
+#browse-list .browse-info{padding:16px;display:flex;flex-direction:column;align-items:stretch;gap:9px;min-width:0}
+#browse-list .browse-info>strong{font-size:17px;line-height:1.35;overflow-wrap:anywhere}
+#browse-list .browse-info .repo-action{min-height:44px;border-radius:12px;font-weight:600}
+#browse-list .browse-info>a{align-self:flex-start;padding:5px 0}
+#browse-list .discovery-reason{font-size:12px;line-height:1.5;padding:10px 12px;border-radius:11px;background:#172a3c;color:#b9e9d7;border:1px solid #335969}
+#browse-list .browse-versions{padding:12px;border-top:1px solid #34415e;min-width:0;overflow-wrap:anywhere}
+#browse-list .browse-file{min-width:0;overflow-wrap:anywhere}
+#browse-list .browse-file button{min-height:42px}
+#browse-view .filters{gap:9px}
+#browse-view .filters select,#browse-view .filters input,#browse-view .link-import input{min-height:44px}
+@media(max-width:640px){
+ .shell{padding-left:14px;padding-right:14px}
+ #browse-list{grid-template-columns:repeat(2,minmax(0,1fr));gap:10px}
+ #browse-list .browse-card{border-radius:16px}
+ #browse-list .browse-card>img{height:150px}
+ #browse-list .browse-info{padding:11px;gap:7px}
+ #browse-list .browse-info>strong{font-size:14px}
+ #browse-list .browse-info .model-sub{font-size:11px}
+ #browse-list .browse-info .repo-action{padding:9px 6px;font-size:12px}
+ #browse-list .discovery-reason{padding:8px;font-size:11px}
+ #browse-list .browse-versions{padding:9px}
+}
+@media(max-width:360px){#browse-list{grid-template-columns:1fr}#browse-list .browse-card>img{height:190px}}
+@media(prefers-reduced-motion:reduce){#browse-list .browse-card{transition:none}#browse-list .browse-card:hover{transform:none}}
