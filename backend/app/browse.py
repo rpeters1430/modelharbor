@@ -27,6 +27,42 @@ MAX_VERSIONS = 8
 HF_KINDS = {"": {"pipeline_tag": "text-to-image"}, "lora": {"pipeline_tag": "text-to-image", "filter": "lora"},
             "image-to-image": {"pipeline_tag": "image-to-image"}, "text-to-video": {"pipeline_tag": "text-to-video"},
             "image-to-video": {"pipeline_tag": "image-to-video"}, "video-lora": {"pipeline_tag": "image-to-video", "filter": "lora"}}
+# Hugging Face does not provide a universal Civitai-style baseModel field.
+# Prefer explicit tags/model-card metadata and mark ambiguous repositories unknown.
+HF_BASE_FAMILIES = {
+    "sdxl": ("sdxl", "stable-diffusion-xl", "stable diffusion xl", "sdxl 1.0"),
+    "sd15": ("sd15", "sd-1.5", "sd1.5", "stable-diffusion-v1-5", "stable diffusion 1.5"),
+    "flux": ("flux", "flux.1", "flux1", "flux.2", "flux2", "flux-dev", "flux-schnell"),
+    "pony": ("pony", "pony-diffusion"),
+    "illustrious": ("illustrious",),
+    "qwen-image": ("qwen-image", "qwen image"),
+    "z-image": ("z-image", "zimage", "z_image"),
+}
+HF_BASE_LABELS = {"sdxl": "SDXL", "sd15": "SD 1.5", "flux": "FLUX",
+                  "pony": "Pony", "illustrious": "Illustrious",
+                  "qwen-image": "Qwen Image", "z-image": "Z-Image"}
+
+def huggingface_base_family(model):
+    """Best-effort family classification. Unknown is intentionally not a match."""
+    tags = [str(t).casefold() for t in (model.get("tags") or []) if isinstance(t, str)]
+    # Explicit model-card tags are more reliable than repository names.
+    evidence = tags + [str(model.get("base_model") or "").casefold()]
+    hits = set()
+    for family, aliases in HF_BASE_FAMILIES.items():
+        for token in evidence:
+            if any(re.search(r"(?<![a-z0-9])" + re.escape(alias) + r"(?![a-z0-9])", token) for alias in aliases):
+                hits.add(family)
+                break
+    if not hits:
+        repo = str(model.get("id") or "").casefold()
+        for family, aliases in HF_BASE_FAMILIES.items():
+            if any(re.search(r"(?<![a-z0-9])" + re.escape(alias) + r"(?![a-z0-9])", repo) for alias in aliases):
+                hits.add(family)
+    # Pony and Illustrious are SDXL-derived but have distinct LoRA ecosystems.
+    if "pony" in hits: hits.discard("sdxl")
+    if "illustrious" in hits: hits.discard("sdxl")
+    return next(iter(hits)) if len(hits) == 1 else ""
+
 HF_SORTS = {"Trending": "trendingScore", "Most Downloaded": "downloads", "Most Liked": "likes", "Newest": "createdAt"}
 
 def local_shas(db):
@@ -94,14 +130,14 @@ def list_modelscope_files(repo, get=fetch):
     files.sort(key=lambda x: x["path"].casefold())
     return {"repository": repo, "url": "https://modelscope.cn/models/" + repo + "/files", "files": files}
 
-def search_huggingface(query, kind, sort, get=fetch):
+def search_huggingface(query, kind, sort, get=fetch, base=""):
     """List Hugging Face repositories; an empty query lists the top ones for the kind and sort."""
     query = (query or "").strip()
     if len(query) > 120:
         raise HTTPException(422, "Search text too long")
-    if kind not in HF_KINDS or sort not in HF_SORTS:
+    if kind not in HF_KINDS or sort not in HF_SORTS or base not in ("", *HF_BASE_FAMILIES):
         raise HTTPException(422, "Unsupported filter")
-    params = {**HF_KINDS[kind], "sort": HF_SORTS[sort], "direction": "-1", "limit": 30}
+    params = {**HF_KINDS[kind], "sort": HF_SORTS[sort], "direction": "-1", "limit": 100 if base else 30}
     if query:
         params["search"] = query
     body = get("https://huggingface.co/api/models?" + urlencode(params))
@@ -109,6 +145,9 @@ def search_huggingface(query, kind, sort, get=fetch):
     for m in json.loads(body) if body else []:
         repo = str(m.get("id") or "")
         if not repo or len(repo) > 193:
+            continue
+        family = huggingface_base_family(m)
+        if base and family != base:
             continue
         lora = "lora" in (m.get("tags") or [])
         tags = [str(t)[:80] for t in (m.get("tags") or []) if isinstance(t, str)]
@@ -118,9 +157,11 @@ def search_huggingface(query, kind, sort, get=fetch):
         items.append({"provider": "huggingface", "id": repo, "url": "https://huggingface.co/" + repo,
                       "downloads": m.get("downloads"), "likes": m.get("likes"), "created_at": m.get("createdAt"),
                       "updated_at": m.get("lastModified"), "pipeline_tag": pipeline,
-                      "tags": tags[:24], "gated": gated,
+                      "tags": tags[:24], "gated": gated, "base_family": family,
+                      "base_label": HF_BASE_LABELS.get(family, "Unknown / unverified"),
                       "folder": "loras" if lora else "checkpoints"})
-    return {"items": items}
+    return {"items": items[:30], "base_filter": base,
+            "filter_note": "Hugging Face family matching uses published tags and repository names. Unclassified repositories are excluded from family-specific results." if base else ""}
 
 def search_civitai(query, model_type, base_model, sort, cursor, shas, get=fetch, hw=None):
     query = (query or "").strip()
