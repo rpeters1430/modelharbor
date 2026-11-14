@@ -682,11 +682,11 @@ def cleanup_result(job_id: str, payload: CleanupResult, x_modelharbor_token: str
             return downloads.finish_cleanup(db, job_id, payload.agent, payload.error)
 
 @app.get("/api/browse/huggingface")
-def browse_huggingface(q: str = "", type: str = "", sort: str = "Trending",
+def browse_huggingface(q: str = "", type: str = "", sort: str = "Trending", base: str = "",
                        x_modelharbor_token: str | None = Header(default=None)):
     authorize(x_modelharbor_token)
     try:
-        return browse.search_huggingface(q, type, sort)
+        return browse.search_huggingface(q, type, sort, base=base)
     except (OSError, ValueError) as exc:
         raise HTTPException(502, "Hugging Face is unavailable right now") from exc
 
