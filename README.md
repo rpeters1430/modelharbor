@@ -106,3 +106,7 @@ That only previews what is found. `agent/modelharbor_agent.py` does the uploadin
 - **Job recovery:** improve reconciliation and safe controls for long-running operations.
 
 Licensed as specified in the repository. No license is implied by this README.
+
+### Removing an old device
+
+In **Devices**, offline PC agents have a **Remove device** button. Confirm to remove the device, its ComfyUI/Ollama/Lemonade/LM Studio inventory, and related jobs and model links from ModelHarbor. Actual model files on the computer are untouched. Online devices cannot be removed. If the agent reconnects, it registers again and its next sync restores its inventory.

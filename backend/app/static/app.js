@@ -509,7 +509,18 @@ function renderAgents(){
   card.append(text("div",a.worker_running?"Background task running (checks for scan requests and downloads)":busy?"Background task paused while a scan runs"+(a.worker_seen?" · last seen "+ago(a.worker_seen):"")+" (it checks for jobs again when the scan ends)":"Background task not running"+(a.worker_seen?" · last seen "+ago(a.worker_seen):"")+". Start “ModelHarbor Hash Worker” in Task Scheduler.","model-sub"));
   const button=text("button",busy?"Scanning…":a.scan_requested?"Scan requested":"Scan now","repo-action");button.type="button";button.disabled=!!busy||a.scan_requested;
   button.addEventListener("click",async()=>{button.disabled=true;try{await apiRequest("/api/agents/"+encodeURIComponent(a.device)+"/scan","POST");await pollAgents();}catch(err){showNotice(err.message);button.disabled=false;}});
-  card.append(button);list.append(card);
+  card.append(button);
+  if(!a.online){
+   const remove=text("button","Remove device","repo-action danger");remove.type="button";
+   remove.addEventListener("click",async()=>{
+    if(!confirm("Remove "+a.device+" from ModelHarbor?\n\nThis removes all of its model inventory and related jobs from the app. Model files on the computer are not deleted.\n\nIf its agent reconnects, the device will appear again."))return;
+    remove.disabled=true;
+    try{await apiRequest("/api/agents/"+encodeURIComponent(a.device),"DELETE");await refresh();}
+    catch(err){showNotice(err.message);remove.disabled=false;}
+   });
+   card.append(remove);
+  }
+  list.append(card);
  });
 }
 let agentsBusy=false;
