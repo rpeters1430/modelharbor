@@ -701,6 +701,7 @@ function repoCard(repo){
  if(repo.updated_at||repo.created_at)metrics.append(text("span","Updated "+String(repo.updated_at||repo.created_at).slice(0,10)));
  info.append(metrics);
  if(isHF)info.append(text("p","Select files to check GPU fit, installed copies, and download options.","repo-explainer"));
+ if(isHF){const inspect=text("button","Inspect for Ollama / Lemonade / LM Studio","repo-action");inspect.type="button";inspect.onclick=()=>inspectLink(repo.url);info.append(inspect);}
  const toggle=text("button","Explore model files","repo-action repo-explore");toggle.type="button";toggle.setAttribute("aria-expanded","false");
  const files=text("div","","browse-versions repo-file-panel");files.hidden=true;
  const folder=document.createElement("select");folder.setAttribute("aria-label","Save into folder");
@@ -750,7 +751,7 @@ function repoCard(repo){
      if(f.path!==(f.name||f.path.split("/").pop()))item.append(text("div",f.path,"model-sub"));
      const note=(rec&&rec.reasons&&rec.reasons.length?rec.reasons.join(" · "):ratedFit&&ratedFit.note)||"Compatibility not verified";
      item.append(text("div",(f.size_bytes?fmt(f.size_bytes)+" · ":"")+note,"model-sub"));
-     if(gguf)item.append(text("div","GGUF file · choose an LLM runtime using Inspect repository before downloading. ComfyUI destination is not automatically an Ollama/Lemonade import.","repo-gguf-notice"));
+     if(gguf)item.append(text("div","GGUF file · use Inspect repository to choose an LLM runtime. Download here saves a file; it does not import into Ollama or Lemonade.","repo-gguf-notice"));
      item.append(fileRow("",f.on_pc,repo.provider+":"+repo.id+"/"+f.path,
       {provider:repo.provider,repository:repo.id,remote_path:f.path,get folder(){return folder.value;}},f));
      results.append(item);
