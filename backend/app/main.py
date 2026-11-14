@@ -260,6 +260,33 @@ def agents(x_modelharbor_token: str | None = Header(default=None)):
             "scan_requested": bool(r[14]), "hardware": json.loads(r[15]) if r[15] else None})
     return result
 
+@app.delete("/api/agents/{device}")
+def remove_agent(device: str, x_modelharbor_token: str | None = Header(default=None)):
+    """Forget an offline PC and its app records; never request filesystem deletion."""
+    authorize(x_modelharbor_token)
+    with closing(connect()) as db:
+        with db:
+            # Serialize the online check with heartbeats and worker polls.
+            db.execute("BEGIN IMMEDIATE")
+            row = db.execute("""SELECT h.last_seen,COALESCE(s.worker_seen,0)
+                FROM agent_heartbeats h LEFT JOIN agent_status s ON s.device=h.device
+                WHERE h.device=?""", (device,)).fetchone()
+            if row is None:
+                raise HTTPException(404, "Unknown device")
+            if int(time.time()) - max(row) <= 3900:
+                raise HTTPException(409, "This device is online. Stop its agent before removing it.")
+            sources = (device, *(device + ":" + runtime for runtime in
+                                ("comfyui", "ollama", "lemonade", "lmstudio")))
+            placeholders = ",".join("?" for _ in sources)
+            removed = db.execute(f"DELETE FROM models WHERE device IN ({placeholders})", sources).rowcount
+            for table in ("selected_matches", "hash_jobs"):
+                db.execute(f"DELETE FROM {table} WHERE device IN ({placeholders})", sources)
+            for table in ("download_jobs", "delete_jobs", "convert_jobs"):
+                db.execute(f"DELETE FROM {table} WHERE agent=? OR device IN ({placeholders})", (device, *sources))
+            db.execute("DELETE FROM agent_status WHERE device=?", (device,))
+            db.execute("DELETE FROM agent_heartbeats WHERE device=?", (device,))
+    return {"ok": True, "device": device, "models_removed": removed}
+
 def _hardware(db, agent, column="hardware"):
     """The agent PC's hardware, or with column="lemonade"/"lmstudio" that LLM runtime's PC,
     as the agent last reported it."""
