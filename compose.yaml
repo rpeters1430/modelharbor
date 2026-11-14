@@ -8,6 +8,7 @@ services:
     environment:
       MODELHARBOR_DB: /data/modelharbor.sqlite3
       MODELHARBOR_AGENT_TOKEN: ${MODELHARBOR_AGENT_TOKEN:?Set MODELHARBOR_AGENT_TOKEN in .env}
+      MODELHARBOR_CREDENTIAL_KEY: ${MODELHARBOR_CREDENTIAL_KEY:?Set MODELHARBOR_CREDENTIAL_KEY in .env (32+ random characters)}
     volumes:
       - modelharbor_data:/data
     security_opt:
