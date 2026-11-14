@@ -375,8 +375,8 @@ def discover(provider: str, q: str, x_modelharbor_token: str | None = Header(def
 def huggingface_repository(repo: str, q: str = "", agent: str = "", x_modelharbor_token: str | None = Header(default=None)):
     authorize(x_modelharbor_token)
     with closing(connect()) as db:
-        shas, hw = browse.local_shas(db), _hardware(db, agent)
-    return fit.annotate_listing(browse.mark_huggingface(list_model_files(repo, q), shas), hw)
+        shas, hw, llm_hw, lmstudio_hw = browse.local_shas(db), _hardware(db, agent), _llm_hardware(db, agent), _hardware(db, agent, "lmstudio")
+    return fit.annotate_listing(browse.mark_huggingface(list_model_files(repo, q), shas), hw, llm_hw, lmstudio_hw)
 
 @app.get("/api/huggingface/inspect")
 def huggingface_inspect(url: str, agent: str = "", x_modelharbor_token: str | None = Header(default=None)):
