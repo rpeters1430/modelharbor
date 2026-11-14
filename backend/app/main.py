@@ -17,7 +17,7 @@ from urllib.parse import quote
 from .hf_repository import list_model_files, validate_repo
 from .hf_inspect import inspect_huggingface
 from .suggest_matches import suggest_matches, link_huggingface
-from . import browse, converts, deletes, downloads, fit, civitai_credentials
+from . import browse, converts, deletes, downloads, fit, civitai_credentials, workflow_audit
 from .sources import _civitai_model, _file_sha, fetch
 from .sources import annotate, ignore_key, civitai_check, civitai_link, civitai_unlink, civitai_versions, ensure_tables as ensure_source_tables, start_worker
 from .hash_matches import ensure_tables, queue_job, claim_job, finish_job, get_job, select_match, selected_for_inventory
@@ -159,6 +159,21 @@ def _migrate(db):
     deletes.ensure_tables(db)
     converts.ensure_tables(db)
     db.commit()
+
+class WorkflowAuditRequest(BaseModel):
+    workflow: dict
+    device: str = ""
+
+@app.post("/api/workflows/audit")
+def audit_workflow(payload: WorkflowAuditRequest, x_modelharbor_token: str | None = Header(default=None)):
+    """Analyze a client-supplied workflow without storing or executing it."""
+    authorize(x_modelharbor_token)
+    if len(json.dumps(payload.workflow)) > 2_000_000:
+        raise HTTPException(413, "Workflow exceeds 2 MB")
+    with closing(connect()) as db:
+        rows = db.execute("SELECT device,path,name FROM models WHERE device LIKE '%:comfyui'").fetchall()
+    return workflow_audit.audit(payload.workflow,
+        [{"device": row[0], "path": row[1], "name": row[2]} for row in rows], payload.device)
 
 @app.get("/api/health")
 def health():
