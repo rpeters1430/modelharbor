@@ -113,3 +113,5 @@
 }
 @media(max-width:360px){#browse-list{grid-template-columns:1fr}#browse-list .browse-card>img{height:190px}}
 @media(prefers-reduced-motion:reduce){#browse-list .browse-card{transition:none}#browse-list .browse-card:hover{transform:none}}
+
+.workflow-audit{margin:14px 0 20px;padding:16px;border:1px solid var(--border,#34415e);border-radius:16px}.workflow-audit input{display:block;max-width:100%;margin:12px 0}.workflow-dependency{padding:12px 0;border-bottom:1px solid #35415a;overflow-wrap:anywhere}.workflow-dependency strong{display:block}.workflow-dependency button{margin-top:8px;min-height:40px}
