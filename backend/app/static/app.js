@@ -636,7 +636,8 @@ function fileRow(label,onPc,ref,request,f={},behavior={}){
   status.classList.remove("on-pc");
   if(installed()){status.textContent=server?"✓ In "+server.label:"✓ On your PC";status.classList.add("on-pc");button.hidden=true;return;}
   button.hidden=false;
-  show(browseJobs.find(j=>j.source_ref===currentRef()&&j.state!=="failed")||browseJobs.find(j=>j.source_ref===currentRef()&&j.state==="failed"));
+  const matchesJob=j=>j.source_ref===currentRef()&&(!request.ollama_model||j.device===browseAgent()+":ollama");
+  show(browseJobs.find(j=>matchesJob(j)&&j.state!=="failed")||browseJobs.find(j=>matchesJob(j)&&j.state==="failed"));
   if(!browseAgent()){button.disabled=true;status.textContent="No PC agent connected";}
   else button.disabled=false;
  };
@@ -850,10 +851,18 @@ function hfInspectCard(data){
 }
 async function inspectLink(url){
  url=(url||"").trim();if(!url)return;
- const list=$("browse-list");list.replaceChildren(text("p","Inspecting Hugging Face repository…","muted"));
+ const list=$("browse-list");list.replaceChildren(text("p","Inspecting model link…","muted"));
  $("browse-results").textContent="Inspecting link…";$("browse-more").hidden=true;
  try{
   browseJobs=await apiRequest("/api/downloads").catch(()=>[]);
+  if(/^(?:https?:\/\/)?ollama\.com(?:\/|$)/i.test(url)||($("browse-provider").value==="ollama"&&!/^https?:\/\//i.test(url))){
+   const data=await apiRequest("/api/ollama/inspect?"+new URLSearchParams({model:url}));
+   const card=text("div","","browse-card"),info=text("div","","browse-info");
+   info.append(text("strong",data.name),text("p","Downloads through Ollama on the selected PC, including bundled model layers and configuration. Ollama must be running there.","muted"));
+   const link=document.createElement("a");link.href=data.url;link.target="_blank";link.rel="noopener noreferrer";link.textContent="Open on Ollama ↗";info.append(link);
+   card.append(info,fileRow(data.name,()=>models.some(m=>m.device===browseAgent()+":ollama"&&m.name===data.name),"ollama:"+data.name,{provider:"ollama",ollama_model:data.name}));
+   list.replaceChildren(card);$("browse-results").textContent="1 Ollama model";return;
+  }
   const data=await apiRequest("/api/huggingface/inspect?"+new URLSearchParams({url,agent:browseAgent()||""}));
   list.replaceChildren(hfInspectCard(data));
   $("browse-results").textContent="1 repository ("+(data.base_model?data.base_model+" ":"")+data.model_type+")";
@@ -863,6 +872,7 @@ async function inspectLink(url){
 }
 async function browseSearch(more){
  const list=$("browse-list"),provider=$("browse-provider").value,q=$("browse-q").value.trim();
+ if(!more&&provider==="ollama")return inspectLink(q);
  if(!more&&(q.startsWith("http://")||q.startsWith("https://")||q.includes("huggingface.co")||q.includes("hf.co")||(provider==="huggingface"&&/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(q)))){
   return inspectLink(q);
  }

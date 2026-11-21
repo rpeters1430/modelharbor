@@ -124,3 +124,25 @@ def test_new_lemonade_download_uses_the_repository_listing(tmp_path, monkeypatch
         "lemonade", "user.unsloth-Qwen3-8B-Q4_K_M", "pc:lemonade", 5_000_000_000)
     assert client.post("/api/downloads/new", headers=headers, json={**body, "remote_path": "a/dup.gguf"}).status_code == 422
     assert client.post("/api/downloads/new", headers=headers, json={**body, "remote_path": "missing.gguf"}).status_code == 404
+
+def test_native_ollama_inspect_and_queue(tmp_path, monkeypatch):
+    from backend.app import main
+    monkeypatch.setattr(main, 'DB', tmp_path / 'ollama.sqlite3')
+    # Native registry pulls must not be looked up on Hugging Face.
+    def unexpected(*args, **kwargs):
+        raise AssertionError('Unexpected Hugging Face lookup')
+    monkeypatch.setattr(main, 'list_model_files', unexpected)
+    client = TestClient(app)
+    headers = {'X-ModelHarbor-Token': 'test-token'}
+    url = 'https://ollama.com/huihui_ai/gemma-4-abliterated:12b'
+    assert client.get('/api/ollama/inspect', params={'model': url}).status_code == 401
+    inspected = client.get('/api/ollama/inspect', params={'model': url}, headers=headers)
+    assert inspected.status_code == 200
+    assert inspected.json() == {'name': 'huihui_ai/gemma-4-abliterated:12b', 'url': url}
+    payload = {'agent': 'pc', 'provider': 'ollama', 'ollama_model': url}
+    queued = client.post('/api/downloads/new', json=payload, headers=headers)
+    assert queued.status_code == 202
+    assert queued.json()['file_name'] == inspected.json()['name']
+    assert client.post('/api/downloads/new', json=payload, headers=headers).json()['id'] == queued.json()['id']
+    payload['ollama_model'] = 'https://evil.com/model'
+    assert client.post('/api/downloads/new', json=payload, headers=headers).status_code == 422

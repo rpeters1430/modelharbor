@@ -722,7 +722,15 @@ def browse_civitai(q: str = "", type: str = "", base: str = "", sort: str = "Mos
     except (OSError, ValueError) as exc:
         raise HTTPException(502, "Civitai is unavailable right now") from exc
 
+@app.get("/api/ollama/inspect")
+def inspect_ollama(model: str, x_modelharbor_token: str | None = Header(default=None)):
+    authorize(x_modelharbor_token)
+    name = downloads.parse_ollama_model(model)
+    page = name if "/" in name else "library/" + name
+    return {"name": name, "url": "https://ollama.com/" + quote(page, safe="/:")}
+
 class NewDownload(BaseModel):
+    ollama_model: str | None = Field(default=None, max_length=512)
     agent: str = Field(min_length=1, max_length=100)
     provider: str = Field(pattern=r"^(civitai|huggingface|modelscope|ollama|lemonade|lmstudio)$")
     model_id: int | None = Field(default=None, ge=1)
@@ -739,6 +747,11 @@ def new_download(payload: NewDownload, x_modelharbor_token: str | None = Header(
     """Download a model that is not on the PC. URL, file name and hash come from the provider, not the client."""
     authorize(x_modelharbor_token)
     extra = {}
+    if payload.provider == "ollama" and payload.ollama_model is not None:
+        name = downloads.parse_ollama_model(payload.ollama_model)
+        with closing(connect()) as db:
+            with db:
+                return downloads.create_ollama_pull(db, payload.agent, name)
     if payload.provider in ("ollama", "lemonade", "lmstudio"):  # a Hugging Face GGUF, pulled by the PC's LLM server
         repo = validate_repo(payload.repository or "")
         files = list_model_files(repo)["files"]
