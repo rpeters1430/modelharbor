@@ -310,3 +310,39 @@ def test_pull_ollama_streams_progress_and_needs_success(monkeypatch):
                           (['{"status":"pulling abc","completed":5}'], "before the pull finished")):
         with pytest.raises(ValueError, match=reason):
             pull_ollama(LemonadeSession(LemonadeResponse(lines=lines)), "http://o", "x:y")
+
+@pytest.mark.parametrize('value,expected', [
+    ('https://ollama.com/huihui_ai/gemma-4-abliterated:12b', 'huihui_ai/gemma-4-abliterated:12b'),
+    ('https://ollama.com/library/llama3.2', 'llama3.2:latest'),
+    ('ollama.com/library/llama3.2%3A3b', 'llama3.2:3b'),
+    (' huihui_ai/gemma-4-abliterated:12b ', 'huihui_ai/gemma-4-abliterated:12b'),
+    ('qwen3', 'qwen3:latest'),
+])
+def test_ollama_website_names(value, expected):
+    assert downloads.parse_ollama_model(value) == expected
+
+@pytest.mark.parametrize('value', [
+    '', 'https://evil.com/library/model', 'http://ollama.com/library/model',
+    'https://ollama.com@evil.com/library/model', 'https://ollama.com:443/library/model',
+    'https://ollama.com/library/model?tag=other', 'https://ollama.com/library/model#other',
+    'https://ollama.com/library/model/tags', '../model', 'owner/../model',
+    'model:tag/other', 'hf.co/owner/model:tag', 'https://ollama.com/library/model%2F..',
+])
+def test_ollama_website_rejects_non_model_links(value):
+    with pytest.raises(HTTPException) as error:
+        downloads.parse_ollama_model(value)
+    assert error.value.status_code == 422
+
+def test_native_ollama_job_lifecycle_and_agent_isolation(db):
+    name = downloads.parse_ollama_model('https://ollama.com/huihui_ai/gemma-4-abliterated:12b')
+    job = downloads.create_ollama_pull(db, 'pc', name)
+    assert job['provider'] == 'ollama'
+    assert job['source_ref'] == 'ollama:' + name
+    assert downloads.create_ollama_pull(db, 'pc', name)['id'] == job['id']
+    assert downloads.create_ollama_pull(db, 'other', name)['id'] != job['id']
+    claim = downloads.claim(db, 'pc')
+    assert claim['file_name'] == name and claim['url'] is None
+    assert claim['device'] == 'pc:ollama'
+    downloads.progress(db, job['id'], 'pc', 123)
+    assert downloads.finish(db, job['id'], 'pc', None, None, 'ollama://' + name)['state'] == 'done'
+    assert db.execute("SELECT scan_requested_at FROM agent_status WHERE device='pc'").fetchone()[0]

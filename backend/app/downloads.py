@@ -6,7 +6,7 @@ import re
 import time
 import uuid
 from pathlib import PurePosixPath
-from urllib.parse import quote
+from urllib.parse import quote, unquote, urlsplit
 from fastapi import HTTPException
 from .intelligence import physical_device
 from .sources import annotate
@@ -231,9 +231,31 @@ def ollama_name(repo, remote_path):
     """Return Ollama's Hugging Face name using the exact GGUF filename as its tag."""
     return f"hf.co/{repo}:{_single_gguf(remote_path, 'Ollama').name}"
 
+def parse_ollama_model(value):
+    """Normalize public Ollama model names and model-page links."""
+    value = value.strip()
+    if value.startswith("ollama.com/"):
+        value = "https://" + value
+    if "://" in value:
+        url = urlsplit(value)
+        if url.scheme != "https" or url.netloc != "ollama.com" or url.query or url.fragment:
+            raise HTTPException(422, "Use an HTTPS ollama.com model link or model:tag")
+        value = unquote(url.path).strip("/")
+    if value.startswith("library/"):
+        value = value[len("library/"):]
+        if "/" in value:
+            raise HTTPException(422, "Use an Ollama model page, not a tags or file page")
+    if not re.fullmatch(r"(?:[A-Za-z0-9][A-Za-z0-9_-]{0,95}/)?[A-Za-z0-9][A-Za-z0-9_.-]{0,95}(?::[A-Za-z0-9_][A-Za-z0-9_.-]{0,95})?", value):
+        raise HTTPException(422, "Use an Ollama model name with an optional namespace and tag")
+    return value if ":" in value else value + ":latest"
+
 def create_ollama(db, agent, repo, remote_path):
     """Queue an Ollama pull of a Hugging Face GGUF file. Ollama checks the layer digests itself."""
     name = ollama_name(repo, remote_path)
+    return create_ollama_pull(db, agent, name)
+
+def create_ollama_pull(db, agent, name):
+    """Queue a native pull; Ollama verifies the model layers."""
     source_ref = "ollama:" + name
     existing = db.execute(f"SELECT {','.join(FIELDS)} FROM download_jobs WHERE source_ref=? AND agent=? AND state IN (?,?)",
                           (source_ref, agent, *ACTIVE)).fetchone()
