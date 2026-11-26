@@ -1,6 +1,6 @@
 # ModelHarbor
 
-Self-hosted, mobile-friendly AI model inventory and management dashboard for **ComfyUI**, **Ollama**, **Lemonade Server** and **LM Studio**. Designed for a lightweight Docker deployment on NAS hardware, with an inventory agent for Windows and Linux PCs.
+Self-hosted, mobile-friendly AI model inventory and management dashboard for **ComfyUI**, **llama.cpp**, **Ollama**, **Lemonade Server** and **LM Studio**. Designed for a lightweight Docker deployment on NAS hardware, with an inventory agent for Windows and Linux PCs.
 
 ## Features
 
@@ -10,6 +10,7 @@ Self-hosted, mobile-friendly AI model inventory and management dashboard for **C
 - ComfyUI scanner and job agent for Windows and Linux. Downloads go straight into the matching ComfyUI model folder. See [Linux agent setup](docs/LINUX_AGENT.md).
 - Convert tab: shrink diffusion models and text encoders that don't fit the GPU to ComfyUI's `int8_convrot` format on the PC, and recognise your own conversions. See [docs/WINDOWS_AGENT.md](docs/WINDOWS_AGENT.md).
 - Paste an Ollama website link in **Browse → Inspect link**, or choose **Ollama** and enter `model:tag`. Select the PC and click **Download**. The PC’s agent asks local Ollama to pull the exact tag, including bundled layers and configuration. Progress and failures appear in the download tray. Names without a tag use `latest`; Ollama must be running on the PC.
+- llama.cpp: hash-checked Hugging Face GGUF downloads straight into `llama-server`'s models folder, which then restarts so the model is ready. See [llama.cpp setup](docs/LLAMACPP.md).
 - Ollama, Lemonade and LM Studio inventory from their local APIs, with one-click import of Hugging Face GGUF files. Each is shown only while the PC's agent can reach it. LM Studio also supports queued load/unload actions; see [LM Studio setup](docs/LMSTUDIO.md).
 - Multi-platform Docker image published to GitHub Container Registry (GHCR).
 
@@ -93,7 +94,7 @@ pip install -r agent/requirements.txt
 python agent/scan.py --models-dir "C:\\path\\to\\ComfyUI\\models"
 ```
 
-That only previews what is found. `agent/modelharbor_agent.py` does the uploading; see [Windows agent setup](docs/WINDOWS_AGENT.md). For LLM servers, see [Lemonade setup](docs/LEMONADE.md), [Ollama setup](docs/OLLAMA.md) and [LM Studio setup](docs/LMSTUDIO.md). See [Dashboard setup](docs/DASHBOARD.md) and [Phase 1 instructions](docs/PHASE1.md) for details.
+That only previews what is found. `agent/modelharbor_agent.py` does the uploading; see [Windows agent setup](docs/WINDOWS_AGENT.md). For LLM servers, see [llama.cpp setup](docs/LLAMACPP.md), [Lemonade setup](docs/LEMONADE.md), [Ollama setup](docs/OLLAMA.md) and [LM Studio setup](docs/LMSTUDIO.md). See [Dashboard setup](docs/DASHBOARD.md) and [Phase 1 instructions](docs/PHASE1.md) for details.
 
 ## Container publishing
 

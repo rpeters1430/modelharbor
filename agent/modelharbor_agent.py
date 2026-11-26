@@ -12,6 +12,7 @@ from scan import scan
 from ollama_scan import collect
 import lemonade_scan
 import lmstudio_scan
+import llamacpp_scan
 from hash_worker import process_one
 from hash_cache import fill_hashes
 from hardware import detect as detect_hardware
@@ -92,6 +93,14 @@ def run_once(cfg, token, dry_run=False, reporter=None, lock=None):
                 continue
             reporter.update("scanning", current=str(root), done=len(comfy))
             comfy.extend(scan(Path(root), device + ":comfyui"))
+        # llama.cpp: the GGUF files in llama-server's --models-dir. None = configured but unreadable.
+        llama_dir = cfg.get("llamacpp_models_dir")
+        llamacpp = [] if not llama_dir else None
+        if llama_dir:
+            if Path(llama_dir).is_dir():
+                llamacpp = llamacpp_scan.scan(Path(llama_dir), device + ":llamacpp")
+            else:
+                LOG.warning("llama.cpp models folder missing; preserving previous inventory: %s", llama_dir)
         if cfg.get("hash_models", True) and not dry_run:
             def hashing(done, total, done_bytes, total_bytes, path):
                 reporter.update("hashing", done=done, total=total, done_bytes=done_bytes,
@@ -101,7 +110,7 @@ def run_once(cfg, token, dry_run=False, reporter=None, lock=None):
                         os.utime(lock)
                     except OSError:
                         pass
-            fill_hashes(comfy, cfg.get("hash_cache") or DEFAULT_CONFIG.with_name("hashes.json"), progress=hashing)
+            fill_hashes(comfy + (llamacpp or []), cfg.get("hash_cache") or DEFAULT_CONFIG.with_name("hashes.json"), progress=hashing)
         ollama = None
         if cfg.get("ollama_enabled", True):
             try:
@@ -137,7 +146,9 @@ def run_once(cfg, token, dry_run=False, reporter=None, lock=None):
         LOG.info("Found %d ComfyUI models, %s Ollama models, %s Lemonade models and %s LM Studio models", len(comfy),
                  len(ollama) if ollama is not None else "unavailable", len(lemonade) if lemonade is not None else "unavailable",
                  len(lmstudio) if lmstudio is not None else "disabled or unavailable")
-        llms = (ollama or []) + (lemonade or []) + (lmstudio or [])
+        if llama_dir:
+            LOG.info("Found %s llama.cpp models", len(llamacpp) if llamacpp is not None else "unavailable")
+        llms = (ollama or []) + (lemonade or []) + (lmstudio or []) + (llamacpp or [])
         if dry_run:
             for m in (comfy + llms)[:25]:
                 print(m["kind"], m["name"])
@@ -153,6 +164,8 @@ def run_once(cfg, token, dry_run=False, reporter=None, lock=None):
         for runtime, found in (("ollama", ollama), ("lemonade", lemonade), ("lmstudio", lmstudio)):
             if found is not None or not cfg.get(runtime + "_enabled", runtime != "lmstudio"):
                 post_inventory(session, server, token, device + ":" + runtime, found or [])
+        if llamacpp is not None:  # an empty list also clears it when llama.cpp is not configured
+            post_inventory(session, server, token, device + ":llamacpp", llamacpp)
         # Heartbeat is independent of inventory; never modifies model files.
         response = session.post(server.rstrip("/") + "/api/agents/heartbeat",
             headers={"X-ModelHarbor-Token": token},
@@ -162,11 +175,13 @@ def run_once(cfg, token, dry_run=False, reporter=None, lock=None):
                   "lmstudio_count": len(lmstudio) if lmstudio is not None else 0 if not cfg.get("lmstudio_enabled", False) else None,
                   "lemonade": lemonade_info,
                   "lmstudio": lmstudio_info,
+                  "llamacpp_count": len(llamacpp) if llama_dir and llamacpp is not None else None,
                   "hardware": detect_hardware()}, timeout=20)
         response.raise_for_status()
         reporter.update("idle", done=len(comfy), total=len(comfy), message=f"Synced {len(comfy)} ComfyUI files"
                         + "".join(f", {len(found)} {label} models" for label, found in
-                                  (("Ollama", ollama), ("Lemonade", lemonade), ("LM Studio", lmstudio)) if found is not None))
+                                  (("Ollama", ollama), ("Lemonade", lemonade), ("LM Studio", lmstudio),
+                                   ("llama.cpp", llamacpp if llama_dir else None)) if found is not None))
 
 
 def _lane(name, interval, steps, stop):
@@ -203,7 +218,9 @@ def worker_lanes(cfg, token):
     # A scan can hash new files for many minutes, so it never shares a lane with deletes and cleanups.
     control = []
     if cfg.get("deletes_enabled", True):
-        control.append(("Delete", lambda s: download_worker.process_delete(s, server, token, agent, roots)))
+        control.append(("Delete", lambda s: download_worker.process_delete(
+            s, server, token, agent, roots, cfg.get("llamacpp_models_dir"),
+            cfg.get("llamacpp_restart_command", llamacpp_scan.DEFAULT_RESTART))))
     if cfg.get("downloads_enabled", True):
         control.append(("Cleanup", lambda s: download_worker.process_cleanup(s, server, token, agent, roots)))
     lanes = {"scan": [("Scan request", scan_request)],
@@ -214,7 +231,8 @@ def worker_lanes(cfg, token):
         lanes["downloads"] = [("Download", lambda s: download_worker.process_one(
             s, server, token, agent, roots, cfg.get("ollama_url", "http://127.0.0.1:11434"),
             cfg.get("lemonade_url", lemonade_scan.DEFAULT_URL), cfg.get("lemonade_load_after_pull", True),
-            cfg.get("lmstudio_url", "http://127.0.0.1:1234")))]
+            cfg.get("lmstudio_url", "http://127.0.0.1:1234"), cfg.get("llamacpp_models_dir"),
+            cfg.get("llamacpp_restart_command", llamacpp_scan.DEFAULT_RESTART)))]
     if cfg.get("converts_enabled", True):
         lanes["converts"] = [("Conversion", lambda s: convert_worker.process_convert(s, server, token, agent, roots, cfg))]
     return lanes

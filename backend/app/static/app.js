@@ -232,7 +232,7 @@ const isLlmServer=m=>m.kind.startsWith("lemonade/")||m.kind.startsWith("lmstudio
 const isUnmatched=m=>(!!m.sha256||isLlmServer(m))&&!m.source&&!m.hard_link&&!m.kind.startsWith("ollama/")&&!m.match_ignored;
 function modelRow(m){const b=text("button","", "model");b.type="button";b.append(text("span","◈","glyph"));const info=text("span","","model-text");info.append(text("div",m.name,"model-name"),text("div",m.kind+" · "+m.device+" · "+fmt(m.size_bytes)+(m.possible_duplicate?(m.duplicate_verified?" · Duplicate":" · Possible duplicate"):"")+(m.hard_link?(isLlmServer(m)?" · Alias":" · Hard link"):"")+(m.source?" · ✓ "+providerName(m.source.provider):"")+(m.update?" · ⬆ Update":"")+(isUnmatched(m)?" · Unmatched":"")+(m.match_ignored?" · Local only":""),"model-sub"));b.append(info,text("span","›","chevron"));b.addEventListener("click",()=>details(m));return b;}
 function fill(target,items,empty){target.replaceChildren();if(!items.length)target.append(text("p",empty,"muted"));else items.forEach(m=>target.append(modelRow(m)));}
-const providerName=p=>({civitai:"Civitai",huggingface:"Hugging Face",modelscope:"ModelScope",ollama:"Ollama",lemonade:"Lemonade",lmstudio:"LM Studio"})[p]||p;
+const providerName=p=>({civitai:"Civitai",huggingface:"Hugging Face",modelscope:"ModelScope",ollama:"Ollama",lemonade:"Lemonade",lmstudio:"LM Studio",llamacpp:"llama.cpp"})[p]||p;
 function linkRow(dl,label,caption,url){const a=document.createElement("a");a.href=url;a.target="_blank";a.rel="noopener noreferrer";a.textContent=caption;const dd=document.createElement("dd");dd.append(a);dl.append(text("dt",label),dd);}
 function downloadStatus(j){
  if(!j)return "Saved next to the current file. Once its SHA-256 matches the published file, the old version is deleted.";
@@ -250,8 +250,8 @@ function downloadStatus(j){
 }
 function renderDelete(m){
  const box=$("delete-box");box.replaceChildren();
- if(!m.device.endsWith(":comfyui")||!m.sha256)return;
- const pc=m.device.replace(/:comfyui$/,""),links=m.file_id?models.filter(x=>x.device===m.device&&x.file_id===m.file_id):[m];
+ if(!/:(comfyui|llamacpp)$/.test(m.device)||!m.sha256)return;
+ const pc=m.device.replace(/:(comfyui|llamacpp)$/,""),links=m.file_id?models.filter(x=>x.device===m.device&&x.file_id===m.file_id):[m];
  const b=text("button","Delete from "+pc+"…","repo-action danger");b.type="button";const status=text("p","","muted");box.append(b,status);
  b.addEventListener("click",async()=>{
   if(!confirm("Permanently delete this file from "+pc+"?\n\n"+links.map(x=>x.path).join("\n")+(links.length>1?"\n\nThese paths are the same file (hard links), so all of them go.":"")+"\n\nIts preview images and .metadata.json go too. The PC re-checks the file's SHA-256 first. This cannot be undone."))return;
@@ -537,7 +537,7 @@ function renderAgents(){
   card.append(text("div",agentStatusText(a),"agent-status"+(s&&s.phase==="error"?" agent-error":"")));
   if(s&&s.phase==="hashing"&&s.total_bytes){const bar=text("div","","bar");const inner=text("span");inner.style.width=Math.min(100,s.done_bytes/s.total_bytes*100)+"%";bar.append(inner);card.append(bar);}
   if(a.hardware)card.append(text("div",[a.hardware.gpu,a.hardware.vram_bytes?Math.round(a.hardware.vram_bytes/2**30)+" GB VRAM":"",a.hardware.ram_bytes?Math.round(a.hardware.ram_bytes/2**30)+" GB RAM":""].filter(Boolean).join(" · "),"model-sub"));
-  card.append(text("div","ComfyUI: "+a.comfyui_count+(a.ollama_count!=null?" · Ollama: "+a.ollama_count:"")+(a.lemonade_count!=null?" · Lemonade: "+a.lemonade_count:"")+(a.lmstudio?.status==="connected"?" · LM Studio: "+a.lmstudio_count:"")+" · last full sync "+ago(a.last_seen),"model-sub"));
+  card.append(text("div","ComfyUI: "+a.comfyui_count+(a.ollama_count!=null?" · Ollama: "+a.ollama_count:"")+(a.lemonade_count!=null?" · Lemonade: "+a.lemonade_count:"")+(a.lmstudio?.status==="connected"?" · LM Studio: "+a.lmstudio_count:"")+(a.llamacpp_count!=null?" · llama.cpp: "+a.llamacpp_count:"")+" · last full sync "+ago(a.last_seen),"model-sub"));
   const lm=a.lmstudio;
   if(lm?.status==="connected")card.append(text("div","LM Studio · "+(lm.status||"unknown")+(lm.host?" ("+lm.host+")":"")+(lm.error?" · "+lm.error:"")+([lm.gpu,lm.vram_bytes?Math.round(lm.vram_bytes/2**30)+" GB VRAM":"",lm.ram_bytes?Math.round(lm.ram_bytes/2**30)+" GB RAM":""].filter(Boolean).length?" · "+[lm.gpu,lm.vram_bytes?Math.round(lm.vram_bytes/2**30)+" GB VRAM":"",lm.ram_bytes?Math.round(lm.ram_bytes/2**30)+" GB RAM":""].filter(Boolean).join(" · "):""),"model-sub"));
   const lem=a.lemonade;
@@ -582,6 +582,7 @@ function newDownloadStatus(j){
  if(j.state==="running")return "Downloading "+fmt(j.bytes_done)+(j.size_bytes?" of "+fmt(j.size_bytes):"")+"…";
  if(j.state==="done"&&j.provider==="ollama")return "✓ In Ollama as "+j.file_name;
  if(j.state==="done"&&j.provider==="lemonade")return "✓ In Lemonade as "+j.file_name;
+ if(j.state==="done"&&j.provider==="llamacpp")return "✓ Verified and in llama.cpp as "+j.file_name.replace(/\.gguf$/i,"");
  if(j.state==="done"&&j.provider==="lmstudio")return "✓ Downloaded by LM Studio (not hash verified)";
  if(j.state==="done"&&j.provider.startsWith("lmstudio-"))return "✓ LM Studio "+j.provider.slice("lmstudio-".length)+" request finished";
  if(j.state==="done")return "✓ Downloaded and verified: "+shortPath(j.result_path);
@@ -602,7 +603,9 @@ function lemonadeModelName(repository,path){
  const name=parts.join("-").replace(/[^A-Za-z0-9._-]+/g,"-").replace(/^[-._]+|[-._]+$/g,"");
  return "user."+(name.slice(0,150).replace(/[-._]+$/,"")||"model");
 }
-const LLM_SERVERS={ollama:{label:"Ollama",name:ollamaModelName},lemonade:{label:"Lemonade",name:lemonadeModelName},lmstudio:{label:"LM Studio",name:(repo,path)=>"lmstudio:"+repo+":"+lmstudioQuant(path)}};
+// llama.cpp lists each GGUF in its models folder by file name (mirrors downloads.create_llamacpp).
+const llamacppModelName=(repository,path)=>(path||"").split("/").pop();
+const LLM_SERVERS={llamacpp:{label:"llama.cpp",name:llamacppModelName},ollama:{label:"Ollama",name:ollamaModelName},lemonade:{label:"Lemonade",name:lemonadeModelName},lmstudio:{label:"LM Studio",name:(repo,path)=>"lmstudio:"+repo+":"+lmstudioQuant(path)}};
 function lmstudioQuant(path){const stem=(path||"").split("/").pop().replace(/\.gguf$/i,"");const m=stem.match(/(?:^|[^a-z0-9])(IQ[1-4]_(?:XXS|XS|S|M|NL)|Q[2-8]_[K0-9]+(?:_[SML])?|BF16|F16|F32)(?=$|[^a-z0-9])/i);return m?m[1].toUpperCase():"";}
 function fileRow(label,onPc,ref,request,f={},behavior={}){
  // One downloadable file: a destination-specific installed state, active job, or Download button.
@@ -703,7 +706,7 @@ function repoCard(repo){
  if(repo.updated_at||repo.created_at)metrics.append(text("span","Updated "+String(repo.updated_at||repo.created_at).slice(0,10)));
  info.append(metrics);
  if(isHF)info.append(text("p","Select files to check GPU fit, installed copies, and download options.","repo-explainer"));
- if(isHF){const inspect=text("button","Inspect for Ollama / Lemonade / LM Studio","repo-action");inspect.type="button";inspect.onclick=()=>inspectLink(repo.url);info.append(inspect);}
+ if(isHF){const inspect=text("button","Inspect for llama.cpp / Ollama / Lemonade / LM Studio","repo-action");inspect.type="button";inspect.onclick=()=>inspectLink(repo.url);info.append(inspect);}
  const toggle=text("button","Explore model files","repo-action repo-explore");toggle.type="button";toggle.setAttribute("aria-expanded","false");
  const files=text("div","","browse-versions repo-file-panel");files.hidden=true;
  const folder=document.createElement("select");folder.setAttribute("aria-label","Save into folder");
@@ -753,7 +756,7 @@ function repoCard(repo){
      if(f.path!==(f.name||f.path.split("/").pop()))item.append(text("div",f.path,"model-sub"));
      const note=(rec&&rec.reasons&&rec.reasons.length?rec.reasons.join(" · "):ratedFit&&ratedFit.note)||"Compatibility not verified";
      item.append(text("div",(f.size_bytes?fmt(f.size_bytes)+" · ":"")+note,"model-sub"));
-     if(gguf)item.append(text("div","GGUF file · use Inspect repository to choose an LLM runtime. Download here saves a file; it does not import into Ollama or Lemonade.","repo-gguf-notice"));
+     if(gguf)item.append(text("div","GGUF file · use Inspect repository to choose an LLM runtime. Download here saves a file; it does not import into llama.cpp, Ollama or Lemonade.","repo-gguf-notice"));
      item.append(fileRow("",f.on_pc,repo.provider+":"+repo.id+"/"+f.path,
       {provider:repo.provider,repository:repo.id,remote_path:f.path,get folder(){return folder.value;}},f));
      results.append(item);
@@ -800,13 +803,15 @@ function hfInspectCard(data){
  // Each LLM server is offered only while the PC's last sync could reach it.
  const agent=agents.find(a=>a.device===browseAgent());
  const ollamaUp=hasGguf&&(!agent||agent.ollama_count!=null),lemonadeUp=hasGguf&&(!agent||agent.lemonade_count!=null);
+ const llamacppUp=hasGguf&&!!agent&&agent.llamacpp_count!=null;  // only PCs whose agent has a llama.cpp folder set
  // Default to an LLM server only when the selected file can actually be imported there.
- const llmDefault=primaryCanOllama?(lemonadeUp?"lemonade":ollamaUp?"ollama":null):null;
+ const llmDefault=primaryCanOllama?(llamacppUp?"llamacpp":lemonadeUp?"lemonade":ollamaUp?"ollama":null):null;
  (data.available_folders||[data.target_folder,"loras","checkpoints"]).forEach(f=>{
   const opt=new Option(f,f);if(f===data.target_folder&&!llmDefault)opt.selected=true;folderSelect.append(opt);
  });
  if(ollamaUp)folderSelect.prepend(new Option("Ollama (import GGUF)","ollama",llmDefault==="ollama",llmDefault==="ollama"));
  if(lemonadeUp)folderSelect.prepend(new Option("Lemonade (download & load GGUF)","lemonade",llmDefault==="lemonade",llmDefault==="lemonade"));
+ if(llamacppUp)folderSelect.prepend(new Option("llama.cpp (download GGUF)","llamacpp",llmDefault==="llamacpp",llmDefault==="llamacpp"));
  const lmstudioFile=hasGguf&&data.files.some(f=>f.path.toLowerCase().endsWith(".gguf")&&lmstudioQuant(f.path));
  if(lmstudioFile&&agent&&agent.online&&agent.lmstudio&&agent.lmstudio.status==="connected"&&agent.lmstudio_count!=null)
   folderSelect.prepend(new Option("LM Studio (download GGUF)","lmstudio"));

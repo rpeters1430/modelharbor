@@ -1,0 +1,39 @@
+# llama.cpp
+
+If the PC runs [llama.cpp](https://github.com/ggml-org/llama.cpp)'s `llama-server` in router mode (`--models-dir <folder>`), the PC's agent can list the models in that folder and download Hugging Face GGUF files into it from Browse.
+
+llama-server offers every `.gguf` file in its models folder under the file name without `.gguf`. A download of `gpt-oss-20b-MXFP4.gguf` is therefore the model `gpt-oss-20b-MXFP4` to any app connected to llama-server.
+
+## Configure the agent
+
+In the agent's `agent.json`:
+
+```json
+"llamacpp_models_dir": "/srv/ai/llama-cpp/models",
+"llamacpp_restart_command": ["docker", "restart", "llama-cpp"]
+```
+
+- `llamacpp_models_dir` is the folder llama-server reads with `--models-dir`, as seen from the PC. If llama-server runs in Docker, use the host folder that is mounted into the container. Leave it out to turn llama.cpp off; on the next sync its models are cleared from the dashboard.
+- `llamacpp_restart_command` runs after a model is downloaded or deleted. llama-server reads its models folder only when it starts, so without a restart a new model doesn't appear. The default restarts a Docker container named `llama-cpp`. The agent's user must be able to run the command (for Docker, be in the `docker` group). Set it to `[]` if you restart llama-server yourself.
+
+Restart the agent's background task after changing the config. On Linux, run `systemctl --user restart modelharbor-worker`.
+
+## Download a model
+
+In Browse, open a Hugging Face GGUF repository, choose **llama.cpp (download GGUF)** under "Save into", and click Download. The option appears only for PCs whose agent has `llamacpp_models_dir` set, and it is chosen by default there.
+
+The agent:
+
+1. downloads the file into the models folder, next to nothing it would overwrite (a file with the same name is refused),
+2. checks it against the SHA-256 that Hugging Face publishes, and deletes it if the hash doesn't match,
+3. runs `llamacpp_restart_command`, so llama-server lists the new model.
+
+Only single-file GGUF models can be downloaded. Split models (`-00001-of-00003.gguf`) and vision projector files (`mmproj-*.gguf`) are refused, because llama-server needs extra setup for them. If a repository has two files with the same name in different folders, pick a repository without duplicates, since the file name is the model's name.
+
+## Delete a model
+
+Open the model on the dashboard and use **Delete from <PC>**. The agent re-checks the file's SHA-256, deletes it, and restarts llama-server so the model disappears from it too.
+
+## Connect apps
+
+Apps talk to llama-server, not to ModelHarbor. Use its OpenAI-compatible address, for example `http://<PC address>:8080/v1`, with the API key llama-server was started with (`--api-key` or `--api-key-file`), and the model name described above.

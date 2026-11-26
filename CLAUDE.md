@@ -7,7 +7,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ModelHarbor is a self-hosted AI model inventory dashboard. It has two halves that talk over HTTP:
 
 - **`backend/`**: a FastAPI + SQLite server that runs in Docker on a NAS (port 8096). It serves the API and a vanilla-JS PWA dashboard (`backend/app/static/`, no build step).
-- **`agent/`**: Python scripts that run on the user's PC (Windows or Linux). They scan ComfyUI model folders and the local LLM servers (Ollama, Lemonade, LM Studio), upload the inventory, and carry out jobs the dashboard queues.
+- **`agent/`**: Python scripts that run on the user's PC (Windows or Linux). They scan ComfyUI model folders, the llama.cpp models folder and the local LLM servers (Ollama, Lemonade, LM Studio), upload the inventory, and carry out jobs the dashboard queues.
 
 User-facing behaviour is documented in `README.md` and `docs/*.md`. Keep those docs in step when behaviour changes. `docs/superpowers/` holds design specs and plans.
 

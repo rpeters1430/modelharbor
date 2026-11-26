@@ -107,6 +107,7 @@ class Heartbeat(BaseModel):
     lemonade: LemonadeInfo | None = None  # the Lemonade PC, which may not be the agent's PC
     lmstudio_count: int | None = Field(default=None, ge=0)
     lmstudio: LMStudioInfo | None = None
+    llamacpp_count: int | None = Field(default=None, ge=0)  # GGUF files in the llama.cpp models folder
     hardware: Hardware | None = None
 
 class Inventory(BaseModel):
@@ -148,6 +149,8 @@ def _migrate(db):
         db.execute("ALTER TABLE agent_heartbeats ADD COLUMN lmstudio_count INTEGER")
     if "lmstudio" not in heartbeat_columns:
         db.execute("ALTER TABLE agent_heartbeats ADD COLUMN lmstudio TEXT")
+    if "llamacpp_count" not in heartbeat_columns:
+        db.execute("ALTER TABLE agent_heartbeats ADD COLUMN llamacpp_count INTEGER")
     db.execute("""CREATE TABLE IF NOT EXISTS agent_status (
         device TEXT PRIMARY KEY, phase TEXT NOT NULL, done INTEGER, total INTEGER,
         done_bytes INTEGER, total_bytes INTEGER, current TEXT, message TEXT,
@@ -241,16 +244,17 @@ def heartbeat(payload: Heartbeat, x_modelharbor_token: str | None = Header(defau
             hardware = payload.hardware and payload.hardware.model_dump_json()
             lemonade = payload.lemonade and payload.lemonade.model_dump_json()
             lmstudio = payload.lmstudio and payload.lmstudio.model_dump_json()
-            db.execute("""INSERT INTO agent_heartbeats (device,last_seen,comfyui_count,ollama_count,lemonade_count,lemonade,hardware,lmstudio_count,lmstudio)
-                VALUES (?,?,?,?,?,?,?,?,?) ON CONFLICT(device) DO UPDATE SET last_seen=excluded.last_seen,
+            db.execute("""INSERT INTO agent_heartbeats (device,last_seen,comfyui_count,ollama_count,lemonade_count,lemonade,hardware,lmstudio_count,lmstudio,llamacpp_count)
+                VALUES (?,?,?,?,?,?,?,?,?,?) ON CONFLICT(device) DO UPDATE SET last_seen=excluded.last_seen,
                 comfyui_count=excluded.comfyui_count,ollama_count=excluded.ollama_count,
                 lemonade_count=excluded.lemonade_count,
                 lemonade=COALESCE(excluded.lemonade,agent_heartbeats.lemonade),
                 hardware=COALESCE(excluded.hardware,agent_heartbeats.hardware),
                 lmstudio_count=COALESCE(excluded.lmstudio_count,agent_heartbeats.lmstudio_count),
-                lmstudio=COALESCE(excluded.lmstudio,agent_heartbeats.lmstudio)""",
+                lmstudio=COALESCE(excluded.lmstudio,agent_heartbeats.lmstudio),
+                llamacpp_count=excluded.llamacpp_count""",
                 (payload.device, int(time.time()), payload.comfyui_count, payload.ollama_count,
-                 payload.lemonade_count, lemonade, hardware, payload.lmstudio_count, lmstudio))
+                 payload.lemonade_count, lemonade, hardware, payload.lmstudio_count, lmstudio, payload.llamacpp_count))
     return {"ok": True}
 
 @app.get("/api/agents")
@@ -259,7 +263,7 @@ def agents(x_modelharbor_token: str | None = Header(default=None)):
     with closing(connect()) as db:
         rows = db.execute("""SELECT h.device,h.last_seen,h.comfyui_count,h.ollama_count,
             s.phase,s.done,s.total,s.done_bytes,s.total_bytes,s.current,s.message,s.started_at,s.updated_at,
-            s.worker_seen,s.scan_requested_at,h.hardware,h.lemonade_count,h.lemonade,h.lmstudio_count,h.lmstudio
+            s.worker_seen,s.scan_requested_at,h.hardware,h.lemonade_count,h.lemonade,h.lmstudio_count,h.lmstudio,h.llamacpp_count
             FROM agent_heartbeats h LEFT JOIN agent_status s ON s.device=h.device ORDER BY h.device""").fetchall()
     now = int(time.time())
     result = []
@@ -270,7 +274,7 @@ def agents(x_modelharbor_token: str | None = Header(default=None)):
         result.append({"device": r[0], "last_seen": r[1], "online": now - max(r[1], worker_seen) <= 3900,
             "comfyui_count": r[2], "ollama_count": r[3], "lemonade_count": r[16],
             "lemonade": json.loads(r[17]) if r[17] else None, "status": status,
-            "lmstudio_count": r[18], "lmstudio": json.loads(r[19]) if r[19] else None,
+            "lmstudio_count": r[18], "lmstudio": json.loads(r[19]) if r[19] else None, "llamacpp_count": r[20],
             # The worker polls every ~20 s, so two minutes of silence means it is not running.
             "worker_running": now - worker_seen <= 120, "worker_seen": worker_seen or None,
             "scan_requested": bool(r[14]), "hardware": json.loads(r[15]) if r[15] else None})
@@ -292,7 +296,7 @@ def remove_agent(device: str, x_modelharbor_token: str | None = Header(default=N
             if int(time.time()) - max(row) <= 3900:
                 raise HTTPException(409, "This device is online. Stop its agent before removing it.")
             sources = (device, *(device + ":" + runtime for runtime in
-                                ("comfyui", "ollama", "lemonade", "lmstudio")))
+                                ("comfyui", "ollama", "lemonade", "lmstudio", "llamacpp")))
             placeholders = ",".join("?" for _ in sources)
             removed = db.execute(f"DELETE FROM models WHERE device IN ({placeholders})", sources).rowcount
             for table in ("selected_matches", "hash_jobs"):
@@ -732,7 +736,7 @@ def inspect_ollama(model: str, x_modelharbor_token: str | None = Header(default=
 class NewDownload(BaseModel):
     ollama_model: str | None = Field(default=None, max_length=512)
     agent: str = Field(min_length=1, max_length=100)
-    provider: str = Field(pattern=r"^(civitai|huggingface|modelscope|ollama|lemonade|lmstudio)$")
+    provider: str = Field(pattern=r"^(civitai|huggingface|modelscope|ollama|lemonade|lmstudio|llamacpp)$")
     model_id: int | None = Field(default=None, ge=1)
     version_id: int | None = Field(default=None, ge=1)
     file_id: int | None = Field(default=None, ge=1)
@@ -752,7 +756,7 @@ def new_download(payload: NewDownload, x_modelharbor_token: str | None = Header(
         with closing(connect()) as db:
             with db:
                 return downloads.create_ollama_pull(db, payload.agent, name)
-    if payload.provider in ("ollama", "lemonade", "lmstudio"):  # a Hugging Face GGUF, pulled by the PC's LLM server
+    if payload.provider in ("ollama", "lemonade", "lmstudio", "llamacpp"):  # a Hugging Face GGUF for the PC's LLM server
         repo = validate_repo(payload.repository or "")
         files = list_model_files(repo)["files"]
         if not any(f["path"] == payload.remote_path for f in files):
@@ -760,11 +764,14 @@ def new_download(payload: NewDownload, x_modelharbor_token: str | None = Header(
         selected_name = PurePosixPath(payload.remote_path or "").name.casefold()
         same_name = [f for f in files if PurePosixPath(f["path"]).name.casefold() == selected_name]
         if len(same_name) > 1:
-            if payload.provider in ("ollama", "lemonade"):
-                runtime = "Ollama" if payload.provider == "ollama" else "Lemonade"
+            if payload.provider in ("ollama", "lemonade", "llamacpp"):
+                runtime = {"ollama": "Ollama", "lemonade": "Lemonade", "llamacpp": "llama.cpp"}[payload.provider]
                 raise HTTPException(422, f"{runtime}'s Hugging Face import identifies files by filename; this repository has duplicate filenames")
         with closing(connect()) as db:
             with db:
+                if payload.provider == "llamacpp":
+                    item = next(f for f in files if f["path"] == payload.remote_path)
+                    return downloads.create_llamacpp(db, payload.agent, repo, item)
                 if payload.provider == "lemonade":
                     size = next(f.get("size_bytes") for f in files if f["path"] == payload.remote_path)
                     return downloads.create_lemonade(db, payload.agent, repo, payload.remote_path, size)
