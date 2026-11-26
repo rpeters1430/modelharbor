@@ -90,3 +90,48 @@ def test_inspect_endpoint_recommends_for_the_selected_pc(tmp_path, monkeypatch):
     assert q4["runtimes"]["llamacpp"]["best"] is True
     assert q4["optimized_for"]["runtime"] == "ollama"
     assert fit.importable_gguf("Qwen3-8B-Q4_K_M.gguf")
+
+
+def test_language_models_are_not_checkpoints():
+    from backend.app.hf_inspect import is_llm
+    ggufs = gguf_files()
+    assert is_llm("text-generation", [], "Qwen/Qwen3-8B-GGUF", ggufs)
+    assert is_llm(None, ["gguf", "conversational"], "bartowski/Llama-3.1-8B-GGUF", ggufs)
+    assert is_llm(None, ["gguf"], "someone/Mistral-7B-GGUF", ggufs)  # GGUF-only, nothing image-like
+    assert not is_llm("text-to-image", ["gguf"], "city96/FLUX.1-dev-gguf", ggufs)
+    assert not is_llm(None, ["gguf"], "city96/t5-v1_1-xxl-encoder-gguf", ggufs)
+    assert not is_llm(None, ["gguf"], "QuantStack/Wan2.1-ComfyUI-GGUF", ggufs)
+    sdxl = [{"path": "model.safetensors", "name": "model.safetensors"}]
+    assert not is_llm(None, ["diffusers"], "user/sdxl-model", sdxl)
+
+
+def test_inspect_llm_offers_no_comfyui_folder_and_recommends_for_llamacpp(tmp_path, monkeypatch):
+    from backend.app import main
+    monkeypatch.setattr(main, "DB", tmp_path / "db.sqlite3")
+    monkeypatch.setattr(main, "TOKEN", "t")
+    client, headers = TestClient(app), {"X-ModelHarbor-Token": "t"}
+    client.post("/api/agents/heartbeat", headers=headers, json={
+        "device": "pc", "comfyui_count": 0, "llamacpp_count": 0,
+        "hardware": {"gpu": "RX 9070 XT", "vendor": "amd", "vram_bytes": 16 * GB, "ram_bytes": 64 * GB}})
+    meta = {"id": "Qwen/Qwen3-8B-GGUF", "pipeline_tag": "text-generation", "tags": ["gguf", "qwen"], "cardData": {}}
+    with patch("backend.app.hf_inspect.fetch", return_value=json.dumps(meta).encode()), \
+            patch("backend.app.hf_inspect.list_model_files", return_value={"files": gguf_files()}):
+        data = client.get("/api/huggingface/inspect", params={"url": "Qwen/Qwen3-8B-GGUF", "agent": "pc"},
+                          headers=headers).json()
+    assert data["model_type"] == "LLM"
+    assert data["target_folder"] is None and data["available_folders"] == []
+    assert data["base_model"] is None  # no "requires a Qwen base model" warning
+    assert data["primary_file"]["path"] == data["recommended"]["llamacpp"] == "Qwen3-8B-Q8_0.gguf"
+    assert "comfyui" not in data["recommended"]
+
+
+def test_gguf_is_refused_into_checkpoints(tmp_path, monkeypatch):
+    from backend.app import main
+    monkeypatch.setattr(main, "DB", tmp_path / "db.sqlite3")
+    monkeypatch.setattr(main, "TOKEN", "t")
+    client, headers = TestClient(app), {"X-ModelHarbor-Token": "t"}
+    with patch("backend.app.main.list_model_files", return_value={"files": gguf_files()}):
+        res = client.post("/api/downloads/new", headers=headers, json={
+            "agent": "pc", "provider": "huggingface", "repository": "Qwen/Qwen3-8B-GGUF",
+            "remote_path": "Qwen3-8B-Q4_K_M.gguf", "folder": "checkpoints/Qwen"})
+    assert res.status_code == 422 and "checkpoints" in res.json()["detail"]

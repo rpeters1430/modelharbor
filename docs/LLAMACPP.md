@@ -30,6 +30,8 @@ The agent:
 
 Only single-file GGUF models can be downloaded. Split models (`-00001-of-00003.gguf`) and vision projector files (`mmproj-*.gguf`) are refused, because llama-server needs extra setup for them. If a repository has two files with the same name in different folders, pick a repository without duplicates, since the file name is the model's name.
 
+A pasted link to a language model (a Hugging Face repository whose pipeline is text generation, or one with only GGUF files and nothing marking it as an image or video model) is shown as **Language model**. It is offered only to the LLM servers on the PC, never a ComfyUI folder such as `checkpoints`, and it has no base-model warning. If the PC has no LLM server, the card says so instead of offering a download. The NAS also refuses any Hugging Face or ModelScope GGUF saved into `checkpoints`, because ComfyUI's checkpoint loader can't read GGUF; ComfyUI-GGUF diffusion models go in `diffusion_models`.
+
 ## llama.cpp or Ollama?
 
 When **Save into** is an LLM server, each GGUF file shows which server it suits best on the PC:

@@ -801,7 +801,8 @@ function hfInspectCard(data){
  const title=text("strong",data.repository);
  const badges=[];
  if(data.base_model)badges.push("Base: "+data.base_model);
- if(data.model_type)badges.push("Type: "+data.model_type);
+ const isLlm=data.model_type==="LLM";
+ if(data.model_type)badges.push("Type: "+(isLlm?"Language model (runs in llama.cpp, Ollama, Lemonade or LM Studio)":data.model_type));
  if(data.trigger_words&&data.trigger_words.length)badges.push("Trigger: "+data.trigger_words.join(", "));
  if(data.downloads!=null)badges.push("↓ "+Number(data.downloads).toLocaleString());
  if(data.likes)badges.push("♥ "+Number(data.likes).toLocaleString());
@@ -841,6 +842,12 @@ function hfInspectCard(data){
  if(lmstudioFile&&agent&&agent.online&&agent.lmstudio&&agent.lmstudio.status==="connected"&&agent.lmstudio_count!=null)
   folderSelect.prepend(new Option("LM Studio (download GGUF)","lmstudio"));
  folderRow.append(folderSelect);
+ // A language model has no ComfyUI folder; without a reachable LLM server there is nowhere to put it.
+ if(isLlm&&!folderSelect.options.length){
+  const link=document.createElement("a");link.href=data.url;link.target="_blank";link.rel="noopener noreferrer";link.textContent="Open on Hugging Face ↗";link.className="model-sub";
+  info.append(title,meta,text("p","This is a language model, not a ComfyUI model. Set up llama.cpp, Ollama, Lemonade or LM Studio on "+(browseAgent()||"the PC")+" to download it from here.","companion-warning"),link);
+  card.append(info);return card;
+ }
  const llm=()=>LLM_SERVERS[folderSelect.value];
  const hfRequest=f=>({repository:data.repository,remote_path:f.path,base_model:data.base_model,trigger_words:data.trigger_words,
   get provider(){return llm()?folderSelect.value:"huggingface";},get folder(){return llm()?null:folderSelect.value;}});

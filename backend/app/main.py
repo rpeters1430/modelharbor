@@ -818,6 +818,10 @@ def new_download(payload: NewDownload, x_modelharbor_token: str | None = Header(
                 item["name"], item["sha256"], item["size_bytes"], payload.folder or "loras", f"huggingface:{repo}/{item['path']}")
         bm = payload.base_model or (payload.folder.partition("/")[2] if payload.folder and "/" in payload.folder else None)
         extra = {"base_model": bm, "trigger_words": payload.trigger_words}
+    # ComfyUI's checkpoint loader can't read GGUF: a GGUF there is almost always an LLM saved by mistake.
+    if payload.provider != "civitai" and args[1].lower().endswith(".gguf") and args[4].partition("/")[0] == "checkpoints":
+        raise HTTPException(422, "GGUF files don't go in checkpoints. Save an LLM into llama.cpp, Ollama, Lemonade or "
+                                 "LM Studio, or a ComfyUI-GGUF diffusion model into diffusion_models")
     with closing(connect()) as db:
         with db:
             return downloads.create_new(db, payload.agent, *args, payload.provider, **extra)
