@@ -13,7 +13,7 @@ In the agent's `agent.json`:
 "llamacpp_restart_command": ["docker", "restart", "llama-cpp"]
 ```
 
-- `llamacpp_models_dir` is the folder llama-server reads with `--models-dir`, as seen from the PC. If llama-server runs in Docker, use the host folder that is mounted into the container. Leave it out to turn llama.cpp off; on the next sync its models are cleared from the dashboard.
+- `llamacpp_models_dir` is the folder llama-server reads with `--models-dir`, as seen from the PC. If llama-server runs in Docker, use the host folder that is mounted into the container. Leave it out to turn llama.cpp off; on the next sync its models are cleared from the dashboard. If the folder can't be read (an unmounted drive, say), its models are hidden until it is back, rather than cleared.
 - `llamacpp_restart_command` runs after a model is downloaded or deleted. llama-server reads its models folder only when it starts, so without a restart a new model doesn't appear. The default restarts a Docker container named `llama-cpp`. The agent's user must be able to run the command (for Docker, be in the `docker` group). Set it to `[]` if you restart llama-server yourself.
 
 Restart the agent's background task after changing the config. On Linux, run `systemctl --user restart modelharbor-worker`.

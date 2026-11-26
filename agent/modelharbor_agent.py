@@ -176,6 +176,7 @@ def run_once(cfg, token, dry_run=False, reporter=None, lock=None):
                   "lemonade": lemonade_info,
                   "lmstudio": lmstudio_info,
                   "llamacpp_count": len(llamacpp) if llama_dir and llamacpp is not None else None,
+                  "ollama": lmstudio_scan.endpoint_info(cfg.get("ollama_url", "http://127.0.0.1:11434")),
                   "hardware": detect_hardware()}, timeout=20)
         response.raise_for_status()
         reporter.update("idle", done=len(comfy), total=len(comfy), message=f"Synced {len(comfy)} ComfyUI files"

@@ -2,6 +2,8 @@
 
 The PC's agent (`modelharbor_agent.py`) queries the Ollama `/api/tags` endpoint on every sync and uploads the list under the agent's device name with an `:ollama` suffix, so it cannot overwrite the ComfyUI scan for the same machine. Set `ollama_enabled` and `ollama_url` in `agent.json`.
 
+Browse rates GGUF files for Ollama with the agent PC's GPU and memory. If `ollama_url` points at another machine, that hardware is unknown, so files are shown without a fit rating for Ollama.
+
 ## Preview (Windows PowerShell)
 
 ```powershell

@@ -99,6 +99,10 @@ class LMStudioInfo(BaseModel):
     vram_bytes: int | None = Field(default=None, ge=0)
     ram_bytes: int | None = Field(default=None, ge=0)
 
+class OllamaInfo(BaseModel):
+    host: str | None = Field(default=None, max_length=253)
+    local: bool | None = None  # Ollama runs on the agent's own PC, so the agent's hardware is Ollama's
+
 class Heartbeat(BaseModel):
     device: str = Field(min_length=1, max_length=100)
     comfyui_count: int = Field(ge=0)
@@ -108,6 +112,7 @@ class Heartbeat(BaseModel):
     lmstudio_count: int | None = Field(default=None, ge=0)
     lmstudio: LMStudioInfo | None = None
     llamacpp_count: int | None = Field(default=None, ge=0)  # GGUF files in the llama.cpp models folder
+    ollama: OllamaInfo | None = None
     hardware: Hardware | None = None
 
 class Inventory(BaseModel):
@@ -151,6 +156,8 @@ def _migrate(db):
         db.execute("ALTER TABLE agent_heartbeats ADD COLUMN lmstudio TEXT")
     if "llamacpp_count" not in heartbeat_columns:
         db.execute("ALTER TABLE agent_heartbeats ADD COLUMN llamacpp_count INTEGER")
+    if "ollama" not in heartbeat_columns:
+        db.execute("ALTER TABLE agent_heartbeats ADD COLUMN ollama TEXT")  # JSON: where Ollama runs
     db.execute("""CREATE TABLE IF NOT EXISTS agent_status (
         device TEXT PRIMARY KEY, phase TEXT NOT NULL, done INTEGER, total INTEGER,
         done_bytes INTEGER, total_bytes INTEGER, current TEXT, message TEXT,
@@ -202,10 +209,13 @@ def _unreachable_runtimes(db):
     """Inventory devices ("pc:lemonade") of LLM servers the agent could not reach on its last sync.
     The agent keeps their old list so it returns when the server is back; until then it is not shown."""
     hidden = set()
-    for device, ollama, lemonade, lmstudio in db.execute(
-            "SELECT device,ollama_count,lemonade_count,lmstudio FROM agent_heartbeats"):
+    for device, ollama, lemonade, lmstudio, llamacpp in db.execute(
+            "SELECT device,ollama_count,lemonade_count,lmstudio,llamacpp_count FROM agent_heartbeats"):
         if ollama is None:
             hidden.add(device + ":ollama")
+        # The agent clears llama.cpp's list when it is not configured, so None means its folder was missing.
+        if llamacpp is None:
+            hidden.add(device + ":llamacpp")
         if lemonade is None:
             hidden.add(device + ":lemonade")
         # The LM Studio count is kept across failed syncs, so its reported status decides.
@@ -244,8 +254,10 @@ def heartbeat(payload: Heartbeat, x_modelharbor_token: str | None = Header(defau
             hardware = payload.hardware and payload.hardware.model_dump_json()
             lemonade = payload.lemonade and payload.lemonade.model_dump_json()
             lmstudio = payload.lmstudio and payload.lmstudio.model_dump_json()
-            db.execute("""INSERT INTO agent_heartbeats (device,last_seen,comfyui_count,ollama_count,lemonade_count,lemonade,hardware,lmstudio_count,lmstudio,llamacpp_count)
-                VALUES (?,?,?,?,?,?,?,?,?,?) ON CONFLICT(device) DO UPDATE SET last_seen=excluded.last_seen,
+            ollama = payload.ollama and payload.ollama.model_dump_json()
+            db.execute("""INSERT INTO agent_heartbeats (device,last_seen,comfyui_count,ollama_count,lemonade_count,lemonade,hardware,lmstudio_count,lmstudio,llamacpp_count,ollama)
+                VALUES (?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(device) DO UPDATE SET last_seen=excluded.last_seen,
+                ollama=COALESCE(excluded.ollama,agent_heartbeats.ollama),
                 comfyui_count=excluded.comfyui_count,ollama_count=excluded.ollama_count,
                 lemonade_count=excluded.lemonade_count,
                 lemonade=COALESCE(excluded.lemonade,agent_heartbeats.lemonade),
@@ -254,7 +266,7 @@ def heartbeat(payload: Heartbeat, x_modelharbor_token: str | None = Header(defau
                 lmstudio=COALESCE(excluded.lmstudio,agent_heartbeats.lmstudio),
                 llamacpp_count=excluded.llamacpp_count""",
                 (payload.device, int(time.time()), payload.comfyui_count, payload.ollama_count,
-                 payload.lemonade_count, lemonade, hardware, payload.lmstudio_count, lmstudio, payload.llamacpp_count))
+                 payload.lemonade_count, lemonade, hardware, payload.lmstudio_count, lmstudio, payload.llamacpp_count, ollama))
     return {"ok": True}
 
 @app.get("/api/agents")
@@ -321,7 +333,9 @@ def _runtime_hardware(db, agent):
     """The PC each LLM server runs on. llama.cpp's models folder and Ollama are on the agent's own PC;
     Lemonade and LM Studio report their own hardware, which may be another PC's."""
     hw = _hardware(db, agent)
-    return {"llamacpp": hw, "ollama": hw, "lemonade": _hardware(db, agent, "lemonade"),
+    ollama = _hardware(db, agent, "ollama")
+    # Ollama on another machine (ollama_url): its hardware is unknown, so its files go unrated.
+    return {"llamacpp": hw, "ollama": None if ollama and ollama.get("local") is False else hw, "lemonade": _hardware(db, agent, "lemonade"),
             "lmstudio": _hardware(db, agent, "lmstudio")}
 
 class AgentStatus(BaseModel):

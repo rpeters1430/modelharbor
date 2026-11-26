@@ -135,3 +135,19 @@ def test_gguf_is_refused_into_checkpoints(tmp_path, monkeypatch):
             "agent": "pc", "provider": "huggingface", "repository": "Qwen/Qwen3-8B-GGUF",
             "remote_path": "Qwen3-8B-Q4_K_M.gguf", "folder": "checkpoints/Qwen"})
     assert res.status_code == 422 and "checkpoints" in res.json()["detail"]
+
+
+def test_remote_ollama_is_not_rated_with_the_agents_hardware(tmp_path, monkeypatch):
+    from backend.app import main
+    from contextlib import closing
+    monkeypatch.setattr(main, "DB", tmp_path / "db.sqlite3")
+    monkeypatch.setattr(main, "TOKEN", "t")
+    client, headers = TestClient(app), {"X-ModelHarbor-Token": "t"}
+    beat = {"device": "pc", "comfyui_count": 0, "hardware": {"gpu": "RX 9070 XT", "vram_bytes": 16 * GB, "ram_bytes": 64 * GB}}
+    client.post("/api/agents/heartbeat", headers=headers, json={**beat, "ollama": {"host": "gpu-box", "local": False}})
+    with closing(main.connect()) as db:
+        runtimes = main._runtime_hardware(db, "pc")
+    assert runtimes["ollama"] is None and runtimes["llamacpp"]["vram_bytes"] == 16 * GB
+    client.post("/api/agents/heartbeat", headers=headers, json={**beat, "ollama": {"host": "127.0.0.1", "local": True}})
+    with closing(main.connect()) as db:
+        assert main._runtime_hardware(db, "pc")["ollama"]["vram_bytes"] == 16 * GB
