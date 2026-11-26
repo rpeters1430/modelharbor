@@ -12,3 +12,8 @@ jobs:
           python-version: '3.15'
       - run: pip install -r backend/requirements.txt -r agent/requirements.txt pytest httpx
       - run: python -m pytest -q
+      # The dashboard has no build step, so a syntax error would only show up in the browser.
+      - uses: actions/setup-node@v5
+        with:
+          node-version: '22'
+      - run: node --check backend/app/static/app.js && node --check backend/app/static/sw.js
