@@ -33,6 +33,17 @@ Only single-file GGUF models can be downloaded. Split models (`-00001-of-00003.g
 
 A pasted link to a language model (a Hugging Face repository whose pipeline is text generation, or one with only GGUF files and nothing marking it as an image or video model) is shown as **Language model**. It is offered only to the LLM servers on the PC, never a ComfyUI folder such as `checkpoints`, and it has no base-model warning. If the PC has no LLM server, the card says so instead of offering a download. The NAS also refuses any Hugging Face or ModelScope GGUF saved into `checkpoints`, because ComfyUI's checkpoint loader can't read GGUF; ComfyUI-GGUF diffusion models go in `diffusion_models`.
 
+## What a model is good for
+
+A language-model card lists what the model is **good for** (general chat, coding, roleplay and creative writing, reasoning, math, agents and tool use, multilingual, medical) and its **features**: vision, tool calling, a thinking mode, long context, many languages, or uncensored. **Why these?** shows the evidence for each. These come from what Hugging Face publishes:
+
+- the repository's name, file names and tags, and the tags and pipeline of the model it was made from (its base model);
+- the chat template: tool calling is ✓ only if the template formats tools and tool calls, and a thinking section means a thinking mode;
+- the model card's text, where a use counts only when it is mentioned at least three times outside code and benchmark tables. These show with a dashed border, as a weaker hint;
+- the files: vision is ✓ only when the repository has an `mmproj` vision projector to load with the model (`--mmproj` in llama.cpp). A model that can see images but has no `mmproj` here shows ✗, because its GGUF runs text-only.
+
+These are hints from metadata, not benchmarks. Gated base models (Llama, Mistral) can't be read without a login, so only the repository's own metadata counts for those.
+
 ## How much memory a model needs
 
 A language model needs memory for its weights and for its context (the KV cache), which grows with every token of context. For a language-model link, the NAS reads the first 2 MB of one of its GGUF files from Hugging Face: the header that lists the model's layers and attention heads. That gives the context's exact memory per token. The card shows the architecture, the longest context the model was trained for, and the context memory at the chosen size.

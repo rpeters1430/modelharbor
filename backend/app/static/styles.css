@@ -158,6 +158,9 @@
 #browse-list .repo-chip{display:inline-flex;align-items:center;max-width:100%;padding:5px 8px;border:1px solid #435d86;background:#273958;border-radius:8px;font-size:11px;line-height:1.35;overflow-wrap:anywhere}
 #browse-list .repo-chip-warning{border-color:#9b784b;color:#ffdda5}
 #browse-list .repo-chip-installed{color:#a4e9c3;border-color:#477c69}
+#browse-list .repo-chip-muted{opacity:.75;border-style:dashed}
+#browse-list .capabilities{display:grid;gap:6px;margin:8px 0}#browse-list .capabilities .muted{font-size:12px;align-self:center}
+#browse-list .capabilities ul{margin:4px 0 0;padding-left:18px}#browse-list .capabilities summary{cursor:pointer}
 #browse-list .repo-metrics{display:flex;flex-wrap:wrap;gap:6px 12px;color:#aabbd7;font-size:12px}
 #browse-list .repo-explainer{font-size:12px;line-height:1.5;color:#aebfda;margin:0}
 #browse-list .repo-explore{width:100%;min-height:44px}
