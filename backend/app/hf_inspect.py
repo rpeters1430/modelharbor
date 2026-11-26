@@ -9,6 +9,7 @@ from .hf_repository import list_model_files, validate_repo
 from .sources import fetch
 from .browse import folder_for, valid_folder, FAMILY_FOLDERS, FOLDERS
 from .fit import recommended_gguf, variant_key
+from . import llm_capabilities
 
 FAMILY_PATTERNS = [
     ("MOSS", r"\bmoss\b", "MOSS"),
@@ -176,8 +177,28 @@ def score_file(file_info: dict, is_lora: bool, is_comfy: bool) -> int:
 
     return score
 
-def inspect_huggingface(url_or_repo: str, get=fetch) -> dict:
+def _capabilities(data, repo, files, get):
+    """What the LLM is good for and can do (llm_capabilities.describe), from its card and its base model's
+    tags as well. Those two lookups are optional: if either fails, the rest still counts."""
+    readme = base = None
+    try:
+        body = get(f"https://huggingface.co/{quote(repo, safe='/')}/raw/main/README.md", accept="text/plain")
+        readme = body.decode("utf-8", "replace") if body else None
+    except (OSError, ValueError, TypeError):
+        pass
+    base_name = llm_capabilities.base_repo(data)
+    if base_name and base_name.lower() != repo.lower():
+        try:
+            body = get(f"https://huggingface.co/api/models/{quote(base_name, safe='/')}")
+            base = json.loads(body) if body else None
+            base = base if isinstance(base, dict) else None
+        except (OSError, ValueError, TypeError):
+            pass
+    return llm_capabilities.describe(data, files, readme, base)
+
+def inspect_huggingface(url_or_repo: str, get=None) -> dict:
     """Inspect a Hugging Face repository or file link."""
+    get = get or fetch  # looked up at call time, so tests can patch hf_inspect.fetch
     repo, remote_path = parse_hf_url(url_or_repo)
     body = get(f"https://huggingface.co/api/models/{quote(repo, safe='/')}")
     if not body:
@@ -226,6 +247,8 @@ def inspect_huggingface(url_or_repo: str, get=fetch) -> dict:
     if not primary_file and scored_files:
         primary_file = scored_files[0][1]
 
+    capabilities = _capabilities(data, repo, files, get) if llm else None
+
     # Available target folders
     available_folders = [] if llm else [target_folder]
     for p in () if llm else ("loras", "checkpoints", "diffusion_models", "text_encoders", "vae", "embeddings", "controlnet", "upscale_models"):
@@ -250,6 +273,7 @@ def inspect_huggingface(url_or_repo: str, get=fetch) -> dict:
         "trigger_words": trigger_words,
         "primary_file": primary_file,
         "files": files,
+        "capabilities": capabilities,
         "downloads": data.get("downloads"),
         "likes": data.get("likes"),
         "created_at": data.get("createdAt"),

@@ -848,6 +848,22 @@ function repoCard(repo){
  const link=document.createElement("a");link.href=repo.url;link.target="_blank";link.rel="noopener noreferrer";link.textContent="Open on "+site+" ↗";link.className="model-sub";
  info.append(toggle,link);card.append(info,files);return card;
 }
+// What a language model is good for and can do (llm_capabilities.describe), with the evidence for each.
+function capabilitiesBox(c){
+ if(!c||(!c.uses.length&&!c.features.length))return "";
+ const box=text("div","","capabilities");
+ const chips=(label,items,render)=>{if(!items.length)return;const row=text("div","","repo-chips");row.append(text("span",label,"muted"));items.forEach(i=>row.append(render(i)));box.append(row);};
+ // Uses found only in the model card's text are weaker evidence than the name, tags or base model.
+ chips("Good for:",c.uses,u=>{const chip=text("span",u.label,"repo-chip"+(u.evidence==="model card"?" repo-chip-muted":""));chip.title="From the "+u.evidence;return chip;});
+ chips("Features:",c.features,f=>{const chip=text("span",(f.available?"✓ ":"✗ ")+f.label,"repo-chip"+(f.available?" repo-chip-installed":" repo-chip-warning"));chip.title=f.evidence;return chip;});
+ const why=document.createElement("details");why.append(text("summary","Why these?","model-sub"));
+ const list=document.createElement("ul");list.className="model-sub";
+ c.uses.forEach(u=>list.append(text("li",u.label+": from the "+u.evidence+(u.evidence==="model card"?" (mentioned several times, a weaker hint)":""))));
+ c.features.forEach(f=>list.append(text("li",(f.available?"":"Not available: ")+f.label+": "+f.evidence)));
+ list.append(text("li","Read from Hugging Face's metadata, chat template and model card. These are hints, not benchmarks."));
+ why.append(list);box.append(why);
+ return box;
+}
 function hfInspectCard(data){
  const card=text("div","","browse-card inspect-card");const info=text("div","","browse-info");
  const title=text("strong",data.repository);
@@ -898,7 +914,7 @@ function hfInspectCard(data){
  // A language model has no ComfyUI folder; without a reachable LLM server there is nowhere to put it.
  if(isLlm&&!folderSelect.options.length){
   const link=document.createElement("a");link.href=data.url;link.target="_blank";link.rel="noopener noreferrer";link.textContent="Open on Hugging Face ↗";link.className="model-sub";
-  info.append(title,meta,text("p","This is a language model, not a ComfyUI model. Set up llama.cpp, Ollama, Lemonade or LM Studio on "+(browseAgent()||"the PC")+" to download it from here.","companion-warning"),link);
+  info.append(title,meta,capabilitiesBox(data.capabilities),text("p","This is a language model, not a ComfyUI model. Set up llama.cpp, Ollama, Lemonade or LM Studio on "+(browseAgent()||"the PC")+" to download it from here.","companion-warning"),link);
   card.append(info);return card;
  }
  const llm=()=>LLM_SERVERS[folderSelect.value];
@@ -946,7 +962,7 @@ function hfInspectCard(data){
    hfRequest(f),f,hfBehavior(f)));
  });
  const link=document.createElement("a");link.href=data.url;link.target="_blank";link.rel="noopener noreferrer";link.textContent="Open on Hugging Face ↗";link.className="model-sub";
- info.append(title,meta,ctxRow,folderRow,primaryBox,toggle,link);card.append(info,files);return card;
+ info.append(title,meta,capabilitiesBox(data.capabilities),ctxRow,folderRow,primaryBox,toggle,link);card.append(info,files);return card;
 }
 async function inspectLink(url){
  url=(url||"").trim();if(!url)return;
