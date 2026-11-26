@@ -149,3 +149,35 @@ def test_native_ollama_inspect_and_queue(tmp_path, monkeypatch):
     assert client.post('/api/downloads/new', json=payload, headers=headers).json()['id'] == queued.json()['id']
     payload['ollama_model'] = 'https://evil.com/model'
     assert client.post('/api/downloads/new', json=payload, headers=headers).status_code == 422
+
+def test_separate_dashboard_agent_and_viewer_tokens(tmp_path, monkeypatch):
+    from backend.app import main
+    monkeypatch.setattr(main, "DB", tmp_path / "roles.sqlite3")
+    monkeypatch.setattr(main, "TOKEN", "agent")
+    client = TestClient(app)
+    h = lambda t: {"X-ModelHarbor-Token": t}
+    inv = {"device": "pc:comfyui", "models": []}
+    # Only the agent token: it does everything, as before.
+    assert client.get("/api/models", headers=h("agent")).status_code == 200
+    assert client.get("/api/session", headers=h("agent")).json() == {"role": "dashboard"}
+    monkeypatch.setattr(main, "DASHBOARD_TOKEN", "dash")
+    monkeypatch.setattr(main, "VIEWER_TOKEN", "view")
+    # The agent token keeps its own routes but not the dashboard.
+    assert client.post("/api/inventory", headers=h("agent"), json=inv).status_code == 200
+    assert client.get("/api/downloads/next", headers=h("agent"), params={"agent": "pc"}).status_code == 200
+    assert client.get("/api/models", headers=h("agent")).status_code == 403
+    # The dashboard token can't pose as an agent (fake inventory, or claim jobs and the Civitai key).
+    assert client.get("/api/models", headers=h("dash")).status_code == 200
+    assert client.post("/api/inventory", headers=h("dash"), json=inv).status_code == 403
+    assert client.get("/api/downloads/next", headers=h("dash"), params={"agent": "pc"}).status_code == 403
+    assert client.get("/api/session", headers=h("dash")).json() == {"role": "dashboard"}
+    # The viewer reads but changes nothing.
+    assert client.get("/api/models", headers=h("view")).status_code == 200
+    assert client.get("/api/session", headers=h("view")).json() == {"role": "viewer"}
+    assert client.post("/api/workflows/audit", headers=h("view"), json={"workflow": {}}).status_code == 200
+    res = client.post("/api/models/delete", headers=h("view"), json={"device": "pc:comfyui", "path": "x"})
+    assert res.status_code == 403 and res.json()["detail"] == "This token is read-only"
+    assert client.delete("/api/agents/pc", headers=h("view")).status_code == 403
+    assert client.get("/api/hash-jobs/next", headers=h("view"), params={"device": "pc"}).status_code == 403
+    assert client.get("/api/models", headers=h("wrong")).status_code == 401
+    assert client.get("/api/health").status_code == 200

@@ -31,6 +31,9 @@ services:
     environment:
       MODELHARBOR_DB: /data/modelharbor.sqlite3
       MODELHARBOR_AGENT_TOKEN: ${MODELHARBOR_AGENT_TOKEN:?Set MODELHARBOR_AGENT_TOKEN in .env}
+      # Optional, recommended: see "Tokens" below.
+      MODELHARBOR_DASHBOARD_TOKEN: ${MODELHARBOR_DASHBOARD_TOKEN:-}
+      MODELHARBOR_VIEWER_TOKEN: ${MODELHARBOR_VIEWER_TOKEN:-}
     volumes:
       - modelharbor_data:/data
     security_opt:
@@ -76,12 +79,31 @@ In **Dockhand**, use its pull/redeploy functionality on the ModelHarbor stack. I
 
 **GHCR package visibility:** GitHub may create the package as private by default. If anonymous pulls fail, open the repository's package settings and make the container package public, or authenticate your NAS to GHCR.
 
+### Tokens
+
+| Variable | Who uses it | What it can do |
+| --- | --- | --- |
+| `MODELHARBOR_AGENT_TOKEN` (required) | The PCs' agents | Report inventory and status, claim and finish jobs. With no dashboard token set, it is also the dashboard's token, as in earlier versions. |
+| `MODELHARBOR_DASHBOARD_TOKEN` (optional) | You, in the dashboard | Everything in the dashboard. Once set, the agent token no longer opens the dashboard, and this token can't pose as an agent (send a fake inventory, or claim jobs and the Civitai key they carry). |
+| `MODELHARBOR_VIEWER_TOKEN` (optional) | Anyone who should only look | Browse the inventory, sources and jobs. Downloads, deletes, links and settings are refused, and the header shows **read-only**. |
+
+Generate each with `openssl rand -hex 32` and keep them different. Setting a dashboard token needs no change on the PCs; enter the new token in the dashboard's ⚙.
+
 ### Security
 
 - Restrict port 8096 to your trusted LAN or Tailscale. Do not expose the dashboard directly to the public internet.
-- HTTP does not encrypt the API token. Use HTTPS through a trusted reverse proxy for remote access.
-- The dashboard stores the API token in browser session storage.
-- No installed models are changed by inventory scans.
+- HTTP does not encrypt the tokens. For access beyond a trusted LAN, put ModelHarbor behind an HTTPS reverse proxy, for example Caddy:
+
+  ```caddyfile
+  modelharbor.example.lan {
+      tls internal
+      reverse_proxy 127.0.0.1:8096
+  }
+  ```
+
+  Then point the agents' `server` setting at the `https://` address. With `tls internal`, the agent's PC must trust Caddy's root certificate: set `REQUESTS_CA_BUNDLE` to its path in the agent's environment, or use a certificate from a public CA (Caddy's default when the name resolves publicly).
+- The dashboard keeps its token in the browser's local storage ("Remember on this device") or only for the tab's session.
+- Inventory scans change no installed models.
 
 ## Inventory agents
 

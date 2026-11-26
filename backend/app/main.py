@@ -2,13 +2,14 @@
 import hmac
 import json
 import os
+import re
 import sqlite3
 import time
 from contextlib import asynccontextmanager, closing
 from pathlib import Path
 from pathlib import PurePosixPath
 from fastapi import FastAPI, Header, HTTPException
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 from .intelligence import enrich
@@ -24,6 +25,11 @@ from .hash_matches import ensure_tables, queue_job, claim_job, finish_job, get_j
 
 DB = Path(os.environ.get("MODELHARBOR_DB", "/data/modelharbor.sqlite3"))
 TOKEN = os.environ.get("MODELHARBOR_AGENT_TOKEN", "")
+# Optional. With DASHBOARD_TOKEN set, the agent token only works on the routes the PC's agents use, and the
+# dashboard token on everything else; without it the agent token does both, as before. VIEWER_TOKEN is
+# read-only: it can look at the dashboard but not queue, change or delete anything.
+DASHBOARD_TOKEN = os.environ.get("MODELHARBOR_DASHBOARD_TOKEN", "")
+VIEWER_TOKEN = os.environ.get("MODELHARBOR_VIEWER_TOKEN", "")
 
 @asynccontextmanager
 async def lifespan(_app):
@@ -42,6 +48,59 @@ async def revalidate_dashboard(request, call_next):
     if request.url.path == "/" or request.url.path.startswith("/static/"):
         response.headers["Cache-Control"] = "no-cache"
     return response
+
+# Routes the PC's agents call: report inventory and status, claim jobs, and report their progress and results.
+AGENT_ROUTES = re.compile(r"^(?:POST /api/(?:inventory|agents/heartbeat|agents/status)"
+                          r"|GET /api/agents/[^/]+/scan-request"
+                          r"|GET /api/(?:hash-jobs|downloads|converts|deletes)/next"
+                          r"|GET /api/downloads/cleanup-next"
+                          r"|POST /api/(?:hash-jobs|downloads|converts|deletes)/[^/]+/result"
+                          r"|POST /api/downloads/[^/]+/(?:progress|cleanup-result))$")
+# Read-only requests a viewer token may make besides GETs: analysing a workflow stores nothing.
+VIEWER_POSTS = {"/api/workflows/audit"}
+
+
+def _same(value, token):
+    return bool(token) and hmac.compare_digest((value or "").encode(), token.encode())
+
+
+def token_roles(value):
+    """The roles a token grants: "agent", "dashboard" and/or "viewer"."""
+    roles = set()
+    if _same(value, TOKEN):
+        roles.add("agent")
+        if not DASHBOARD_TOKEN:
+            roles.add("dashboard")
+    if _same(value, DASHBOARD_TOKEN):
+        roles.add("dashboard")
+    if _same(value, VIEWER_TOKEN):
+        roles.add("viewer")
+    return roles
+
+
+@app.middleware("http")
+async def check_token_role(request, call_next):
+    """Each route still calls authorize(); this adds which kind of token may use it."""
+    path = request.url.path
+    if path.startswith("/api/") and path != "/api/health":
+        roles = token_roles(request.headers.get("x-modelharbor-token"))
+        route = request.method + " " + path
+        if roles and AGENT_ROUTES.match(route):
+            if "agent" not in roles:
+                return JSONResponse({"detail": "Only the PC's agent token can use this route"}, status_code=403)
+        elif roles and "dashboard" not in roles:
+            if "viewer" not in roles or not (request.method == "GET" or path in VIEWER_POSTS):
+                return JSONResponse({"detail": "This token is read-only" if "viewer" in roles else
+                                     "The agent token can't use the dashboard; use the dashboard token"}, status_code=403)
+    return await call_next(request)
+
+
+@app.get("/api/session")
+def session_info(x_modelharbor_token: str | None = Header(default=None)):
+    """What the dashboard's token may do, so it can hide buttons a read-only token can't use."""
+    authorize(x_modelharbor_token)
+    roles = token_roles(x_modelharbor_token)
+    return {"role": "dashboard" if "dashboard" in roles else "viewer" if "viewer" in roles else "agent"}
 
 @app.get("/", include_in_schema=False)
 def dashboard():
@@ -227,7 +286,8 @@ def _unreachable_runtimes(db):
     return hidden
 
 def authorize(value):
-    if not TOKEN or not hmac.compare_digest((value or "").encode(), TOKEN.encode()):
+    """Any configured token; check_token_role decides which routes each kind may use."""
+    if not token_roles(value):
         raise HTTPException(status_code=401, detail="Unauthorized")
 
 @app.post("/api/inventory")

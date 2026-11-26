@@ -34,7 +34,7 @@ CI (`.github/workflows/ci.yml`) uses Python 3.15. The Docker image (`backend/Doc
 
 ## Environment variables (backend)
 
-- `MODELHARBOR_AGENT_TOKEN` is the shared secret. Every `/api/*` route except `/api/health` checks the `X-ModelHarbor-Token` header with `authorize()` in `main.py`.
+- `MODELHARBOR_AGENT_TOKEN` is the agents' secret, and also the dashboard's unless `MODELHARBOR_DASHBOARD_TOKEN` is set. `MODELHARBOR_VIEWER_TOKEN` is an optional read-only token. Every `/api/*` route except `/api/health` checks the `X-ModelHarbor-Token` header with `authorize()` in `main.py`; the `check_token_role` middleware then limits the agent token to `AGENT_ROUTES` and the viewer to GETs. A new agent-facing route must be added to `AGENT_ROUTES`.
 - `MODELHARBOR_DB` is the SQLite path. Tests monkeypatch `main.DB` to a `tmp_path` file.
 - `MODELHARBOR_SOURCE_CHECKS=0` turns off the background thread that checks for upstream updates (`sources.start_worker`, started in the FastAPI lifespan). Tests use `TestClient(app)` without a context manager, so the lifespan and the worker never run in tests.
 
