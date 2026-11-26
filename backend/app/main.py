@@ -1,4 +1,4 @@
-"""ModelHarbor read-only API foundation."""
+"""ModelHarbor API: inventory, source checks, and the job queues the PC's agents work through."""
 import hmac
 import json
 import os

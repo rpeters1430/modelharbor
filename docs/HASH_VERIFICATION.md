@@ -1,6 +1,6 @@
 # Exact Hugging Face file matching with SHA-256
 
-ModelHarbor can verify a **specific installed ComfyUI model file** against a Hugging Face repository file using SHA-256. The NAS never reads or downloads the local model binaries. Only the Windows worker reads the selected local file.
+ModelHarbor can verify a **specific installed ComfyUI model file** against a Hugging Face repository file using SHA-256. The NAS never reads or downloads the local model binaries. Only the PC's agent reads the selected local file.
 
 ## How it works
 
@@ -16,10 +16,10 @@ ModelHarbor can verify a **specific installed ComfyUI model file** against a Hug
 
 ## Upgrade instructions for Windows
 
-This update requires **both the new NAS container and the updated Windows agent scripts**.
+This update requires **both the new NAS container and the updated agent scripts**.
 
 - Merge the PR after checks pass. Pull and redeploy ModelHarbor through Dockhand on your NAS.
-- Update the local Windows agent checkout containing `modelharbor_agent.py`, `hash_worker.py`, and `install-task.ps1`.
+- Update the PC's agent checkout containing `modelharbor_agent.py`, `hash_worker.py`, and `install-task.ps1`.
 - Run `powershell -ExecutionPolicy Bypass -File agent/install-task.ps1` from the repository root while signed into your usual Windows account. This preserves the inventory sync schedule and installs/starts a second scheduled task, **ModelHarbor Hash Worker**.
 - Verify the second task is running using Windows Task Scheduler.
 - Your existing `%APPDATA%\ModelHarbor\agent.json` and environment token are preserved.
