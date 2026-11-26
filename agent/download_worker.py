@@ -8,6 +8,7 @@ import time
 from pathlib import Path
 from urllib.parse import urlsplit
 import requests
+import llamacpp_scan
 from hash_worker import allowed_file
 from hash_cache import sha256_file
 from lemonade_scan import DEFAULT_URL as LEMONADE_URL, auth_headers as lemonade_headers
@@ -51,9 +52,12 @@ def existing_folder(root, parent, family):
         directory = match
     return directory
 
-def download_file(session, job, roots, report_progress):
-    """Return (sha256, final_path). Raises ValueError with a readable reason."""
-    if job.get("target_folder"):
+def download_file(session, job, roots, report_progress, directory=None):
+    """Return (sha256, final_path). Raises ValueError with a readable reason.
+    directory: a fixed folder chosen by the agent's config (the llama.cpp models folder)."""
+    if directory is not None:
+        directory = Path(directory)
+    elif job.get("target_folder"):
         # A fixed ComfyUI folder, optionally with one family subfolder ("loras/SDXL").
         parent, _, family = job["target_folder"].partition("/")
         if parent not in NEW_FOLDERS or family and not FAMILY.fullmatch(family) or not roots:
@@ -299,8 +303,19 @@ def run_lmstudio_action(session, lmstudio_url, job):
         raise ValueError("Unsupported LM Studio action")
     return None, "lmstudio://" + job["file_name"]
 
+def download_llamacpp(session, job, models_dir, restart_command, report_progress):
+    """Save a hash-checked GGUF into the llama.cpp models folder, then restart llama-server so it lists it."""
+    if not models_dir:
+        raise ValueError("llama.cpp is not set up on this PC: set llamacpp_models_dir in the agent's config")
+    directory = Path(models_dir).resolve(strict=True)
+    sha, path = download_file(session, job, [], report_progress, directory=directory)
+    error = llamacpp_scan.restart(restart_command)
+    if error:  # the file is saved and verified; a manual restart makes it appear
+        llamacpp_scan.LOG.warning("%s; restart llama.cpp yourself to see %s", error, job["file_name"])
+    return sha, path
+
 def process_one(session, server, token, agent, roots, ollama_url, lemonade_url=LEMONADE_URL, lemonade_load=True,
-                lmstudio_url="http://127.0.0.1:1234"):
+                lmstudio_url="http://127.0.0.1:1234", llamacpp_dir=None, llamacpp_restart=None):
     headers = {"X-ModelHarbor-Token": token}
     base = server.rstrip("/") + "/api/downloads/"
     res = session.get(base + "next", params={"agent": agent}, headers=headers, timeout=20)
@@ -326,6 +341,9 @@ def process_one(session, server, token, agent, roots, ollama_url, lemonade_url=L
             result["sha256"], result["result_path"] = pull_lmstudio(session, lmstudio_url, job, report_progress)
         elif job["provider"] in ("lmstudio-load", "lmstudio-unload"):
             result["sha256"], result["result_path"] = run_lmstudio_action(session, lmstudio_url, job)
+        elif job["provider"] == "llamacpp":
+            result["sha256"], result["result_path"] = download_llamacpp(
+                session, job, llamacpp_dir, llamacpp_restart, report_progress)
         else:
             result["sha256"], result["result_path"] = download_file(session, job, roots, report_progress)
     except (OSError, ValueError, requests.RequestException) as exc:
@@ -366,7 +384,7 @@ def delete_files(job, roots, hasher=sha256_file):
             if side.is_file() and not side.is_symlink():
                 side.unlink()
 
-def process_delete(session, server, token, agent, roots):
+def process_delete(session, server, token, agent, roots, llamacpp_dir=None, llamacpp_restart=None):
     headers = {"X-ModelHarbor-Token": token}
     base = server.rstrip("/") + "/api/deletes/"
     res = session.get(base + "next", params={"agent": agent}, headers=headers, timeout=20)
@@ -375,10 +393,16 @@ def process_delete(session, server, token, agent, roots):
     if not job:
         return False
     error = None
+    llama_root = Path(llamacpp_dir).resolve() if llamacpp_dir else None
     try:
-        delete_files(job, roots)
+        delete_files(job, list(roots) + ([str(llama_root)] if llama_root else []))
     except (OSError, ValueError) as exc:
         error = str(exc)[:300]
+    # llama-server only reads its folder at start, so it would keep offering the deleted model.
+    if not error and llama_root and any(Path(p).resolve().parent == llama_root for p in job["paths"]):
+        restart_error = llamacpp_scan.restart(llamacpp_restart)
+        if restart_error:
+            llamacpp_scan.LOG.warning(restart_error)
     session.post(base + job["id"] + "/result", headers=headers,
                  json={"agent": agent, "error": error}, timeout=30).raise_for_status()
     return True

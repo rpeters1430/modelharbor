@@ -3,7 +3,7 @@ import re
 from collections import defaultdict
 
 def physical_device(source):
-    return source.rsplit(":", 1)[0] if source.endswith((":comfyui", ":ollama", ":lemonade")) else source
+    return source.rsplit(":", 1)[0] if source.endswith((":comfyui", ":ollama", ":lemonade", ":llamacpp")) else source
 
 PATTERNS = (
     (r"krea.?2", "Krea 2"),  # before FLUX, which "Flux.1 Krea" belongs to

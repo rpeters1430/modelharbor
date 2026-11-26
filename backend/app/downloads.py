@@ -295,6 +295,27 @@ def create_lemonade(db, agent, repo, remote_path, size_bytes=None):
         (job_id, agent, agent + ":lemonade", checkpoint, name, size_bytes, now, now, source_ref))
     return dict(zip(FIELDS, db.execute(f"SELECT {','.join(FIELDS)} FROM download_jobs WHERE id=?", (job_id,)).fetchone()))
 
+def create_llamacpp(db, agent, repo, item):
+    """Queue a Hugging Face GGUF download into the PC's llama.cpp models folder.
+
+    llama-server's router lists every .gguf in that folder under its file name, so the file
+    name is the model name apps use. Hash-verified like a ComfyUI download."""
+    file_name = _single_gguf(item.get("path"), "llama.cpp").name
+    if not SAFE_NAME.fullmatch(file_name) or not item.get("sha256"):
+        raise HTTPException(422, "Unsafe file name or no published hash")
+    source_ref = "llamacpp:" + file_name
+    existing = db.execute(f"SELECT {','.join(FIELDS)} FROM download_jobs WHERE source_ref=? AND agent=? AND state IN (?,?)",
+                          (source_ref, agent, *ACTIVE)).fetchone()
+    if existing:
+        return dict(zip(FIELDS, existing))
+    url = "https://huggingface.co/" + quote(repo, safe="/") + "/resolve/main/" + quote(item["path"], safe="/")
+    now, job_id = int(time.time()), uuid.uuid4().hex
+    db.execute("""INSERT INTO download_jobs (id,agent,device,path,provider,url,file_name,expected_sha,size_bytes,
+        state,created_at,updated_at,source_ref) VALUES (?,?,?,'','llamacpp',?,?,?,?,'queued',?,?,?)""",
+        (job_id, agent, agent + ":llamacpp", url, file_name, item["sha256"].lower(), item.get("size_bytes"),
+         now, now, source_ref))
+    return dict(zip(FIELDS, db.execute(f"SELECT {','.join(FIELDS)} FROM download_jobs WHERE id=?", (job_id,)).fetchone()))
+
 LMSTUDIO_QUANT = re.compile(r"(?i)(?<![a-z0-9])(IQ[1-4]_(?:XXS|XS|S|M|NL)|Q[2-8]_[K0-9]+(?:_[SML])?|BF16|F16|F32)(?![a-z0-9])")
 
 def lmstudio_quantization(remote_path):

@@ -29,8 +29,8 @@ def get(db, job_id):
 
 
 def request(db, device, path):
-    if not device.endswith(":comfyui"):
-        raise HTTPException(422, "Only ComfyUI model files can be deleted here")
+    if not device.endswith((":comfyui", ":llamacpp")):
+        raise HTTPException(422, "Only ComfyUI and llama.cpp model files can be deleted here")
     row = db.execute("SELECT sha256,file_id FROM models WHERE device=? AND path=?", (device, path)).fetchone()
     if not row:
         raise HTTPException(404, "Model not found in inventory")
@@ -47,7 +47,7 @@ def request(db, device, path):
         return _job(active)
     now, job_id = int(time.time()), uuid.uuid4().hex
     db.execute("INSERT INTO delete_jobs VALUES (?,?,?,?,?,'queued',NULL,?,?)",
-               (job_id, device.removesuffix(":comfyui"), device, json.dumps(paths), sha, now, now))
+               (job_id, device.rsplit(":", 1)[0], device, json.dumps(paths), sha, now, now))
     return get(db, job_id)
 
 
