@@ -445,8 +445,34 @@ async function queueLmStudioAction(model,action,instanceId,contextLength,status)
   poll();
  }catch(err){status.textContent=err.message;}
 }
+// llama-server router mode: load or unload a GGUF from its models folder through the PC's agent.
+const LLAMACPP_STATUS={loaded:"Loaded",loading:"Loading…",unloaded:"Not loaded",sleeping:"Sleeping (unloads when idle)",failed:"Failed to load: check llama-server's log",downloading:"Downloading",incomplete:"Incomplete"};
+function renderLlamaCpp(m){
+ const box=$("runtime-box"),meta=m.runtime_meta||{},state=meta.status||"unknown";
+ box.append(text("h3","llama.cpp","section-title"));
+ box.append(text("p",state==="unknown"?"The PC's agent couldn't reach llama-server on its last sync. Set llamacpp_url in its config to show load status and Load/Unload here.":"Status: "+(LLAMACPP_STATUS[state]||state)+" · model name "+(meta.model_id||m.name.replace(/\.gguf$/i,"")),"muted"));
+ if(state==="unknown"||readOnly)return;
+ const status=text("p","","muted"),row=text("div","","runtime-action-row");
+ const action=["loaded","loading","sleeping"].includes(state)?"unload":"load";
+ const button=text("button",action==="load"?"Load in llama.cpp":"Unload from llama.cpp",action==="load"?"primary":"repo-action");button.type="button";
+ button.addEventListener("click",async()=>{
+  button.disabled=true;status.textContent="Sending request to the PC's agent…";
+  try{
+   let job=await apiRequest("/api/llamacpp/actions","POST",{device:m.device,path:m.path,action});
+   while(job.state==="queued"||job.state==="running"){
+    status.textContent=job.state==="queued"?"Waiting for the PC's agent…":(action==="load"?"llama-server is loading the model…":"llama-server is unloading the model…");
+    await new Promise(r=>setTimeout(r,2500));job=(await apiRequest("/api/downloads")).find(x=>x.id===job.id)||job;
+   }
+   if(job.state==="failed"){status.textContent="llama.cpp request failed: "+(job.error||"unknown error");button.disabled=false;return;}
+   status.textContent=action==="load"?"Loaded. The status updates after the agent's rescan.":"Unloaded. The status updates after the agent's rescan.";
+  }catch(err){status.textContent=err.message;button.disabled=false;}
+ });
+ row.append(button);box.append(row,status);
+}
 function renderLmStudio(m){
- const box=$("runtime-box");box.replaceChildren();box.hidden=!m.kind.startsWith("lmstudio/");if(box.hidden)return;
+ const box=$("runtime-box");box.replaceChildren();
+ if(m.kind.startsWith("llamacpp/")){box.hidden=false;renderLlamaCpp(m);return;}
+ box.hidden=!m.kind.startsWith("lmstudio/");if(box.hidden)return;
  const meta=m.runtime_meta||{},quant=meta.quantization||{},loaded=Array.isArray(meta.loaded_instances)?meta.loaded_instances:[],runtimeAgent=agents.find(a=>a.device===m.device.replace(/:lmstudio$/, "")),runtime=runtimeAgent?.lmstudio;
  const heading=text("h3","LM Studio","section-title");box.append(heading);
  box.append(text("p",[meta.architecture,meta.format,quant.name,meta.params_string,meta.max_context_length?"Max context "+Number(meta.max_context_length).toLocaleString():""].filter(Boolean).join(" · ")||"Runtime details unavailable","muted"));
@@ -578,6 +604,8 @@ function fillBrowseAgents(){
 function newDownloadStatus(j){
  if(j.state==="queued")return "Waiting for the PC's agent…";
  if(j.state==="running"&&j.provider==="ollama")return "Ollama is pulling "+j.file_name+"…";
+ if(j.state==="running"&&j.provider.startsWith("llamacpp-"))return "llama-server is processing a "+j.provider.slice("llamacpp-".length)+" request…";
+ if(j.state==="done"&&j.provider.startsWith("llamacpp-"))return "✓ llama.cpp "+j.provider.slice("llamacpp-".length)+" request finished";
  if(j.state==="running"&&j.provider.startsWith("lmstudio-"))return "LM Studio is processing a "+j.provider.slice("lmstudio-".length)+" request…";
  if(j.state==="running"&&j.provider==="lmstudio")return "LM Studio is downloading "+(j.bytes_done?fmt(j.bytes_done)+(j.size_bytes?" of "+fmt(j.size_bytes):"")+" ":"")+j.file_name+"…";
  if(j.state==="running"&&j.provider==="lemonade")return "Lemonade is downloading "+(j.bytes_done?fmt(j.bytes_done)+(j.size_bytes?" of "+fmt(j.size_bytes):"")+" ":"")+"then loading "+j.file_name+"…";

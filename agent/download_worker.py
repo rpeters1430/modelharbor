@@ -315,7 +315,8 @@ def download_llamacpp(session, job, models_dir, restart_command, report_progress
     return sha, path
 
 def process_one(session, server, token, agent, roots, ollama_url, lemonade_url=LEMONADE_URL, lemonade_load=True,
-                lmstudio_url="http://127.0.0.1:1234", llamacpp_dir=None, llamacpp_restart=None):
+                lmstudio_url="http://127.0.0.1:1234", llamacpp_dir=None, llamacpp_restart=None,
+                llamacpp_url=llamacpp_scan.DEFAULT_URL):
     headers = {"X-ModelHarbor-Token": token}
     base = server.rstrip("/") + "/api/downloads/"
     res = session.get(base + "next", params={"agent": agent}, headers=headers, timeout=20)
@@ -341,6 +342,9 @@ def process_one(session, server, token, agent, roots, ollama_url, lemonade_url=L
             result["sha256"], result["result_path"] = pull_lmstudio(session, lmstudio_url, job, report_progress)
         elif job["provider"] in ("lmstudio-load", "lmstudio-unload"):
             result["sha256"], result["result_path"] = run_lmstudio_action(session, lmstudio_url, job)
+        elif job["provider"] in ("llamacpp-load", "llamacpp-unload"):
+            llamacpp_scan.action(session, llamacpp_url, job["provider"].split("-", 1)[1], job["file_name"])
+            result["result_path"] = "llamacpp://" + job["file_name"]
         elif job["provider"] == "llamacpp":
             result["sha256"], result["result_path"] = download_llamacpp(
                 session, job, llamacpp_dir, llamacpp_restart, report_progress)

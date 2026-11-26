@@ -126,3 +126,83 @@ def test_delete_requests_accept_llamacpp_files(db):
     db.execute("INSERT INTO models VALUES ('pc:ollama','o://x','x','ollama/x',5,1,NULL,?)", (SHA,))
     with pytest.raises(HTTPException):
         deletes.request(db, "pc:ollama", "o://x")
+
+
+class RouterResponse:
+    def __init__(self, body, status=200):
+        self.body, self.status_code = body, status
+        self.content = json.dumps(body).encode()
+    def json(self):
+        return self.body
+    def raise_for_status(self):
+        if self.status_code >= 400:
+            raise OSError(self.status_code)
+
+
+class RouterSession:
+    """llama-server's router: GET /models and POST /models/load|unload."""
+    def __init__(self, models=None, post_status=200, post_body=None):
+        self.models, self.post_status, self.post_body, self.posts = models or [], post_status, post_body, []
+    def get(self, url, **kwargs):
+        assert url == "http://127.0.0.1:8080/models"
+        return RouterResponse({"data": self.models})
+    def post(self, url, json=None, **kwargs):
+        self.posts.append((url, json, kwargs["headers"]))
+        return RouterResponse(self.post_body if self.post_body is not None else {"success": True}, self.post_status)
+
+
+def test_scan_records_each_models_router_status(tmp_path):
+    (tmp_path / "qwen3-8b-Q4_K_M.gguf").write_bytes(b"x")
+    (tmp_path / "gemma-3-4b.gguf").write_bytes(b"y")
+    (tmp_path / "other.gguf").write_bytes(b"z")
+    session = RouterSession([{"id": "qwen3-8b-Q4_K_M", "status": {"value": "loaded"}},
+                             {"id": "gemma", "path": "/models/gemma-3-4b.gguf", "status": {"value": "unloaded", "failed": True}}])
+    records = llamacpp_scan.add_statuses(llamacpp_scan.scan(tmp_path, "pc:llamacpp"), session, "http://127.0.0.1:8080")
+    meta = {r["name"]: r["runtime_meta"] for r in records}
+    assert meta["qwen3-8b-Q4_K_M.gguf"] == {"model_id": "qwen3-8b-Q4_K_M", "status": "loaded"}
+    assert meta["gemma-3-4b.gguf"]["status"] == "failed"  # matched by path; its last load failed
+    assert meta["other.gguf"]["status"] == "unknown"
+
+
+def test_scan_without_llama_server_keeps_the_file_list(tmp_path):
+    (tmp_path / "m.gguf").write_bytes(b"x")
+    class Down:
+        def get(self, *a, **k):
+            raise OSError("connection refused")
+    records = llamacpp_scan.add_statuses(llamacpp_scan.scan(tmp_path, "pc:llamacpp"), Down(), "http://127.0.0.1:8080")
+    assert [r["name"] for r in records] == ["m.gguf"] and "runtime_meta" not in records[0]
+
+
+def test_agent_loads_and_unloads_through_the_router(monkeypatch):
+    monkeypatch.setenv("LLAMACPP_API_KEY", "secret")
+    session = RouterSession()
+    llamacpp_scan.action(session, "http://127.0.0.1:8080/", "load", "qwen3-8b-Q4_K_M")
+    assert session.posts == [("http://127.0.0.1:8080/models/load", {"model": "qwen3-8b-Q4_K_M"},
+                              {"Authorization": "Bearer secret"})]
+    with pytest.raises(ValueError, match="refused to unload"):
+        llamacpp_scan.action(RouterSession(post_status=400, post_body={"error": {"message": "not loaded"}}),
+                             "http://127.0.0.1:8080", "unload", "m")
+    with pytest.raises(ValueError):
+        llamacpp_scan.action(session, "http://127.0.0.1:8080", "delete", "m")
+
+
+def test_load_and_unload_jobs_through_the_api(tmp_path, monkeypatch):
+    from backend.app import main
+    monkeypatch.setattr(main, "DB", tmp_path / "act.sqlite3")
+    client, headers = TestClient(app), {"X-ModelHarbor-Token": "test-token"}
+    model = {"device": "pc:llamacpp", "path": "/m/qwen.gguf", "name": "qwen.gguf", "kind": "llamacpp/gguf",
+             "size_bytes": 1, "modified_ns": 0, "runtime_meta": {"model_id": "qwen", "status": "unloaded"}}
+    client.post("/api/inventory", headers=headers, json={"device": "pc:llamacpp", "models": [model]})
+    body = {"device": "pc:llamacpp", "path": "/m/qwen.gguf", "action": "load"}
+    assert client.post("/api/llamacpp/actions", headers=headers, json=body).status_code == 409  # no recent sync
+    client.post("/api/agents/heartbeat", headers=headers, json={"device": "pc", "comfyui_count": 0, "llamacpp_count": 1})
+    job = client.post("/api/llamacpp/actions", headers=headers, json=body).json()
+    assert (job["provider"], job["file_name"], job["state"]) == ("llamacpp-load", "qwen", "queued")
+    assert client.post("/api/llamacpp/actions", headers=headers, json=body).json()["id"] == job["id"]
+    assert client.post("/api/llamacpp/actions", headers=headers, json={**body, "action": "unload"}).status_code == 409
+    claimed = client.get("/api/downloads/next", headers=headers, params={"agent": "pc"}).json()["job"]
+    assert (claimed["provider"], claimed["file_name"]) == ("llamacpp-load", "qwen")
+    client.post("/api/inventory", headers=headers, json={"device": "pc:llamacpp", "models": [
+        {**model, "runtime_meta": {"model_id": "qwen", "status": "unknown"}}]})
+    res = client.post("/api/llamacpp/actions", headers=headers, json={**body, "path": "/m/qwen.gguf"})
+    assert res.status_code == 409 and "llamacpp_url" in res.json()["detail"]

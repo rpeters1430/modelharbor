@@ -15,6 +15,7 @@ In the agent's `agent.json`:
 
 - `llamacpp_models_dir` is the folder llama-server reads with `--models-dir`, as seen from the PC. If llama-server runs in Docker, use the host folder that is mounted into the container. Leave it out to turn llama.cpp off; on the next sync its models are cleared from the dashboard. If the folder can't be read (an unmounted drive, say), its models are hidden until it is back, rather than cleared.
 - `llamacpp_restart_command` runs after a model is downloaded or deleted. llama-server reads its models folder only when it starts, so without a restart a new model doesn't appear. The default restarts a Docker container named `llama-cpp`. The agent's user must be able to run the command (for Docker, be in the `docker` group). Set it to `[]` if you restart llama-server yourself.
+- `llamacpp_url` is llama-server's address as seen from the PC (default `http://127.0.0.1:8080`). Each sync asks it which models are loaded, so the dashboard can show the status and offer **Load** and **Unload**. If llama-server was started with `--api-key`, put the key in `LLAMACPP_API_KEY` in the agent's environment (on Linux, `~/.config/ModelHarbor/agent.env`), never in `agent.json`.
 
 Restart the agent's background task after changing the config. On Linux, run `systemctl --user restart modelharbor-worker`.
 
@@ -47,6 +48,10 @@ When **Save into** is an LLM server, each GGUF file shows which server it suits 
 - **⇄ Runs well in both**: everything else, such as `BF16`, `F16` or `MXFP4`.
 
 When Ollama is the destination and a file is optimized for llama.cpp, the hint suggests saving it into llama.cpp instead, and Ollama's recommended file skips llama.cpp-tuned quants when another one fits. This is advice from the file name, size and the PC's GPU, not a benchmark.
+
+## Load and unload a model
+
+Open a llama.cpp model on the dashboard. The **llama.cpp** section shows its status in llama-server's router (loaded, not loaded, sleeping, or failed to load) and a **Load in llama.cpp** or **Unload from llama.cpp** button. The PC's agent passes the request to llama-server (`POST /models/load` or `/models/unload`), and the status updates after its rescan. Loading uses the settings llama-server was started with, such as its context size. If the agent couldn't reach llama-server on its last sync, the section says so instead of offering the buttons. A read-only viewer token sees the status but no buttons.
 
 ## Delete a model
 

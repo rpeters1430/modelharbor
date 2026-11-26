@@ -968,6 +968,41 @@ def lmstudio_action(payload: LMStudioActionRequest, x_modelharbor_token: str | N
             return downloads.create_lmstudio_action(db, downloads.physical_device(payload.device), payload.device,
                 payload.path, payload.action, model_key, instance_id, payload.context_length)
 
+class LlamaCppActionRequest(BaseModel):
+    device: str = Field(min_length=1, max_length=100)
+    path: str = Field(min_length=1, max_length=4096)
+    action: str = Field(pattern=r"^(load|unload)$")
+
+@app.post("/api/llamacpp/actions", status_code=202)
+def llamacpp_action(payload: LlamaCppActionRequest, x_modelharbor_token: str | None = Header(default=None)):
+    """Load or unload a model in llama-server's router mode, through the PC's agent."""
+    authorize(x_modelharbor_token)
+    if not payload.device.endswith(":llamacpp"):
+        raise HTTPException(422, "Choose a llama.cpp model")
+    agent = downloads.physical_device(payload.device)
+    with closing(connect()) as db:
+        with db:
+            row = db.execute("SELECT kind,runtime_meta,name FROM models WHERE device=? AND path=?",
+                             (payload.device, payload.path)).fetchone()
+            if not row or not row[0].startswith("llamacpp/"):
+                raise HTTPException(404, "llama.cpp model not found in inventory")
+            try:
+                meta = json.loads(row[1]) if row[1] else {}
+            except (TypeError, ValueError):
+                meta = {}
+            status = meta.get("status")
+            if status in (None, "unknown"):
+                raise HTTPException(409, "The PC's agent can't reach llama-server; check llamacpp_url in its config")
+            if payload.action == "load" and status in ("loaded", "loading"):
+                raise HTTPException(409, "This model is already " + status + " in llama.cpp")
+            if payload.action == "unload" and status not in ("loaded", "loading", "sleeping"):
+                raise HTTPException(409, "This model isn't loaded in llama.cpp")
+            heartbeat = db.execute("SELECT last_seen FROM agent_heartbeats WHERE device=?", (agent,)).fetchone()
+            if not heartbeat or int(time.time()) - heartbeat[0] > 3900:
+                raise HTTPException(409, "The PC's agent hasn't synced recently")
+            model_id = meta.get("model_id") or (row[2][:-5] if row[2].lower().endswith(".gguf") else row[2])
+            return downloads.create_llamacpp_action(db, agent, payload.device, payload.path, payload.action, model_id)
+
 class ConvertRequest(BaseModel):
     device: str = Field(min_length=1, max_length=100)
     path: str = Field(min_length=1, max_length=4096)
