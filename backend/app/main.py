@@ -15,7 +15,7 @@ from .intelligence import enrich
 from .providers import search as provider_search
 from urllib.parse import quote
 from .hf_repository import list_model_files, validate_repo
-from .hf_inspect import inspect_huggingface
+from .hf_inspect import inspect_huggingface, recommend_primary
 from .suggest_matches import suggest_matches, link_huggingface
 from . import browse, converts, deletes, downloads, fit, civitai_credentials, workflow_audit
 from .sources import _civitai_model, _file_sha, fetch
@@ -317,6 +317,13 @@ def _llm_hardware(db, agent):
     """Hardware reported for a remote LLM runtime, when the agent can identify it."""
     return _hardware(db, agent, "lemonade") or _hardware(db, agent, "lmstudio")
 
+def _runtime_hardware(db, agent):
+    """The PC each LLM server runs on. llama.cpp's models folder and Ollama are on the agent's own PC;
+    Lemonade and LM Studio report their own hardware, which may be another PC's."""
+    hw = _hardware(db, agent)
+    return {"llamacpp": hw, "ollama": hw, "lemonade": _hardware(db, agent, "lemonade"),
+            "lmstudio": _hardware(db, agent, "lmstudio")}
+
 class AgentStatus(BaseModel):
     device: str = Field(min_length=1, max_length=100)
     phase: str = Field(pattern=r"^(scanning|hashing|uploading|idle|error)$")
@@ -380,7 +387,8 @@ def huggingface_repository(repo: str, q: str = "", agent: str = "", x_modelharbo
     authorize(x_modelharbor_token)
     with closing(connect()) as db:
         shas, hw, llm_hw, lmstudio_hw = browse.local_shas(db), _hardware(db, agent), _llm_hardware(db, agent), _hardware(db, agent, "lmstudio")
-    return fit.annotate_listing(browse.mark_huggingface(list_model_files(repo, q), shas), hw, llm_hw, lmstudio_hw)
+        runtime_hw = _runtime_hardware(db, agent)
+    return fit.annotate_listing(browse.mark_huggingface(list_model_files(repo, q), shas), hw, llm_hw, lmstudio_hw, runtime_hw)
 
 @app.get("/api/huggingface/inspect")
 def huggingface_inspect(url: str, agent: str = "", x_modelharbor_token: str | None = Header(default=None)):
@@ -391,14 +399,14 @@ def huggingface_inspect(url: str, agent: str = "", x_modelharbor_token: str | No
         raise HTTPException(502, f"Hugging Face is unavailable right now: {exc}") from exc
     with closing(connect()) as db:
         shas, hw, llm_hw = browse.local_shas(db), _hardware(db, agent), _llm_hardware(db, agent)
-        lmstudio_hw = _hardware(db, agent, "lmstudio")
-    annotated = fit.annotate_listing(browse.mark_huggingface({"files": data["files"]}, shas), hw, llm_hw, lmstudio_hw)
+        lmstudio_hw, runtime_hw = _hardware(db, agent, "lmstudio"), _runtime_hardware(db, agent)
+    annotated = fit.annotate_listing(browse.mark_huggingface({"files": data["files"]}, shas), hw, llm_hw, lmstudio_hw, runtime_hw)
     data["files"] = annotated["files"]
     if data.get("primary_file"):
         match = next((f for f in data["files"] if f["path"] == data["primary_file"]["path"]), None)
         if match:
             data["primary_file"] = match
-    return data
+    return recommend_primary(data)
 
 class VerifyRequest(BaseModel):
     device: str = Field(min_length=1,max_length=100)

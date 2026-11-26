@@ -8,6 +8,7 @@ from fastapi import HTTPException
 from .hf_repository import list_model_files, validate_repo
 from .sources import fetch
 from .browse import folder_for, valid_folder, FAMILY_FOLDERS, FOLDERS
+from .fit import recommended_gguf, variant_key
 
 FAMILY_PATTERNS = [
     ("MOSS", r"\bmoss\b", "MOSS"),
@@ -225,3 +226,30 @@ def inspect_huggingface(url_or_repo: str, get=fetch) -> dict:
         "likes": data.get("likes"),
         "created_at": data.get("createdAt"),
     }
+
+
+def recommend_primary(data: dict) -> dict:
+    """After the files are rated for the PC, pick the file to recommend for each destination.
+
+    "recommended" maps "comfyui" and each LLM server to a file path. For ComfyUI, the top-scored file is
+    swapped for the copy of it marked best for the PC (fp8 instead of an fp16 that doesn't fit, say).
+    For an LLM server, the best single-file GGUF for that server's PC. A file named in the link stays the
+    primary file whatever fits."""
+    files, primary = data.get("files") or [], data.get("primary_file")
+    recommended = {}
+    if primary:
+        group = [f for f in files if variant_key(f["path"]) == variant_key(primary["path"])]
+        best = next((f for f in group if f.get("best")), None)
+        if best and not data.get("specified_path"):
+            primary = data["primary_file"] = best
+        recommended["comfyui"] = primary["path"]
+    for runtime in ("llamacpp", "ollama", "lemonade", "lmstudio"):
+        pick = recommended_gguf(files, runtime)
+        if pick:
+            recommended[runtime] = pick["path"]
+            # One ★ per server on this card, on the file recommended for it.
+            for f in files:
+                if runtime in (f.get("runtimes") or {}):
+                    f["runtimes"][runtime]["best"] = f is pick
+    data["recommended"] = recommended
+    return data

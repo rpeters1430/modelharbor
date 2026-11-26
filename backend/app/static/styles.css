@@ -39,6 +39,7 @@
 #unmatched-link{display:block;padding:4px 0 0;font-size:13px;cursor:pointer}#unmatched-link[hidden]{display:none}
 .match-none{color:#ffd2a8;font-size:13px;margin:0}.provider-results>.primary{text-align:left;overflow-wrap:anywhere}
 .fit{grid-column:1/-1;font-size:11px;overflow-wrap:anywhere}.fit-good{color:#8ff0c2}.fit-ok{color:#ffd2a8}.fit-bad{color:#ffb4ab}.browse-file.best{outline:1px solid #3fb98a}
+.runtime-hint{grid-column:1/-1;font-size:11px;color:#a9c8ff;overflow-wrap:anywhere}.runtime-hint.mismatch{color:#ffd2a8}
 .link-import{display:grid;grid-template-columns:1fr auto;gap:10px;margin-bottom:14px}
 .link-import input{width:100%}
 .inspect-card{border-color:#4d5f8c;background:#18233c}

@@ -606,17 +606,39 @@ function lemonadeModelName(repository,path){
 // llama.cpp lists each GGUF in its models folder by file name (mirrors downloads.create_llamacpp).
 const llamacppModelName=(repository,path)=>(path||"").split("/").pop();
 const LLM_SERVERS={llamacpp:{label:"llama.cpp",name:llamacppModelName},ollama:{label:"Ollama",name:ollamaModelName},lemonade:{label:"Lemonade",name:lemonadeModelName},lmstudio:{label:"LM Studio",name:(repo,path)=>"lmstudio:"+repo+":"+lmstudioQuant(path)}};
+// An LLM server that runs on another PC (Lemonade, LM Studio) is rated for that PC, the rest for the agent's.
+const runtimePc=p=>p==="lemonade"||p==="lmstudio"?"the "+LLM_SERVERS[p].label+" PC":"your PC";
+// The LLM server the selected PC's agent can reach, in the order Browse prefers them.
+function preferredRuntime(f){
+ const a=agents.find(x=>x.device===browseAgent()),rts=f.runtimes||{};
+ const up={llamacpp:a&&a.llamacpp_count!=null,lemonade:a&&a.lemonade_count!=null,ollama:a&&a.ollama_count!=null,lmstudio:a&&a.lmstudio_count!=null};
+ return ["llamacpp","lemonade","ollama","lmstudio"].find(k=>rts[k]&&up[k])||["llamacpp","ollama","lemonade","lmstudio"].find(k=>rts[k])||null;
+}
+// Which LLM server a GGUF suits best (fit.gguf_runtime); shown only when the destination is an LLM server.
+function runtimeHint(f,provider){
+ const o=f.optimized_for;if(!o||!LLM_SERVERS[provider])return null;
+ const text=o.runtime==="either"?"⇄ Runs well in llama.cpp and Ollama":"⚡ Optimized for "+LLM_SERVERS[o.runtime].label;
+ // Only warn one way: llama.cpp runs Ollama-style quants just as well, but not the reverse.
+ const other=provider==="ollama"&&o.runtime==="llamacpp";
+ return {text:text+" · "+o.reason+(other?" · consider saving into "+LLM_SERVERS[o.runtime].label+" instead":""),mismatch:other};
+}
 function lmstudioQuant(path){const stem=(path||"").split("/").pop().replace(/\.gguf$/i,"");const m=stem.match(/(?:^|[^a-z0-9])(IQ[1-4]_(?:XXS|XS|S|M|NL)|Q[2-8]_[K0-9]+(?:_[SML])?|BF16|F16|F32)(?=$|[^a-z0-9])/i);return m?m[1].toUpperCase():"";}
 function fileRow(label,onPc,ref,request,f={},behavior={}){
  // One downloadable file: a destination-specific installed state, active job, or Download button.
- const row=text("div","","browse-file");row.append(text("span",label,"model-sub"));
+ const row=text("div","","browse-file");const labelSpan=text("span",typeof label==="function"?label():label,"model-sub");row.append(labelSpan);
  // LLM GGUFs are rated against the selected runtime PC when its hardware is known.
  const fitSpan=text("span","","fit");fitSpan.hidden=true;row.append(fitSpan);
+ const hintSpan=text("span","","runtime-hint");hintSpan.hidden=true;row.append(hintSpan);
  const paintFit=()=>{
-  const llm=request.provider==="lemonade"||request.provider==="lmstudio",fit=request.provider==="lmstudio"?f.lmstudio_fit:llm?f.llm_fit:f.fit,best=request.provider==="lmstudio"?f.lmstudio_best:llm?f.llm_best:f.best;
+  if(typeof label==="function")labelSpan.textContent=label();
+  const p=request.provider,server=LLM_SERVERS[p],rt=f.runtimes&&f.runtimes[p];
+  const legacy=p==="lmstudio"?[f.lmstudio_fit,f.lmstudio_best]:p==="lemonade"?[f.llm_fit,f.llm_best]:server?[null,false]:[f.fit,f.best];
+  const fit=rt?rt.fit:legacy[0],best=rt?rt.best:legacy[1];
+  const hint=runtimeHint(f,p);hintSpan.hidden=!hint;
+  if(hint){hintSpan.textContent=hint.text;hintSpan.classList.toggle("mismatch",hint.mismatch);}
   row.classList.toggle("best",!!best);fitSpan.hidden=!fit;if(!fit)return;
   fitSpan.className="fit fit-"+fit.level;
-  fitSpan.textContent=(best?(llm?"★ Best for the "+(request.provider==="lmstudio"?"LM Studio":"Lemonade")+" PC · ":"★ Best for your PC · "):"")+(fit.level==="good"?"✓ ":fit.level==="bad"?"✗ ":"⚠ ")+fit.note;
+  fitSpan.textContent=(best?"★ Best for "+(server?server.label+" on "+runtimePc(p):"your PC")+" · ":"")+(fit.level==="good"?"✓ ":fit.level==="bad"?"✗ ":"⚠ ")+fit.note;
  };
  const status=text("span","","browse-status");row.append(status);
  const button=text("button","Download","repo-action");button.type="button";row.append(button);
@@ -738,7 +760,8 @@ function repoCard(repo){
      if(needle&&!f.path.toLowerCase().includes(needle))return false;
      if(!check.checked)return true;
      const gguf=f.path.toLowerCase().endsWith(".gguf");
-     return gguf?((f.llm_recommendation&&f.llm_recommendation.score>=80)||f.llm_best||f.lmstudio_best)
+     const rt=gguf&&f.runtimes&&f.runtimes[preferredRuntime(f)];
+     return gguf?(rt?(rt.recommendation&&rt.recommendation.score>=80)||rt.best:(f.llm_recommendation&&f.llm_recommendation.score>=80)||f.llm_best||f.lmstudio_best)
                 :((f.recommendation&&f.recommendation.score>=80)||f.best);
     });
     for(const f of visible.slice(0,80)){
@@ -746,16 +769,18 @@ function repoCard(repo){
      const top=text("div","","repo-file-heading");
      top.append(text("strong",f.name||f.path.split("/").pop()));
      const gguf=f.path.toLowerCase().endsWith(".gguf");
-     const rec=gguf?f.llm_recommendation:f.recommendation;
-     const ratedFit=gguf?(f.llm_fit||f.lmstudio_fit):f.fit;
+     const rtKey=gguf?preferredRuntime(f):null,rt=rtKey&&f.runtimes[rtKey];
+     const rec=gguf?(rt?rt.recommendation:f.llm_recommendation):f.recommendation;
+     const ratedFit=gguf?(rt?rt.fit:(f.llm_fit||f.lmstudio_fit)):f.fit;
      if(f.on_pc)top.append(text("span","✓ Installed","repo-chip repo-chip-installed"));
-     else if(rec&&rec.score!=null)top.append(text("span",rec.score+"/100 · "+rec.label+(gguf?" · Lemonade estimate":""),"repo-chip"));
+     else if(rec&&rec.score!=null)top.append(text("span",rec.score+"/100 · "+rec.label+(gguf?" · "+(rtKey?LLM_SERVERS[rtKey].label:"Lemonade")+" estimate":""),"repo-chip"));
      else if(ratedFit&&ratedFit.level)top.append(text("span",ratedFit.level==="good"?"✓ Fits GPU":ratedFit.level==="ok"?"△ May run":"⚠ Poor fit","repo-chip"));
      else if(gguf)top.append(text("span","LLM fit unknown","repo-chip"));
      item.append(top);
      if(f.path!==(f.name||f.path.split("/").pop()))item.append(text("div",f.path,"model-sub"));
      const note=(rec&&rec.reasons&&rec.reasons.length?rec.reasons.join(" · "):ratedFit&&ratedFit.note)||"Compatibility not verified";
      item.append(text("div",(f.size_bytes?fmt(f.size_bytes)+" · ":"")+note,"model-sub"));
+     const hint=gguf&&runtimeHint(f,rtKey||"llamacpp");if(hint)item.append(text("div",hint.text,"runtime-hint"));
      if(gguf)item.append(text("div","GGUF file · use Inspect repository to choose an LLM runtime. Download here saves a file; it does not import into llama.cpp, Ollama or Lemonade.","repo-gguf-notice"));
      item.append(fileRow("",f.on_pc,repo.provider+":"+repo.id+"/"+f.path,
       {provider:repo.provider,repository:repo.id,remote_path:f.path,get folder(){return folder.value;}},f));
@@ -828,17 +853,26 @@ function hfInspectCard(data){
  };
  const hfBehavior=f=>({destination:folderSelect,isAllowed:()=>{if(!llm())return true;const unique=data.files.filter(x=>x.path.split("/").pop().toLowerCase()===f.path.split("/").pop().toLowerCase()).length===1;return folderSelect.value==="lmstudio"?f.path.toLowerCase().endsWith(".gguf")&&!!lmstudioQuant(f.path)&&data.files.filter(x=>x.path.toLowerCase().endsWith(".gguf")&&lmstudioQuant(x.path)===lmstudioQuant(f.path)).length===1:isOllamaCompatiblePath(f.path)&&unique;}});
  const primaryBox=text("div","","primary-file-box");
- if(data.primary_file){
-  const pf=data.primary_file;
-  const header=text("div","","primary-header");
-  header.append(text("span",data.specified_path?"★ Selected file from link":"★ Recommended file for ComfyUI","primary-badge"));
+ // The recommended file depends on where it goes: the best copy for ComfyUI, or the best GGUF for that
+ // LLM server's PC (hf_inspect.recommend_primary). A file named in the link stays selected.
+ const destination=()=>llm()?folderSelect.value:"comfyui";
+ const primaryFor=dest=>{
+  if(!data.primary_file||data.specified_path)return data.primary_file;
+  const path=(data.recommended||{})[dest];
+  return (path&&data.files.find(f=>f.path===path))||data.primary_file;
+ };
+ const renderPrimary=()=>{
+  primaryBox.replaceChildren();
+  const pf=primaryFor(destination());
+  if(!pf){primaryBox.append(text("p","No model files found in repository.","muted"));return;}
+  const header=text("div","","primary-header"),dest=destination();
+  header.append(text("span",data.specified_path?"★ Selected file from link":"★ Recommended for "+(llm()?llm().label+" on "+runtimePc(dest):"ComfyUI on your PC"),"primary-badge"));
   primaryBox.append(header);
   primaryBox.append(fileRow(pf.name+(pf.size_bytes?" · "+fmt(pf.size_bytes):"")+(pf.sha256?"":" · no published hash"),
    ()=>hfInstalled(pf),()=>hfRef(pf),
-   hfRequest(pf),pf,hfBehavior(pf)));
- }else{
-  primaryBox.append(text("p","No model files found in repository.","muted"));
- }
+   hfRequest(pf),pf,{isAllowed:hfBehavior(pf).isAllowed}));
+ };
+ folderSelect.addEventListener("change",renderPrimary);renderPrimary();
  const toggle=text("button","Browse all "+data.files.length+" repository files ▾","repo-action");toggle.type="button";
  const files=text("div","","browse-versions");files.hidden=true;
  toggle.addEventListener("click",()=>{
@@ -846,8 +880,8 @@ function hfInspectCard(data){
   toggle.textContent=files.hidden?"Browse all "+data.files.length+" repository files ▾":"Hide repository files ▴";
  });
  data.files.forEach(f=>{
-  const isPrimary=data.primary_file&&f.path===data.primary_file.path;
-  files.append(fileRow(f.path+(isPrimary?" (recommended)":"")+(f.size_bytes?" · "+fmt(f.size_bytes):"")+(f.sha256?"":" · no published hash"),
+  const label=()=>{const pf=primaryFor(destination());return f.path+(pf&&f.path===pf.path?" (recommended)":"")+(f.size_bytes?" · "+fmt(f.size_bytes):"")+(f.sha256?"":" · no published hash");};
+  files.append(fileRow(label,
    ()=>hfInstalled(f),()=>hfRef(f),
    hfRequest(f),f,hfBehavior(f)));
  });

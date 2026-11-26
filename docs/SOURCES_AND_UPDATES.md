@@ -87,6 +87,8 @@ The Windows agent reports its GPU, VRAM and RAM with each sync (read from the Wi
 
 When a version or repository offers the same model in several precisions (fp16, fp8, GGUF Q8/Q4…, pruned or full), **★ Best for your PC** marks the highest-precision copy that fits in VRAM, or the smallest one that runs if none fits.
 
+For a pasted Hugging Face link, the **★ Recommended** file changes with **Save into**. For ComfyUI it is the best copy for the PC's GPU, as above. For an LLM server (llama.cpp, Ollama, Lemonade, LM Studio) it is the largest single-file GGUF quant that fits that server's PC with room for an 8K context, preferring Q8_0 over an unquantized F16/BF16, or the smallest one that runs if none fits. llama.cpp and Ollama are rated for the agent's own PC; Lemonade and LM Studio for the PC they report. Without hardware information it suggests Q4_K_M. A file named in the link itself stays selected. See [llama.cpp or Ollama?](LLAMACPP.md#llamacpp-or-ollama) for the per-file runtime hint.
+
 ## Deleting files from a PC
 
 Open a ComfyUI file and press **Delete from <PC>…**. The confirmation lists every path. Copies that are hard links of the same file (a family folder next to the loose file) are deleted together, because deleting only one would free no space. The agent re-checks the SHA-256 first and deletes nothing if the file changed. Preview images and `.metadata.json`/`.civitai.info` files with the same name go too. Set `"deletes_enabled": false` in `agent.json` to turn this off on a PC.

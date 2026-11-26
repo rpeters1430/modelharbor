@@ -30,6 +30,16 @@ The agent:
 
 Only single-file GGUF models can be downloaded. Split models (`-00001-of-00003.gguf`) and vision projector files (`mmproj-*.gguf`) are refused, because llama-server needs extra setup for them. If a repository has two files with the same name in different folders, pick a repository without duplicates, since the file name is the model's name.
 
+## llama.cpp or Ollama?
+
+When **Save into** is an LLM server, each GGUF file shows which server it suits best on the PC:
+
+- **⚡ Optimized for llama.cpp**: I-quants (`IQ4_XS`, `IQ3_M`, `TQ1_0`…), Unsloth Dynamic quants (`UD-Q4_K_XL`), split models and vision projectors (`mmproj`), which Ollama can't import, and mixture-of-experts models (`A3B`, `gpt-oss`, `Mixtral`…) that are bigger than the PC's VRAM, because llama.cpp can keep the experts in system RAM (`--cpu-moe`) and run them much faster than Ollama's layer split.
+- **⚡ Optimized for Ollama**: standard quants (`Q4_K_M`, `Q5_K_M`, `Q6_K`, `Q8_0`, `Q4_0`), the kind Ollama's own library ships. They run just as well in llama.cpp.
+- **⇄ Runs well in both**: everything else, such as `BF16`, `F16` or `MXFP4`.
+
+When Ollama is the destination and a file is optimized for llama.cpp, the hint suggests saving it into llama.cpp instead, and Ollama's recommended file skips llama.cpp-tuned quants when another one fits. This is advice from the file name, size and the PC's GPU, not a benchmark.
+
 ## Delete a model
 
 Open the model on the dashboard and use **Delete from <PC>**. The agent re-checks the file's SHA-256, deletes it, and restarts llama-server so the model disappears from it too.

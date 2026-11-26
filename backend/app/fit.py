@@ -86,21 +86,34 @@ def rate_llm(name, size, hw, runtime="Lemonade"):
         return {"level": "good", "note": f"Fits in the {gpu}'s {_gb(vram)} of VRAM with room for an 8K context"}
     if ram and needed <= vram + ram * 0.75:
         return {"level": "ok", "note": f"Bigger than the {_gb(vram)} of VRAM: part runs from system RAM, slower"}
-    return {"level": "bad", "note": "Too big for the Lemonade PC"}
+    return {"level": "bad", "note": f"Too big for the {runtime} PC"}
+
+# Unquantized GGUFs: twice the size of Q8_0 for no quality anyone can see, so a quant that fits wins.
+FULL_PRECISION_GGUF = re.compile(r"(?<![a-z0-9])(bf16|f16|fp16|f32|fp32)(?![a-z0-9])", re.I)
+
+
+def _pick(rated, fit_field):
+    """The file to download among variants that run: the largest (highest precision) that fits in VRAM,
+    preferring a quantized GGUF over an unquantized one, else the smallest that runs at all."""
+    rated = [f for f in rated if f.get(fit_field) and f[fit_field]["level"] != "bad"]
+    if not rated:
+        return None
+    good = [f for f in rated if f[fit_field]["level"] == "good"]
+    if good:
+        return max(good, key=lambda f: (not (f["name"].lower().endswith(".gguf") and FULL_PRECISION_GGUF.search(f["name"])),
+                                        f.get("size_bytes") or 0))
+    return min(rated, key=lambda f: f.get("size_bytes") or 0)
+
 
 def mark_best(files, key, fit_field="fit", best_field="best"):
-    """Set "best" on the file to download from each group of two or more variants: the largest (highest
-    precision) that fits in VRAM, else the smallest that runs at all."""
+    """Set "best" on the file to download from each group of two or more variants (see _pick)."""
     groups = {}
     for f in files:
         groups.setdefault(key(f), []).append(f)
     for group in groups.values():
-        rated = [f for f in group if f.get(fit_field) and f[fit_field]["level"] != "bad"]
-        if len(group) < 2 or not rated:
-            continue
-        good = [f for f in rated if f[fit_field]["level"] == "good"]
-        pick = max(good, key=lambda f: f["size_bytes"]) if good else min(rated, key=lambda f: f["size_bytes"])
-        pick[best_field] = True
+        pick = _pick(group, fit_field) if len(group) >= 2 else None
+        if pick:
+            pick[best_field] = True
 
 
 
@@ -110,7 +123,7 @@ def recommend_file(name, size, hw, meta=None, runtime="comfyui"):
     if fit is None:
         return {"score": None, "label": "Unknown", "reasons": ["Hardware or file size unavailable"], "confidence": "low"}
     if fit["level"] == "bad":
-        return {"score": 0, "label": "Incompatible", "reasons": [fit["note"]], "confidence": "medium"}
+        return {"score": 0, "label": "Incompatible", "level": "bad", "reasons": [fit["note"]], "confidence": "medium"}
     score = 80 if fit["level"] == "good" else 45
     reasons = [fit["note"]]
     lower = name.lower()
@@ -131,27 +144,116 @@ def recommend_file(name, size, hw, meta=None, runtime="comfyui"):
         reasons.append("Balanced GGUF quantization candidate")
     score = max(0, min(100, score))
     return {"score": score, "label": "Recommended" if score >= 80 else "Usable with tradeoffs" if score >= 40 else "Not recommended",
-            "reasons": reasons, "confidence": "medium", "estimated": True}
+            "level": fit["level"], "reasons": reasons, "confidence": "medium", "estimated": True}
 
 
 def mark_recommended(files, key, fit_field="fit", best_field="best"):
-    """Rank alternatives by fit and efficiency; do not recommend a known-incompatible variant."""
+    """Mark the file to download from each group of variants, never a known-incompatible one. Among copies
+    that fit in VRAM the best-scored wins (safetensors over pickle, fp16 over fp32), and of those the
+    largest, which is the highest precision. When nothing fits, the smallest copy that runs: offloading
+    to RAM costs more speed the more of the model is left over."""
     groups = {}
     for f in files:
         groups.setdefault(key(f), []).append(f)
     for group in groups.values():
-        candidates = [f for f in group if f.get("recommendation", {}).get("score") is not None]
-        if len(group) < 2 or not candidates:
+        eligible = [f for f in group if (f.get("recommendation") or {}).get("score")]
+        if len(group) < 2 or not eligible:
             continue
-        eligible = [f for f in candidates if f["recommendation"]["score"] > 0]
-        if not eligible:
-            continue
-        # Prefer lower memory consumption on ties; do not mistake a larger file for higher quality.
-        chosen = max(eligible, key=lambda f: (f["recommendation"]["score"], -(f.get("size_bytes") or 0)))
+        good = [f for f in eligible if (f["recommendation"].get("level") or f.get(fit_field, {}).get("level")) == "good"]
+        chosen = (max(good, key=lambda f: (f["recommendation"]["score"], f.get("size_bytes") or 0)) if good
+                  else min(eligible, key=lambda f: f.get("size_bytes") or 0))
         chosen[best_field] = True
 
-def annotate_listing(listing, hw, llm_hw=None, lmstudio_hw=None):
-    """Rate files for ComfyUI and any configured Lemonade or LM Studio runtime hardware."""
+
+# Which LLM server a GGUF suits. llama.cpp and Ollama both run GGUFs, but not all of them equally well.
+SPLIT_GGUF = re.compile(r"(?:^|[-_.])\d{5}-of-\d{5}$", re.I)
+IQUANT = re.compile(r"(?<![a-z0-9])(iq[1-4]_(?:xxs|xs|s|m|nl)|tq[12]_0)(?![a-z0-9])", re.I)
+UNSLOTH_DYNAMIC = re.compile(r"(?<![a-z0-9])ud[-_]", re.I)
+STANDARD_QUANT = re.compile(r"(?<![a-z0-9])(q[2-6]_k(?:_[sml])?|q[458]_[01])(?![a-z0-9])", re.I)
+MOE = re.compile(r"(?<![a-z0-9])(a\d+(?:\.\d+)?b|moe|mixtral|gpt-oss|\d+x\d+b)(?![a-z0-9])", re.I)
+RUNTIME_LABELS = {"llamacpp": "llama.cpp", "ollama": "Ollama", "lemonade": "Lemonade", "lmstudio": "LM Studio"}
+
+
+def importable_gguf(name):
+    """A single-file GGUF model an LLM server can load by itself: not one shard of a split model and not
+    a vision projector."""
+    stem = name.rsplit("/", 1)[-1]
+    if not stem.lower().endswith(".gguf"):
+        return False
+    stem = stem[:-5]
+    return "mmproj" not in stem.lower() and not SPLIT_GGUF.search(stem)
+
+
+def gguf_runtime(name, size=None, hw=None):
+    """{"runtime": "llamacpp" | "ollama" | "either", "reason": ..., "ollama_ok": bool} for a GGUF, or None.
+
+    hw is the PC that runs llama.cpp and Ollama (the agent's PC): a mixture-of-experts model bigger than its
+    VRAM runs much faster in llama.cpp, which can keep the experts in system RAM."""
+    lower = (name or "").rsplit("/", 1)[-1].lower()
+    if not lower.endswith(".gguf"):
+        return None
+    stem = lower[:-5]
+    if "mmproj" in stem:
+        return {"runtime": "llamacpp", "ollama_ok": False,
+                "reason": "Vision projector, not a model: llama.cpp loads it next to its model with --mmproj"}
+    if SPLIT_GGUF.search(stem):
+        return {"runtime": "llamacpp", "ollama_ok": False,
+                "reason": "One part of a split model: llama.cpp loads split GGUFs, Ollama can't import them"}
+    vram = (hw or {}).get("vram_bytes") or 0
+    if MOE.search(stem) and vram and size and size * LLM_OVERHEAD_RATIO + LLM_OVERHEAD > vram:
+        return {"runtime": "llamacpp", "ollama_ok": True,
+                "reason": f"Mixture-of-experts model bigger than your {_gb(vram)} of VRAM: llama.cpp can keep the "
+                          "experts in system RAM (--cpu-moe), which runs much faster than Ollama's layer split"}
+    if IQUANT.search(stem):
+        return {"runtime": "llamacpp", "ollama_ok": True,
+                "reason": "I-quant (IQ/TQ): llama.cpp gets the fastest kernels for these first; Ollama's own "
+                          "library ships K-quants"}
+    if UNSLOTH_DYNAMIC.search(stem):
+        return {"runtime": "llamacpp", "ollama_ok": True,
+                "reason": "Unsloth Dynamic quant: Unsloth tunes and tests these with llama.cpp"}
+    if STANDARD_QUANT.search(stem):
+        return {"runtime": "ollama", "ollama_ok": True,
+                "reason": "Standard quant, the kind Ollama's own library uses: imports straight into Ollama "
+                          "(and runs in llama.cpp too)"}
+    return {"runtime": "either", "ollama_ok": True, "reason": "Runs the same in llama.cpp and Ollama"}
+
+
+def recommended_gguf(files, runtime):
+    """The GGUF to download for one LLM server: the best that fits that server's PC, else a Q4_K_M, the usual
+    balance of size and quality, when its hardware is unknown. None without a single-file GGUF."""
+    names = {}
+    for f in files:
+        names[f["name"].lower()] = names.get(f["name"].lower(), 0) + 1
+    candidates = [f for f in files if importable_gguf(f["path"]) and names[f["name"].lower()] == 1]
+    if not candidates:
+        return None
+    if runtime != "llamacpp":  # leave llama.cpp-tuned files (I-quants, Unsloth Dynamic) to llama.cpp when possible
+        suited = [f for f in candidates if (f.get("optimized_for") or {}).get("runtime") != "llamacpp"]
+        if suited and (pick := recommended_gguf_among(suited, runtime)):
+            return pick
+    return recommended_gguf_among(candidates, runtime)
+
+
+def recommended_gguf_among(candidates, runtime):
+    """recommended_gguf for an already filtered list of single-file GGUFs."""
+    rated = [f for f in candidates if (f.get("runtimes") or {}).get(runtime, {}).get("fit")]
+    if rated:
+        for f in rated:
+            f["_fit"] = f["runtimes"][runtime]["fit"]
+        pick = _pick(rated, "_fit")
+        for f in rated:
+            f.pop("_fit", None)
+        return pick
+    return next((f for f in candidates if re.search(r"q4_k_m", f["name"], re.I)), None) or \
+        min(candidates, key=lambda f: f.get("size_bytes") or 0)
+
+
+def annotate_listing(listing, hw, llm_hw=None, lmstudio_hw=None, runtime_hw=None):
+    """Rate files for ComfyUI and any configured Lemonade or LM Studio runtime hardware.
+
+    runtime_hw maps an LLM server ("llamacpp", "ollama", "lemonade", "lmstudio") to the hardware of the PC it
+    runs on. Each GGUF then gets "runtimes": {server: {"fit", "recommendation", "best"}}, and every GGUF gets
+    "optimized_for", the server it suits best on the agent's PC (see gguf_runtime)."""
     if hw:
         for f in listing["files"]:
             f["fit"] = rate(f["name"], f.get("size_bytes"), hw)
@@ -166,4 +268,26 @@ def annotate_listing(listing, hw, llm_hw=None, lmstudio_hw=None):
         for f in listing["files"]:
             f["lmstudio_fit"] = rate_llm(f["name"], f.get("size_bytes"), lmstudio_hw, "LM Studio")
         mark_best(listing["files"], lambda f: variant_key(f["path"]), "lmstudio_fit", "lmstudio_best")
+    ggufs = [f for f in listing["files"] if f["name"].lower().endswith(".gguf")]
+    for runtime, runtime_pc in (runtime_hw or {}).items():
+        if not runtime_pc:
+            continue
+        label = RUNTIME_LABELS.get(runtime, runtime)
+        for f in ggufs:
+            f.setdefault("runtimes", {})[runtime] = {
+                "fit": rate_llm(f["name"], f.get("size_bytes"), runtime_pc, label),
+                "recommendation": recommend_file(f["name"], f.get("size_bytes"), runtime_pc, runtime=label)}
+        groups = {}
+        for f in ggufs:
+            if importable_gguf(f["path"]):
+                groups.setdefault(variant_key(f["path"]), []).append(f)
+        for group in groups.values():
+            for f in group:
+                f["_fit"] = f["runtimes"][runtime]["fit"]
+            pick = _pick(group, "_fit") if len(group) >= 2 else None
+            for f in group:
+                f.pop("_fit")
+                f["runtimes"][runtime]["best"] = f is pick
+    for f in ggufs:
+        f["optimized_for"] = gguf_runtime(f["name"], f.get("size_bytes"), (runtime_hw or {}).get("llamacpp") or hw)
     return listing
