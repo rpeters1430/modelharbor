@@ -15,5 +15,5 @@ jobs:
       # The dashboard has no build step, so a syntax error would only show up in the browser.
       - uses: actions/setup-node@v5
         with:
-          node-version: '22'
+          node-version: '26'
       - run: node --check backend/app/static/app.js && node --check backend/app/static/sw.js
