@@ -34,7 +34,7 @@ CI (`.github/workflows/ci.yml`) uses Python 3.15. The Docker image (`backend/Doc
 
 ## Environment variables (backend)
 
-- `MODELHARBOR_AGENT_TOKEN` is the shared secret. Every `/api/*` route except `/api/health` checks the `X-ModelHarbor-Token` header with `authorize()` in `main.py`.
+- `MODELHARBOR_AGENT_TOKEN` is the agents' secret, and also the dashboard's unless `MODELHARBOR_DASHBOARD_TOKEN` is set. `MODELHARBOR_VIEWER_TOKEN` is an optional read-only token. Every `/api/*` route except `/api/health` checks the `X-ModelHarbor-Token` header with `authorize()` in `main.py`; the `check_token_role` middleware then limits the agent token to `AGENT_ROUTES` and the viewer to GETs. A new agent-facing route must be added to `AGENT_ROUTES`.
 - `MODELHARBOR_DB` is the SQLite path. Tests monkeypatch `main.DB` to a `tmp_path` file.
 - `MODELHARBOR_SOURCE_CHECKS=0` turns off the background thread that checks for upstream updates (`sources.start_worker`, started in the FastAPI lifespan). Tests use `TestClient(app)` without a context manager, so the lifespan and the worker never run in tests.
 
@@ -57,7 +57,7 @@ Each job type has its own backend module that owns its tables (`downloads.py`, `
 
 **Platforms.** The agent supports both Windows and Linux. The platform-specific parts are `config_dir()`/`discover_roots()` in `modelharbor_agent.py`, `hardware.py` (the Windows registry, or Linux sysfs and `nvidia-smi`), `convert_worker.find_python`, and the service installers: `install-task.ps1` uses Task Scheduler, and `install-service.sh` installs systemd user units with the token in `~/.config/ModelHarbor/agent.env`. Code that compares file names must allow for Linux paths being case-sensitive (see `download_worker.existing_folder`). User-facing text says "the PC's agent", not "Windows".
 
-**Safety rules the code relies on**: the agent never overwrites a file. A download is written next to the old file and checked against the SHA-256 the NAS expects. An old file is deleted only after the user asks, and only once the new file is verified. Download file names must pass `downloads.SAFE_NAME`.
+**Safety rules the code relies on**: the agent never overwrites a file. A download is written next to the old file and checked against the SHA-256 the NAS expects. An old file is deleted only once the new file is verified: automatically after an update the user asked for (`downloads._replace_old`), except for a file linked by hand to different contents, which waits for the user to confirm. The agent re-hashes both files and deletes nothing that changed. Download file names must pass `downloads.SAFE_NAME`.
 
 **Frontend.** `static/app.js` is a single IIFE with no framework. The token is kept in `localStorage` or `sessionStorage`, and every storage access is guarded. `sw.js` deliberately caches nothing, and the middleware sends `Cache-Control: no-cache` on dashboard files, so a deploy shows up straight away.
 

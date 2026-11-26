@@ -8,6 +8,7 @@ from fastapi import HTTPException
 from .hf_repository import list_model_files, validate_repo
 from .sources import fetch
 from .browse import folder_for, valid_folder, FAMILY_FOLDERS, FOLDERS
+from .fit import recommended_gguf, variant_key
 
 FAMILY_PATTERNS = [
     ("MOSS", r"\bmoss\b", "MOSS"),
@@ -79,6 +80,28 @@ def detect_base_model(card_data: dict, tags: list[str], repo: str, files: list[d
         if re.search(pattern, text, re.IGNORECASE):
             return fam, label
     return None, None
+
+# Hugging Face pipelines of language models, which run in an LLM server (llama.cpp, Ollama...), not ComfyUI.
+LLM_PIPELINES = {"text-generation", "text2text-generation", "image-text-to-text", "conversational",
+                 "visual-question-answering", "any-to-any", "audio-text-to-text", "video-text-to-text"}
+IMAGE_PIPELINES = {"text-to-image", "image-to-image", "text-to-video", "image-to-video", "unconditional-image-generation"}
+
+
+def is_llm(pipeline_tag: str | None, tags: list[str], repo: str, files: list[dict]) -> bool:
+    """A language model: its pipeline or tags say so, or it is GGUF-only with nothing marking it as an image
+    or video model (ComfyUI-GGUF repositories carry an image pipeline, or "comfy" in their name)."""
+    tag_set = {str(t).lower() for t in tags}
+    if pipeline_tag in IMAGE_PIPELINES or tag_set & IMAGE_PIPELINES or "comfy" in repo.lower():
+        return False
+    if pipeline_tag in LLM_PIPELINES or tag_set & LLM_PIPELINES:
+        return True
+    models = [f for f in files if f.get("name", "").lower().endswith(MODEL_EXTENSIONS)]
+    return bool(models) and all(f["name"].lower().endswith(".gguf") for f in models) and \
+        not re.search(r"text[-_ ]?encoder|\bclip\b|\bt5\b|\bvae\b|\blora\b", repo.lower())
+
+
+MODEL_EXTENSIONS = (".safetensors", ".sft", ".gguf", ".ckpt", ".pt", ".pth", ".bin", ".onnx")
+
 
 def detect_model_kind(card_data: dict, tags: list[str], repo: str, files: list[dict], remote_path: str | None = None) -> tuple[str, str]:
     """Return (model_type, folder_parent)."""
@@ -166,9 +189,15 @@ def inspect_huggingface(url_or_repo: str, get=fetch) -> dict:
     listing = list_model_files(repo)
     files = listing.get("files") or []
 
-    family, base_label = detect_base_model(card, tags, repo, files)
-    model_type, folder_parent = detect_model_kind(card, tags, repo, files, remote_path)
-    target_folder = folder_for(model_type, None, family or base_label)
+    llm = is_llm(data.get("pipeline_tag"), tags, repo, files)
+    if llm:
+        # Not a ComfyUI model: no base model to warn about and no ComfyUI folder to save into.
+        family = base_label = None
+        model_type, target_folder = "LLM", None
+    else:
+        family, base_label = detect_base_model(card, tags, repo, files)
+        model_type, folder_parent = detect_model_kind(card, tags, repo, files, remote_path)
+        target_folder = folder_for(model_type, None, family or base_label)
 
     # Trigger words / instance prompt
     trigger_words = []
@@ -198,8 +227,8 @@ def inspect_huggingface(url_or_repo: str, get=fetch) -> dict:
         primary_file = scored_files[0][1]
 
     # Available target folders
-    available_folders = [target_folder]
-    for p in ("loras", "checkpoints", "diffusion_models", "text_encoders", "vae", "embeddings", "controlnet", "upscale_models"):
+    available_folders = [] if llm else [target_folder]
+    for p in () if llm else ("loras", "checkpoints", "diffusion_models", "text_encoders", "vae", "embeddings", "controlnet", "upscale_models"):
         if p not in available_folders:
             available_folders.append(p)
     if family:
@@ -225,3 +254,36 @@ def inspect_huggingface(url_or_repo: str, get=fetch) -> dict:
         "likes": data.get("likes"),
         "created_at": data.get("createdAt"),
     }
+
+
+def recommend_primary(data: dict) -> dict:
+    """After the files are rated for the PC, pick the file to recommend for each destination.
+
+    "recommended" maps "comfyui" and each LLM server to a file path. For ComfyUI, the top-scored file is
+    swapped for the copy of it marked best for the PC (fp8 instead of an fp16 that doesn't fit, say).
+    For an LLM server, the best single-file GGUF for that server's PC. A file named in the link stays the
+    primary file whatever fits."""
+    files, primary = data.get("files") or [], data.get("primary_file")
+    recommended = {}
+    if primary:
+        group = [f for f in files if variant_key(f["path"]) == variant_key(primary["path"])]
+        best = next((f for f in group if f.get("best")), None)
+        if best and not data.get("specified_path"):
+            primary = data["primary_file"] = best
+        recommended["comfyui"] = primary["path"]
+    for runtime in ("llamacpp", "ollama", "lemonade", "lmstudio"):
+        pick = recommended_gguf(files, runtime)
+        if pick:
+            recommended[runtime] = pick["path"]
+            # One ★ per server on this card, on the file recommended for it.
+            for f in files:
+                if runtime in (f.get("runtimes") or {}):
+                    f["runtimes"][runtime]["best"] = f is pick
+    # A language model is never a ComfyUI download: its primary file is the llama.cpp (else Ollama) pick.
+    if data.get("model_type") == "LLM":
+        recommended.pop("comfyui", None)
+        path = None if data.get("specified_path") else recommended.get("llamacpp") or recommended.get("ollama")
+        if path:
+            data["primary_file"] = next(f for f in files if f["path"] == path)
+    data["recommended"] = recommended
+    return data

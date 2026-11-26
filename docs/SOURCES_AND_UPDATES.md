@@ -1,10 +1,10 @@
 # Source identification and update checks
 
-ModelHarbor identifies models by **exact file hash**, not by filename, and checks the source for newer versions. Nothing is downloaded, replaced or deleted.
+ModelHarbor identifies models by **exact file hash**, not by filename, and checks the source for newer versions. Identification and update checks download, replace and delete nothing; files change on the PC only after you press **Download update** (see below).
 
 ## How it works
 
-1. **Windows agent:** during each inventory sync it computes the SHA-256 of every ComfyUI model file and sends it with the inventory. Hashes are cached in `%APPDATA%\ModelHarbor\hashes.json` and recomputed only when a file's size or modified time changes. Hard links are hashed once. The first sync reads the whole library (roughly 10–15 minutes per 750 GB on NVMe). Set `"hash_models": false` in `agent.json` to turn this off.
+1. **The PC's agent:** during each inventory sync it computes the SHA-256 of every ComfyUI model file and sends it with the inventory. Hashes are cached in `hashes.json` in the agent's config folder (`%APPDATA%\ModelHarbor` on Windows, `~/.config/ModelHarbor` on Linux) and recomputed only when a file's size or modified time changes. Hard links are hashed once. The first sync reads the whole library (roughly 10–15 minutes per 750 GB on NVMe). Set `"hash_models": false` in `agent.json` to turn this off.
 2. **NAS background checker** (every 5 minutes, bounded and rate-limited):
    - **Civitai:** each new hash is looked up with `/api/v1/model-versions/by-hash/{sha256}` on `civitai.com`, falling back to `civitai.red`. A hit is an exact match: model, version, base model and trigger words are stored. For LoRAs the recommended weight is stored too: the median strength the LoRA was used at in the version's example images (matched by version id, resource name or `<lora:name:weight>` tag), or none when the images don't say. LoRAs identified before this was added are read from their version once. comfy-mobile reads these through `GET /api/models` to fill trigger words and strengths. Hashes Civitai doesn't know are retried weekly.
    - **Civitai updates:** once a day per model, `/api/v1/models/{id}` is read. An update is a version with the **same name apart from a higher version number** (`Turbo v1.0 → Turbo v3.0`), for the same base model, that contains the **same kind of file** you have (main weights, text encoder, VAE…). Inpainting, DMD, quantized, other-base versions, and files Civitai can't place are not reported.
@@ -21,15 +21,17 @@ Set `MODELHARBOR_SOURCE_CHECKS=0` on the container to turn off all outbound chec
 Open a model with **⬆ Update** in the dashboard and press **Download update**. Nothing downloads without that press.
 
 - The NAS decides exactly which file to fetch and the SHA-256 it must have: for Civitai, the file of the same kind (main weights, text encoder, VAE…) in the newer version; for Hugging Face, the changed file on `main`; for Ollama, the newer build of the same tag.
-- The Windows agent's background task (`ModelHarbor Hash Worker`) downloads it **next to the old file**, only from `civitai.com`, `civitai.red`, `huggingface.co` or `modelscope.cn`, after checking free disk space. The file is written as `.partial`, its SHA-256 is checked, and only then is it renamed. A mismatch deletes the partial file.
+- The PC's agent's background task downloads it **next to the old file**, only from `civitai.com`, `civitai.red`, `huggingface.co` or `modelscope.cn`, after checking free disk space. The file is written as `.partial`, its SHA-256 is checked, and only then is it renamed. A mismatch deletes the partial file.
 - A download never overwrites anything. An existing file with the same name stops the download. Hugging Face copies get a hash suffix (`name.1a2b3c4d.safetensors`) because the upstream filename is unchanged.
 - Ollama updates run `ollama pull` for the same tag through the local Ollama API.
 - The new file appears in the dashboard after the next inventory sync.
-- Once the download has finished and passed its hash check, **Delete old version** appears. After you confirm, the agent re-hashes both files and permanently deletes the old one only if the new file still matches its verified hash and the old file is exactly the one in the inventory. Otherwise nothing is deleted and the reason is shown. A rescan runs afterwards so the dashboard updates. Ollama needs no cleanup, because a pull replaces the old build.
+- Once the download has finished and passed its hash check, the new file **replaces the old one automatically**: it takes over the old file's source link (shown as identified straight away, with no update left) and the old file is queued for deletion. Pressing **Download update** is the consent to this. The agent re-hashes both files first and permanently deletes the old one only if the new file still matches its verified hash and the old file is exactly the one in the inventory. Otherwise nothing is deleted and the reason is shown. A rescan runs afterwards so the dashboard updates.
+- A file linked by hand to different contents (your own conversion, say) is **not** deleted automatically, because the update is in the original format. **Delete old version** appears for it instead, and also after an automatic delete that failed; nothing is deleted until you confirm.
+- Ollama needs no cleanup, because a pull replaces the old build.
 
-### API keys (only on the Windows PC)
+### API keys (only on the PC)
 
-Some downloads require an account. Store keys in your Windows **user** environment, like the ModelHarbor token. They are never sent to the NAS.
+Some downloads require an account. Keys stay on the PC and are never sent to the NAS. On Linux, put them in `~/.config/ModelHarbor/agent.env` (see [Linux agent setup](LINUX_AGENT.md)). On Windows, store them in your **user** environment, like the ModelHarbor token:
 
 ```powershell
 [Environment]::SetEnvironmentVariable("CIVITAI_API_TOKEN", "your-civitai-key", "User")  # civitai.com > Account settings > API Keys
@@ -44,7 +46,7 @@ Set `"downloads_enabled": false` in `agent.json` to turn downloads off on that P
 
 ### Same weights, edited file info
 
-A safetensors file stores its info (trigger words, training settings) in a header before the weights. Editing or stripping that header changes the file's SHA-256 but not the model. The Windows agent therefore also hashes the weights alone, which is Civitai's AutoV3, and files the full hash doesn't find are looked up by it. Such a match is shown as "same weights; file info differs" and counts as verified. Adding this hash makes the agent re-read each safetensors file once after updating.
+A safetensors file stores its info (trigger words, training settings) in a header before the weights. Editing or stripping that header changes the file's SHA-256 but not the model. The PC's agent therefore also hashes the weights alone, which is Civitai's AutoV3, and files the full hash doesn't find are looked up by it. Such a match is shown as "same weights; file info differs" and counts as verified. Adding this hash makes the agent re-read each safetensors file once after updating.
 
 ### Checking search results
 
@@ -79,13 +81,15 @@ A file you converted yourself (fp8, GGUF, a different precision) has a different
 
 ## Suggestions for your PC
 
-The Windows agent reports its GPU, VRAM and RAM with each sync (read from the Windows registry, so ComfyUI need not be running). Browse rates every file for the PC in **Download to**:
+The PC's agent reports its GPU, VRAM and RAM with each sync (from the Windows registry, or Linux sysfs and `nvidia-smi`, so ComfyUI need not be running). Browse rates every file for the PC in **Download to**:
 
 - **✓ Fits in your VRAM**: the weights fit with about 2 GB to spare.
 - **⚠ Bigger than your VRAM**: ComfyUI offloads to RAM, so it runs slower. Older pickle files (`.ckpt`, `.pt`) and fp32 copies are flagged too.
 - **✗ Won't run**: NVIDIA-only formats (NVFP4, MXFP4, SVDQuant/Nunchaku) on an AMD or Intel GPU, or too big for the PC.
 
 When a version or repository offers the same model in several precisions (fp16, fp8, GGUF Q8/Q4…, pruned or full), **★ Best for your PC** marks the highest-precision copy that fits in VRAM, or the smallest one that runs if none fits.
+
+For a pasted Hugging Face link, the **★ Recommended** file changes with **Save into**. For ComfyUI it is the best copy for the PC's GPU, as above. For an LLM server (llama.cpp, Ollama, Lemonade, LM Studio) it is the largest single-file GGUF quant that fits that server's PC with room for an 8K context, preferring Q8_0 over an unquantized F16/BF16, or the smallest one that runs if none fits. llama.cpp and Ollama are rated for the agent's own PC; Lemonade and LM Studio for the PC they report. Without hardware information it suggests Q4_K_M. A file named in the link itself stays selected. See [llama.cpp or Ollama?](LLAMACPP.md#llamacpp-or-ollama) for the per-file runtime hint.
 
 ## Deleting files from a PC
 
@@ -98,7 +102,7 @@ The overview's **N to match →** (under "files identified") opens the library f
 - search under **Find model online** and use **Link to my file** (Civitai) or **Browse Hugging Face collection** to match it, or
 - press **Mark as local only** for your own LoRAs and merges that are on no site. They are tagged "Local only" and leave the list; **Show in Unmatched again** undoes it.
 
-- **Embedded safetensors metadata:** During scans, the Windows agent inspects safetensors headers for `modelspec.trigger_phrase`, `ss_trained_words`, `ss_tag_frequency`, base model version hints, and titles without loading heavy weights. Trigger words and base models are automatically populated in the model details even before online matching.
+- **Embedded safetensors metadata:** During scans, the PC's agent inspects safetensors headers for `modelspec.trigger_phrase`, `ss_trained_words`, `ss_tag_frequency`, base model version hints, and titles without loading heavy weights. Trigger words and base models are automatically populated in the model details even before online matching.
 - **Reverse match suggestions:** When opening any unmatched model, ModelHarbor automatically searches Civitai and Hugging Face for matching candidates. High-confidence candidates (exact hash matches, same-weight conversions, or name matches) appear under **⚡ Suggested online matches** with a 1-click **Link to this model** button for Civitai or Hugging Face.
 - **Auto-match wizard button:** In the Library view when filtered to unmatched models, **⚡ Auto-match candidates** lets you step through remaining unmatched files quickly.
 

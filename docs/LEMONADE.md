@@ -1,6 +1,6 @@
 # Lemonade Server
 
-The Windows agent can list the models in [Lemonade Server](https://lemonade-server.ai) and, when you ask from Browse, have Lemonade download a Hugging Face GGUF and load it.
+The PC's agent can list the models in [Lemonade Server](https://lemonade-server.ai) and, when you ask from Browse, have Lemonade download a Hugging Face GGUF and load it.
 
 ## Configure the agent
 

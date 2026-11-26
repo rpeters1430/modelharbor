@@ -8,7 +8,7 @@ Launch LM Studio and start the server from the **Developer** page, or run `lms s
 
 ## Enable inventory
 
-In `agent/config.json`, enable LM Studio and set the base URL. The default is for LM Studio and the ModelHarbor Windows agent to run on the same PC:
+In `agent/config.json`, enable LM Studio and set the base URL. The default is for LM Studio and the ModelHarbor agent to run on the same PC:
 
 ```json
 {
@@ -25,11 +25,11 @@ For a remote LM Studio server, use its reachable base URL and configure HTTPS an
 
 Open **Browse**, inspect a Hugging Face repository containing GGUF files, and choose **LM Studio (download GGUF)** as the destination. ModelHarbor enables a file only when its name contains a supported quantization and the repository contains exactly one GGUF for that quantization. This reflects the LM Studio download API, which chooses a repository file by quantization rather than by a specific file path.
 
-The Windows agent asks LM Studio to download the model and follows its job status using the [download](https://lmstudio.ai/docs/developer/rest/download) and [status](https://lmstudio.ai/docs/developer/rest/download-status) endpoints. ModelHarbor does not download or store the GGUF itself, so the completed download is provider-reported and is not SHA-256 verified by ModelHarbor.
+The PC's agent asks LM Studio to download the model and follows its job status using the [download](https://lmstudio.ai/docs/developer/rest/download) and [status](https://lmstudio.ai/docs/developer/rest/download-status) endpoints. ModelHarbor does not download or store the GGUF itself, so the completed download is provider-reported and is not SHA-256 verified by ModelHarbor.
 
 ## Load and unload
 
-Open an LM Studio model from the library. The integration uses LM Studio’s documented [load](https://lmstudio.ai/docs/developer/rest/load) and [unload](https://lmstudio.ai/docs/developer/rest/unload) endpoints. The details panel shows runtime metadata and loaded instances. Choose a context length up to LM Studio's reported model limit, then select **Load in LM Studio**. Use **Unload** beside a loaded instance to unload it. Requests run through the Windows agent; LM Studio must be running and its API reachable.
+Open an LM Studio model from the library. The integration uses LM Studio’s documented [load](https://lmstudio.ai/docs/developer/rest/load) and [unload](https://lmstudio.ai/docs/developer/rest/unload) endpoints. The details panel shows runtime metadata and loaded instances. Choose a context length up to LM Studio's reported model limit, then select **Load in LM Studio**. Use **Unload** beside a loaded instance to unload it. Requests run through the PC's agent; LM Studio must be running and its API reachable.
 
 ## Troubleshooting
 

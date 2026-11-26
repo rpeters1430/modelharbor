@@ -1,22 +1,24 @@
-"""ModelHarbor read-only API foundation."""
+"""ModelHarbor API: inventory, source checks, and the job queues the PC's agents work through."""
 import hmac
 import json
 import os
+import re
 import sqlite3
 import time
 from contextlib import asynccontextmanager, closing
 from pathlib import Path
 from pathlib import PurePosixPath
-from fastapi import FastAPI, Header, HTTPException
-from fastapi.responses import FileResponse
+from fastapi import FastAPI, Header, HTTPException, Query
+from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 from .intelligence import enrich
 from .providers import search as provider_search
 from urllib.parse import quote
 from .hf_repository import list_model_files, validate_repo
-from .hf_inspect import inspect_huggingface
+from .hf_inspect import inspect_huggingface, recommend_primary
 from .suggest_matches import suggest_matches, link_huggingface
+from . import gguf_meta
 from . import browse, converts, deletes, downloads, fit, civitai_credentials, workflow_audit
 from .sources import _civitai_model, _file_sha, fetch
 from .sources import annotate, ignore_key, civitai_check, civitai_link, civitai_unlink, civitai_versions, ensure_tables as ensure_source_tables, start_worker
@@ -24,6 +26,11 @@ from .hash_matches import ensure_tables, queue_job, claim_job, finish_job, get_j
 
 DB = Path(os.environ.get("MODELHARBOR_DB", "/data/modelharbor.sqlite3"))
 TOKEN = os.environ.get("MODELHARBOR_AGENT_TOKEN", "")
+# Optional. With DASHBOARD_TOKEN set, the agent token only works on the routes the PC's agents use, and the
+# dashboard token on everything else; without it the agent token does both, as before. VIEWER_TOKEN is
+# read-only: it can look at the dashboard but not queue, change or delete anything.
+DASHBOARD_TOKEN = os.environ.get("MODELHARBOR_DASHBOARD_TOKEN", "")
+VIEWER_TOKEN = os.environ.get("MODELHARBOR_VIEWER_TOKEN", "")
 
 @asynccontextmanager
 async def lifespan(_app):
@@ -42,6 +49,59 @@ async def revalidate_dashboard(request, call_next):
     if request.url.path == "/" or request.url.path.startswith("/static/"):
         response.headers["Cache-Control"] = "no-cache"
     return response
+
+# Routes the PC's agents call: report inventory and status, claim jobs, and report their progress and results.
+AGENT_ROUTES = re.compile(r"^(?:POST /api/(?:inventory|agents/heartbeat|agents/status)"
+                          r"|GET /api/agents/[^/]+/scan-request"
+                          r"|GET /api/(?:hash-jobs|downloads|converts|deletes)/next"
+                          r"|GET /api/downloads/cleanup-next"
+                          r"|POST /api/(?:hash-jobs|downloads|converts|deletes)/[^/]+/result"
+                          r"|POST /api/downloads/[^/]+/(?:progress|cleanup-result))$")
+# Read-only requests a viewer token may make besides GETs: analysing a workflow stores nothing.
+VIEWER_POSTS = {"/api/workflows/audit"}
+
+
+def _same(value, token):
+    return bool(token) and hmac.compare_digest((value or "").encode(), token.encode())
+
+
+def token_roles(value):
+    """The roles a token grants: "agent", "dashboard" and/or "viewer"."""
+    roles = set()
+    if _same(value, TOKEN):
+        roles.add("agent")
+        if not DASHBOARD_TOKEN:
+            roles.add("dashboard")
+    if _same(value, DASHBOARD_TOKEN):
+        roles.add("dashboard")
+    if _same(value, VIEWER_TOKEN):
+        roles.add("viewer")
+    return roles
+
+
+@app.middleware("http")
+async def check_token_role(request, call_next):
+    """Each route still calls authorize(); this adds which kind of token may use it."""
+    path = request.url.path
+    if path.startswith("/api/") and path != "/api/health":
+        roles = token_roles(request.headers.get("x-modelharbor-token"))
+        route = request.method + " " + path
+        if roles and AGENT_ROUTES.match(route):
+            if "agent" not in roles:
+                return JSONResponse({"detail": "Only the PC's agent token can use this route"}, status_code=403)
+        elif roles and "dashboard" not in roles:
+            if "viewer" not in roles or not (request.method == "GET" or path in VIEWER_POSTS):
+                return JSONResponse({"detail": "This token is read-only" if "viewer" in roles else
+                                     "The agent token can't use the dashboard; use the dashboard token"}, status_code=403)
+    return await call_next(request)
+
+
+@app.get("/api/session")
+def session_info(x_modelharbor_token: str | None = Header(default=None)):
+    """What the dashboard's token may do, so it can hide buttons a read-only token can't use."""
+    authorize(x_modelharbor_token)
+    roles = token_roles(x_modelharbor_token)
+    return {"role": "dashboard" if "dashboard" in roles else "viewer" if "viewer" in roles else "agent"}
 
 @app.get("/", include_in_schema=False)
 def dashboard():
@@ -99,6 +159,10 @@ class LMStudioInfo(BaseModel):
     vram_bytes: int | None = Field(default=None, ge=0)
     ram_bytes: int | None = Field(default=None, ge=0)
 
+class OllamaInfo(BaseModel):
+    host: str | None = Field(default=None, max_length=253)
+    local: bool | None = None  # Ollama runs on the agent's own PC, so the agent's hardware is Ollama's
+
 class Heartbeat(BaseModel):
     device: str = Field(min_length=1, max_length=100)
     comfyui_count: int = Field(ge=0)
@@ -108,6 +172,7 @@ class Heartbeat(BaseModel):
     lmstudio_count: int | None = Field(default=None, ge=0)
     lmstudio: LMStudioInfo | None = None
     llamacpp_count: int | None = Field(default=None, ge=0)  # GGUF files in the llama.cpp models folder
+    ollama: OllamaInfo | None = None
     hardware: Hardware | None = None
 
 class Inventory(BaseModel):
@@ -151,6 +216,8 @@ def _migrate(db):
         db.execute("ALTER TABLE agent_heartbeats ADD COLUMN lmstudio TEXT")
     if "llamacpp_count" not in heartbeat_columns:
         db.execute("ALTER TABLE agent_heartbeats ADD COLUMN llamacpp_count INTEGER")
+    if "ollama" not in heartbeat_columns:
+        db.execute("ALTER TABLE agent_heartbeats ADD COLUMN ollama TEXT")  # JSON: where Ollama runs
     db.execute("""CREATE TABLE IF NOT EXISTS agent_status (
         device TEXT PRIMARY KEY, phase TEXT NOT NULL, done INTEGER, total INTEGER,
         done_bytes INTEGER, total_bytes INTEGER, current TEXT, message TEXT,
@@ -202,10 +269,13 @@ def _unreachable_runtimes(db):
     """Inventory devices ("pc:lemonade") of LLM servers the agent could not reach on its last sync.
     The agent keeps their old list so it returns when the server is back; until then it is not shown."""
     hidden = set()
-    for device, ollama, lemonade, lmstudio in db.execute(
-            "SELECT device,ollama_count,lemonade_count,lmstudio FROM agent_heartbeats"):
+    for device, ollama, lemonade, lmstudio, llamacpp in db.execute(
+            "SELECT device,ollama_count,lemonade_count,lmstudio,llamacpp_count FROM agent_heartbeats"):
         if ollama is None:
             hidden.add(device + ":ollama")
+        # The agent clears llama.cpp's list when it is not configured, so None means its folder was missing.
+        if llamacpp is None:
+            hidden.add(device + ":llamacpp")
         if lemonade is None:
             hidden.add(device + ":lemonade")
         # The LM Studio count is kept across failed syncs, so its reported status decides.
@@ -217,7 +287,8 @@ def _unreachable_runtimes(db):
     return hidden
 
 def authorize(value):
-    if not TOKEN or not hmac.compare_digest((value or "").encode(), TOKEN.encode()):
+    """Any configured token; check_token_role decides which routes each kind may use."""
+    if not token_roles(value):
         raise HTTPException(status_code=401, detail="Unauthorized")
 
 @app.post("/api/inventory")
@@ -244,8 +315,10 @@ def heartbeat(payload: Heartbeat, x_modelharbor_token: str | None = Header(defau
             hardware = payload.hardware and payload.hardware.model_dump_json()
             lemonade = payload.lemonade and payload.lemonade.model_dump_json()
             lmstudio = payload.lmstudio and payload.lmstudio.model_dump_json()
-            db.execute("""INSERT INTO agent_heartbeats (device,last_seen,comfyui_count,ollama_count,lemonade_count,lemonade,hardware,lmstudio_count,lmstudio,llamacpp_count)
-                VALUES (?,?,?,?,?,?,?,?,?,?) ON CONFLICT(device) DO UPDATE SET last_seen=excluded.last_seen,
+            ollama = payload.ollama and payload.ollama.model_dump_json()
+            db.execute("""INSERT INTO agent_heartbeats (device,last_seen,comfyui_count,ollama_count,lemonade_count,lemonade,hardware,lmstudio_count,lmstudio,llamacpp_count,ollama)
+                VALUES (?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(device) DO UPDATE SET last_seen=excluded.last_seen,
+                ollama=COALESCE(excluded.ollama,agent_heartbeats.ollama),
                 comfyui_count=excluded.comfyui_count,ollama_count=excluded.ollama_count,
                 lemonade_count=excluded.lemonade_count,
                 lemonade=COALESCE(excluded.lemonade,agent_heartbeats.lemonade),
@@ -254,7 +327,7 @@ def heartbeat(payload: Heartbeat, x_modelharbor_token: str | None = Header(defau
                 lmstudio=COALESCE(excluded.lmstudio,agent_heartbeats.lmstudio),
                 llamacpp_count=excluded.llamacpp_count""",
                 (payload.device, int(time.time()), payload.comfyui_count, payload.ollama_count,
-                 payload.lemonade_count, lemonade, hardware, payload.lmstudio_count, lmstudio, payload.llamacpp_count))
+                 payload.lemonade_count, lemonade, hardware, payload.lmstudio_count, lmstudio, payload.llamacpp_count, ollama))
     return {"ok": True}
 
 @app.get("/api/agents")
@@ -317,6 +390,15 @@ def _llm_hardware(db, agent):
     """Hardware reported for a remote LLM runtime, when the agent can identify it."""
     return _hardware(db, agent, "lemonade") or _hardware(db, agent, "lmstudio")
 
+def _runtime_hardware(db, agent):
+    """The PC each LLM server runs on. llama.cpp's models folder and Ollama are on the agent's own PC;
+    Lemonade and LM Studio report their own hardware, which may be another PC's."""
+    hw = _hardware(db, agent)
+    ollama = _hardware(db, agent, "ollama")
+    # Ollama on another machine (ollama_url): its hardware is unknown, so its files go unrated.
+    return {"llamacpp": hw, "ollama": None if ollama and ollama.get("local") is False else hw, "lemonade": _hardware(db, agent, "lemonade"),
+            "lmstudio": _hardware(db, agent, "lmstudio")}
+
 class AgentStatus(BaseModel):
     device: str = Field(min_length=1, max_length=100)
     phase: str = Field(pattern=r"^(scanning|hashing|uploading|idle|error)$")
@@ -375,15 +457,30 @@ def discover(provider: str, q: str, x_modelharbor_token: str | None = Header(def
     return {"provider": provider, "query": q, "verified": False,
             "results": provider_search(provider, q)}
 
+def _gguf_shape(repo, files):
+    """The LLM's shape read from one of its GGUFs (all quants of a model share it), or None."""
+    path = next((f["path"] for f in files if fit.importable_gguf(f["path"])), None)
+    return gguf_meta.read_header(repo, path) if path else None
+
 @app.get("/api/huggingface/repository")
-def huggingface_repository(repo: str, q: str = "", agent: str = "", x_modelharbor_token: str | None = Header(default=None)):
+def huggingface_repository(repo: str, q: str = "", agent: str = "",
+                           context: int = Query(default=fit.DEFAULT_CONTEXT, ge=512, le=1_048_576),
+                           x_modelharbor_token: str | None = Header(default=None)):
     authorize(x_modelharbor_token)
     with closing(connect()) as db:
         shas, hw, llm_hw, lmstudio_hw = browse.local_shas(db), _hardware(db, agent), _llm_hardware(db, agent), _hardware(db, agent, "lmstudio")
-    return fit.annotate_listing(browse.mark_huggingface(list_model_files(repo, q), shas), hw, llm_hw, lmstudio_hw)
+        runtime_hw = _runtime_hardware(db, agent)
+    listing = browse.mark_huggingface(list_model_files(repo, q), shas)
+    shape = _gguf_shape(repo, listing["files"])
+    listing = fit.annotate_listing(listing, hw, llm_hw, lmstudio_hw, runtime_hw, context, shape and shape["kv_bytes_per_token"],
+                                     bool(shape.get("experts")) if shape else None)
+    listing["gguf"], listing["context"] = shape, context
+    return listing
 
 @app.get("/api/huggingface/inspect")
-def huggingface_inspect(url: str, agent: str = "", x_modelharbor_token: str | None = Header(default=None)):
+def huggingface_inspect(url: str, agent: str = "",
+                        context: int = Query(default=fit.DEFAULT_CONTEXT, ge=512, le=1_048_576),
+                        x_modelharbor_token: str | None = Header(default=None)):
     authorize(x_modelharbor_token)
     try:
         data = inspect_huggingface(url)
@@ -391,14 +488,19 @@ def huggingface_inspect(url: str, agent: str = "", x_modelharbor_token: str | No
         raise HTTPException(502, f"Hugging Face is unavailable right now: {exc}") from exc
     with closing(connect()) as db:
         shas, hw, llm_hw = browse.local_shas(db), _hardware(db, agent), _llm_hardware(db, agent)
-        lmstudio_hw = _hardware(db, agent, "lmstudio")
-    annotated = fit.annotate_listing(browse.mark_huggingface({"files": data["files"]}, shas), hw, llm_hw, lmstudio_hw)
+        lmstudio_hw, runtime_hw = _hardware(db, agent, "lmstudio"), _runtime_hardware(db, agent)
+    # Reading the header costs one small ranged request; only worth it for a model an LLM server runs.
+    shape = _gguf_shape(data["repository"], data["files"]) if data.get("model_type") == "LLM" else None
+    data["gguf"], data["context"] = shape, context
+    annotated = fit.annotate_listing(browse.mark_huggingface({"files": data["files"]}, shas), hw, llm_hw, lmstudio_hw,
+                                     runtime_hw, context, shape and shape["kv_bytes_per_token"],
+                                     bool(shape.get("experts")) if shape else None)
     data["files"] = annotated["files"]
     if data.get("primary_file"):
         match = next((f for f in data["files"] if f["path"] == data["primary_file"]["path"]), None)
         if match:
             data["primary_file"] = match
-    return data
+    return recommend_primary(data)
 
 class VerifyRequest(BaseModel):
     device: str = Field(min_length=1,max_length=100)
@@ -810,6 +912,10 @@ def new_download(payload: NewDownload, x_modelharbor_token: str | None = Header(
                 item["name"], item["sha256"], item["size_bytes"], payload.folder or "loras", f"huggingface:{repo}/{item['path']}")
         bm = payload.base_model or (payload.folder.partition("/")[2] if payload.folder and "/" in payload.folder else None)
         extra = {"base_model": bm, "trigger_words": payload.trigger_words}
+    # ComfyUI's checkpoint loader can't read GGUF: a GGUF there is almost always an LLM saved by mistake.
+    if payload.provider != "civitai" and args[1].lower().endswith(".gguf") and args[4].partition("/")[0] == "checkpoints":
+        raise HTTPException(422, "GGUF files don't go in checkpoints. Save an LLM into llama.cpp, Ollama, Lemonade or "
+                                 "LM Studio, or a ComfyUI-GGUF diffusion model into diffusion_models")
     with closing(connect()) as db:
         with db:
             return downloads.create_new(db, payload.agent, *args, payload.provider, **extra)
@@ -861,6 +967,41 @@ def lmstudio_action(payload: LMStudioActionRequest, x_modelharbor_token: str | N
                 payload.context_length = None
             return downloads.create_lmstudio_action(db, downloads.physical_device(payload.device), payload.device,
                 payload.path, payload.action, model_key, instance_id, payload.context_length)
+
+class LlamaCppActionRequest(BaseModel):
+    device: str = Field(min_length=1, max_length=100)
+    path: str = Field(min_length=1, max_length=4096)
+    action: str = Field(pattern=r"^(load|unload)$")
+
+@app.post("/api/llamacpp/actions", status_code=202)
+def llamacpp_action(payload: LlamaCppActionRequest, x_modelharbor_token: str | None = Header(default=None)):
+    """Load or unload a model in llama-server's router mode, through the PC's agent."""
+    authorize(x_modelharbor_token)
+    if not payload.device.endswith(":llamacpp"):
+        raise HTTPException(422, "Choose a llama.cpp model")
+    agent = downloads.physical_device(payload.device)
+    with closing(connect()) as db:
+        with db:
+            row = db.execute("SELECT kind,runtime_meta,name FROM models WHERE device=? AND path=?",
+                             (payload.device, payload.path)).fetchone()
+            if not row or not row[0].startswith("llamacpp/"):
+                raise HTTPException(404, "llama.cpp model not found in inventory")
+            try:
+                meta = json.loads(row[1]) if row[1] else {}
+            except (TypeError, ValueError):
+                meta = {}
+            status = meta.get("status")
+            if status in (None, "unknown"):
+                raise HTTPException(409, "The PC's agent can't reach llama-server; check llamacpp_url in its config")
+            if payload.action == "load" and status in ("loaded", "loading"):
+                raise HTTPException(409, "This model is already " + status + " in llama.cpp")
+            if payload.action == "unload" and status not in ("loaded", "loading", "sleeping"):
+                raise HTTPException(409, "This model isn't loaded in llama.cpp")
+            heartbeat = db.execute("SELECT last_seen FROM agent_heartbeats WHERE device=?", (agent,)).fetchone()
+            if not heartbeat or int(time.time()) - heartbeat[0] > 3900:
+                raise HTTPException(409, "The PC's agent hasn't synced recently")
+            model_id = meta.get("model_id") or (row[2][:-5] if row[2].lower().endswith(".gguf") else row[2])
+            return downloads.create_llamacpp_action(db, agent, payload.device, payload.path, payload.action, model_id)
 
 class ConvertRequest(BaseModel):
     device: str = Field(min_length=1, max_length=100)

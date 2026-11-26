@@ -178,7 +178,7 @@ def request_cleanup(db, job_id):
     if not row:
         raise HTTPException(404, "Unknown download")
     device, path, provider, state, result_path, cleanup = row
-    if provider in ("ollama", "lemonade", "lmstudio", "lmstudio-load", "lmstudio-unload"):
+    if provider in ("ollama", "lemonade", "lmstudio", "lmstudio-load", "lmstudio-unload", "llamacpp-load", "llamacpp-unload"):
         raise HTTPException(409, "The LLM server manages its own model files")
     if state != "done" or not result_path:
         raise HTTPException(409, "The new version must finish downloading and pass its hash check first")
@@ -367,6 +367,20 @@ def create_lmstudio_action(db, agent, device, path, action, model_key, instance_
     db.execute("""INSERT INTO download_jobs (id,agent,device,path,provider,url,file_name,state,created_at,updated_at,source_ref)
         VALUES (?,?,?,?,?,?,?,'queued',?,?,?)""",
         (job_id, agent, device, path, provider, json.dumps(payload, separators=(",", ":")), model_key, now, now, source_ref))
+    return dict(zip(FIELDS, db.execute(f"SELECT {','.join(FIELDS)} FROM download_jobs WHERE id=?", (job_id,)).fetchone()))
+
+def create_llamacpp_action(db, agent, device, path, action, model_id):
+    """Queue a load or unload of a model in llama-server's router; the agent calls /models/load or /unload."""
+    if action not in ("load", "unload"):
+        raise HTTPException(422, "Unsupported llama.cpp action")
+    provider, source_ref = "llamacpp-" + action, f"llamacpp-{action}:{device}:{path}"
+    existing = db.execute(f"SELECT {','.join(FIELDS)} FROM download_jobs WHERE source_ref=? AND agent=? AND state IN (?,?)",
+                          (source_ref, agent, *ACTIVE)).fetchone()
+    if existing:
+        return dict(zip(FIELDS, existing))
+    now, job_id = int(time.time()), uuid.uuid4().hex
+    db.execute("""INSERT INTO download_jobs (id,agent,device,path,provider,file_name,state,created_at,updated_at,source_ref)
+        VALUES (?,?,?,?,?,?,'queued',?,?,?)""", (job_id, agent, device, path, provider, model_id, now, now, source_ref))
     return dict(zip(FIELDS, db.execute(f"SELECT {','.join(FIELDS)} FROM download_jobs WHERE id=?", (job_id,)).fetchone()))
 
 def create_new(db, agent, url, file_name, expected_sha, size_bytes, folder, source_ref, provider, base_model=None, trigger_words=None):

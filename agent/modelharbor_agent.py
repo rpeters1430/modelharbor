@@ -98,7 +98,8 @@ def run_once(cfg, token, dry_run=False, reporter=None, lock=None):
         llamacpp = [] if not llama_dir else None
         if llama_dir:
             if Path(llama_dir).is_dir():
-                llamacpp = llamacpp_scan.scan(Path(llama_dir), device + ":llamacpp")
+                llamacpp = llamacpp_scan.add_statuses(llamacpp_scan.scan(Path(llama_dir), device + ":llamacpp"), session,
+                                                      cfg.get("llamacpp_url", llamacpp_scan.DEFAULT_URL))
             else:
                 LOG.warning("llama.cpp models folder missing; preserving previous inventory: %s", llama_dir)
         if cfg.get("hash_models", True) and not dry_run:
@@ -176,6 +177,7 @@ def run_once(cfg, token, dry_run=False, reporter=None, lock=None):
                   "lemonade": lemonade_info,
                   "lmstudio": lmstudio_info,
                   "llamacpp_count": len(llamacpp) if llama_dir and llamacpp is not None else None,
+                  "ollama": lmstudio_scan.endpoint_info(cfg.get("ollama_url", "http://127.0.0.1:11434")),
                   "hardware": detect_hardware()}, timeout=20)
         response.raise_for_status()
         reporter.update("idle", done=len(comfy), total=len(comfy), message=f"Synced {len(comfy)} ComfyUI files"
@@ -232,7 +234,8 @@ def worker_lanes(cfg, token):
             s, server, token, agent, roots, cfg.get("ollama_url", "http://127.0.0.1:11434"),
             cfg.get("lemonade_url", lemonade_scan.DEFAULT_URL), cfg.get("lemonade_load_after_pull", True),
             cfg.get("lmstudio_url", "http://127.0.0.1:1234"), cfg.get("llamacpp_models_dir"),
-            cfg.get("llamacpp_restart_command", llamacpp_scan.DEFAULT_RESTART)))]
+            cfg.get("llamacpp_restart_command", llamacpp_scan.DEFAULT_RESTART),
+            cfg.get("llamacpp_url", llamacpp_scan.DEFAULT_URL)))]
     if cfg.get("converts_enabled", True):
         lanes["converts"] = [("Conversion", lambda s: convert_worker.process_convert(s, server, token, agent, roots, cfg))]
     return lanes

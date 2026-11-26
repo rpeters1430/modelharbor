@@ -52,7 +52,9 @@ $("workflow-check").onclick=async()=>{
 const fmt = n => { if (!Number.isFinite(n)) return "—"; if (n === 0) return "0 B"; const u = ["B","KB","MB","GB","TB","PB"]; const i = Math.min(Math.floor(Math.log(n)/Math.log(1000)),u.length-1); return (n/Math.pow(1000,i)).toFixed(i ? 1 : 0)+" "+u[i]; };
 const text = (tag,value,cls) => { const e=document.createElement(tag); e.textContent=value; if(cls)e.className=cls; return e; };
 function showNotice(message){ $("notice").textContent=message; $("notice").hidden=!message; }
-function setStatus(online){ $("status").textContent=online?"● Connected":"● Disconnected"; $("status").classList.toggle("online",online); }
+// A viewer token (MODELHARBOR_VIEWER_TOKEN) can look but not change anything; the NAS refuses its actions.
+let readOnly=false;
+function setStatus(online){ $("status").textContent=online?(readOnly?"● Connected · read-only":"● Connected"):"● Disconnected"; $("status").classList.toggle("online",online); $("status").title=online&&readOnly?"This token can view the dashboard but not download, delete or change anything":""; }
 function openAuth(){ $("token").value=token; $("auth-dialog").showModal(); }
 const VIEWS=["overview","library","browse","convert","devices"];
 // The tab lives in the URL hash so Back returns to the previous tab instead of closing the installed app.
@@ -443,8 +445,34 @@ async function queueLmStudioAction(model,action,instanceId,contextLength,status)
   poll();
  }catch(err){status.textContent=err.message;}
 }
+// llama-server router mode: load or unload a GGUF from its models folder through the PC's agent.
+const LLAMACPP_STATUS={loaded:"Loaded",loading:"Loading…",unloaded:"Not loaded",sleeping:"Sleeping (unloads when idle)",failed:"Failed to load: check llama-server's log",downloading:"Downloading",incomplete:"Incomplete"};
+function renderLlamaCpp(m){
+ const box=$("runtime-box"),meta=m.runtime_meta||{},state=meta.status||"unknown";
+ box.append(text("h3","llama.cpp","section-title"));
+ box.append(text("p",state==="unknown"?"The PC's agent couldn't reach llama-server on its last sync. Set llamacpp_url in its config to show load status and Load/Unload here.":"Status: "+(LLAMACPP_STATUS[state]||state)+" · model name "+(meta.model_id||m.name.replace(/\.gguf$/i,"")),"muted"));
+ if(state==="unknown"||readOnly)return;
+ const status=text("p","","muted"),row=text("div","","runtime-action-row");
+ const action=["loaded","loading","sleeping"].includes(state)?"unload":"load";
+ const button=text("button",action==="load"?"Load in llama.cpp":"Unload from llama.cpp",action==="load"?"primary":"repo-action");button.type="button";
+ button.addEventListener("click",async()=>{
+  button.disabled=true;status.textContent="Sending request to the PC's agent…";
+  try{
+   let job=await apiRequest("/api/llamacpp/actions","POST",{device:m.device,path:m.path,action});
+   while(job.state==="queued"||job.state==="running"){
+    status.textContent=job.state==="queued"?"Waiting for the PC's agent…":(action==="load"?"llama-server is loading the model…":"llama-server is unloading the model…");
+    await new Promise(r=>setTimeout(r,2500));job=(await apiRequest("/api/downloads")).find(x=>x.id===job.id)||job;
+   }
+   if(job.state==="failed"){status.textContent="llama.cpp request failed: "+(job.error||"unknown error");button.disabled=false;return;}
+   status.textContent=action==="load"?"Loaded. The status updates after the agent's rescan.":"Unloaded. The status updates after the agent's rescan.";
+  }catch(err){status.textContent=err.message;button.disabled=false;}
+ });
+ row.append(button);box.append(row,status);
+}
 function renderLmStudio(m){
- const box=$("runtime-box");box.replaceChildren();box.hidden=!m.kind.startsWith("lmstudio/");if(box.hidden)return;
+ const box=$("runtime-box");box.replaceChildren();
+ if(m.kind.startsWith("llamacpp/")){box.hidden=false;renderLlamaCpp(m);return;}
+ box.hidden=!m.kind.startsWith("lmstudio/");if(box.hidden)return;
  const meta=m.runtime_meta||{},quant=meta.quantization||{},loaded=Array.isArray(meta.loaded_instances)?meta.loaded_instances:[],runtimeAgent=agents.find(a=>a.device===m.device.replace(/:lmstudio$/, "")),runtime=runtimeAgent?.lmstudio;
  const heading=text("h3","LM Studio","section-title");box.append(heading);
  box.append(text("p",[meta.architecture,meta.format,quant.name,meta.params_string,meta.max_context_length?"Max context "+Number(meta.max_context_length).toLocaleString():""].filter(Boolean).join(" · ")||"Runtime details unavailable","muted"));
@@ -476,7 +504,7 @@ function details(m){
  const runtimeMeta=m.runtime_meta||{},runtimeQuant=runtimeMeta.quantization||{};
  for(const [k,v] of Object.entries({
   Type:m.kind,Device:m.device,Size:fmt(m.size_bytes),Family:(m.family_guess||"Unknown")+(m.family_verified?" (from source)":" (unverified)"),
-  ...(m.source?{Source:providerName(m.source.provider)+" · "+m.source.model_name+(m.source.version_name?" — "+m.source.version_name:"")+(m.source.provider==="civitai"?(m.source.weights_match?" (same weights; file info differs)":m.source.verified?" (exact hash match)":" (linked by hand, hash differs)"):m.source.reported_by?" (reported by "+providerName(m.source.provider)+")":isLlmServer(m)?" (linked by hand)":"")}:{"Source":isLlmServer(m)?"Not linked to Hugging Face yet":!m.sha256?"Waiting for the Windows agent to hash this file":m.kind.startsWith("ollama/")?"Not on the Ollama registry":m.source_checked?"Not found on Civitai":"Checking Civitai…"}),
+  ...(m.source?{Source:providerName(m.source.provider)+" · "+m.source.model_name+(m.source.version_name?" — "+m.source.version_name:"")+(m.source.provider==="civitai"?(m.source.weights_match?" (same weights; file info differs)":m.source.verified?" (exact hash match)":" (linked by hand, hash differs)"):m.source.reported_by?" (reported by "+providerName(m.source.provider)+")":isLlmServer(m)?" (linked by hand)":"")}:{"Source":isLlmServer(m)?"Not linked to Hugging Face yet":!m.sha256?"Waiting for the PC's agent to hash this file":m.kind.startsWith("ollama/")?"Not on the Ollama registry":m.source_checked?"Not found on Civitai":"Checking Civitai…"}),
   ...(baseModelVal?{"Base model":baseModelVal}:{}),
   ...(m.kind.startsWith("lmstudio/")?{"LM Studio model key":runtimeMeta.model_key||m.checkpoint,"Architecture":runtimeMeta.architecture||"Unknown","Format":runtimeMeta.format||"Unknown","Quantization":runtimeQuant.name||"Unknown","Maximum context":runtimeMeta.max_context_length?Number(runtimeMeta.max_context_length).toLocaleString():"Unknown"}:{}),
   ...(m.source&&m.source.weight?{"Recommended weight":m.source.weight+" (median in the creator's example images)"}:{}),
@@ -576,6 +604,8 @@ function fillBrowseAgents(){
 function newDownloadStatus(j){
  if(j.state==="queued")return "Waiting for the PC's agent…";
  if(j.state==="running"&&j.provider==="ollama")return "Ollama is pulling "+j.file_name+"…";
+ if(j.state==="running"&&j.provider.startsWith("llamacpp-"))return "llama-server is processing a "+j.provider.slice("llamacpp-".length)+" request…";
+ if(j.state==="done"&&j.provider.startsWith("llamacpp-"))return "✓ llama.cpp "+j.provider.slice("llamacpp-".length)+" request finished";
  if(j.state==="running"&&j.provider.startsWith("lmstudio-"))return "LM Studio is processing a "+j.provider.slice("lmstudio-".length)+" request…";
  if(j.state==="running"&&j.provider==="lmstudio")return "LM Studio is downloading "+(j.bytes_done?fmt(j.bytes_done)+(j.size_bytes?" of "+fmt(j.size_bytes):"")+" ":"")+j.file_name+"…";
  if(j.state==="running"&&j.provider==="lemonade")return "Lemonade is downloading "+(j.bytes_done?fmt(j.bytes_done)+(j.size_bytes?" of "+fmt(j.size_bytes):"")+" ":"")+"then loading "+j.file_name+"…";
@@ -606,17 +636,61 @@ function lemonadeModelName(repository,path){
 // llama.cpp lists each GGUF in its models folder by file name (mirrors downloads.create_llamacpp).
 const llamacppModelName=(repository,path)=>(path||"").split("/").pop();
 const LLM_SERVERS={llamacpp:{label:"llama.cpp",name:llamacppModelName},ollama:{label:"Ollama",name:ollamaModelName},lemonade:{label:"Lemonade",name:lemonadeModelName},lmstudio:{label:"LM Studio",name:(repo,path)=>"lmstudio:"+repo+":"+lmstudioQuant(path)}};
+// The context length LLM files are rated for (fit.rate_llm); remembered per browser.
+const CONTEXTS=[4096,8192,16384,32768,65536,131072,262144];
+let llmContext=8192;
+try{const saved=Number(localStorage.getItem("modelharbor_llm_context"));if(CONTEXTS.includes(saved))llmContext=saved;}catch(_){}
+const ctxLabel=n=>n>=1024?Math.round(n/1024)+"K":String(n);
+// Context picker plus what the GGUF header says about the model (gguf_meta.summary).
+function contextRow(shape,onChange){
+ const row=text("div","","inspect-folder-row");row.append(text("span","Context: ","muted"));
+ const select=document.createElement("select");select.setAttribute("aria-label","Context length to leave room for");
+ const max=shape&&shape.context_length;
+ CONTEXTS.filter(n=>!max||n<=max||n===8192).forEach(n=>select.append(new Option(ctxLabel(n),n,n===llmContext,n===llmContext)));
+ select.onchange=()=>{llmContext=Number(select.value);try{localStorage.setItem("modelharbor_llm_context",String(llmContext));}catch(_){}onChange();};
+ row.append(select);
+ const facts=[];
+ if(shape){
+  if(shape.architecture)facts.push(shape.architecture+(shape.experts?" (mixture of experts)":""));
+  if(shape.context_length)facts.push("trained for up to "+ctxLabel(shape.context_length));
+  if(shape.kv_bytes_per_token)facts.push("context memory "+fmt(shape.kv_bytes_per_token*llmContext)+" at "+ctxLabel(llmContext));
+ }else facts.push("model shape unknown: using a rule of thumb for the context's memory");
+ row.append(text("span",facts.join(" · "),"model-sub"));
+ return row;
+}
+// An LLM server that runs on another PC (Lemonade, LM Studio) is rated for that PC, the rest for the agent's.
+const runtimePc=p=>p==="lemonade"||p==="lmstudio"?"the "+LLM_SERVERS[p].label+" PC":"your PC";
+// The LLM server the selected PC's agent can reach, in the order Browse prefers them.
+function preferredRuntime(f){
+ const a=agents.find(x=>x.device===browseAgent()),rts=f.runtimes||{};
+ const up={llamacpp:a&&a.llamacpp_count!=null,lemonade:a&&a.lemonade_count!=null,ollama:a&&a.ollama_count!=null,lmstudio:a&&a.lmstudio_count!=null};
+ return ["llamacpp","lemonade","ollama","lmstudio"].find(k=>rts[k]&&up[k])||["llamacpp","ollama","lemonade","lmstudio"].find(k=>rts[k])||null;
+}
+// Which LLM server a GGUF suits best (fit.gguf_runtime); shown only when the destination is an LLM server.
+function runtimeHint(f,provider){
+ const o=f.optimized_for;if(!o||!LLM_SERVERS[provider])return null;
+ const text=o.runtime==="either"?"⇄ Runs well in llama.cpp and Ollama":"⚡ Optimized for "+LLM_SERVERS[o.runtime].label;
+ // Only warn one way: llama.cpp runs Ollama-style quants just as well, but not the reverse.
+ const other=provider==="ollama"&&o.runtime==="llamacpp";
+ return {text:text+" · "+o.reason+(other?" · consider saving into "+LLM_SERVERS[o.runtime].label+" instead":""),mismatch:other};
+}
 function lmstudioQuant(path){const stem=(path||"").split("/").pop().replace(/\.gguf$/i,"");const m=stem.match(/(?:^|[^a-z0-9])(IQ[1-4]_(?:XXS|XS|S|M|NL)|Q[2-8]_[K0-9]+(?:_[SML])?|BF16|F16|F32)(?=$|[^a-z0-9])/i);return m?m[1].toUpperCase():"";}
 function fileRow(label,onPc,ref,request,f={},behavior={}){
  // One downloadable file: a destination-specific installed state, active job, or Download button.
- const row=text("div","","browse-file");row.append(text("span",label,"model-sub"));
+ const row=text("div","","browse-file");const labelSpan=text("span",typeof label==="function"?label():label,"model-sub");row.append(labelSpan);
  // LLM GGUFs are rated against the selected runtime PC when its hardware is known.
  const fitSpan=text("span","","fit");fitSpan.hidden=true;row.append(fitSpan);
+ const hintSpan=text("span","","runtime-hint");hintSpan.hidden=true;row.append(hintSpan);
  const paintFit=()=>{
-  const llm=request.provider==="lemonade"||request.provider==="lmstudio",fit=request.provider==="lmstudio"?f.lmstudio_fit:llm?f.llm_fit:f.fit,best=request.provider==="lmstudio"?f.lmstudio_best:llm?f.llm_best:f.best;
+  if(typeof label==="function")labelSpan.textContent=label();
+  const p=request.provider,server=LLM_SERVERS[p],rt=f.runtimes&&f.runtimes[p];
+  const legacy=p==="lmstudio"?[f.lmstudio_fit,f.lmstudio_best]:p==="lemonade"?[f.llm_fit,f.llm_best]:server?[null,false]:[f.fit,f.best];
+  const fit=rt?rt.fit:legacy[0],best=rt?rt.best:legacy[1];
+  const hint=runtimeHint(f,p);hintSpan.hidden=!hint;
+  if(hint){hintSpan.textContent=hint.text;hintSpan.classList.toggle("mismatch",hint.mismatch);}
   row.classList.toggle("best",!!best);fitSpan.hidden=!fit;if(!fit)return;
   fitSpan.className="fit fit-"+fit.level;
-  fitSpan.textContent=(best?(llm?"★ Best for the "+(request.provider==="lmstudio"?"LM Studio":"Lemonade")+" PC · ":"★ Best for your PC · "):"")+(fit.level==="good"?"✓ ":fit.level==="bad"?"✗ ":"⚠ ")+fit.note;
+  fitSpan.textContent=(best?"★ Best for "+(server?server.label+" on "+runtimePc(p):"your PC")+" · ":"")+(fit.level==="good"?"✓ ":fit.level==="bad"?"✗ ":"⚠ ")+fit.note;
  };
  const status=text("span","","browse-status");row.append(status);
  const button=text("button","Download","repo-action");button.type="button";row.append(button);
@@ -720,7 +794,7 @@ function repoCard(repo){
   if(files.hidden||loaded)return;
   files.replaceChildren(text("p","Loading repository files…","muted"));
   try{
-   const listing=await apiRequest("/api/"+repo.provider+"/repository?"+new URLSearchParams({repo:repo.id,agent:browseAgent()||""}));
+   const listing=await apiRequest("/api/"+repo.provider+"/repository?"+new URLSearchParams({repo:repo.id,agent:browseAgent()||"",context:llmContext}));
    files.replaceChildren();
    loaded=true;
    if(!listing.files.length){files.append(text("p","No downloadable model files found.","muted"));return;}
@@ -738,7 +812,8 @@ function repoCard(repo){
      if(needle&&!f.path.toLowerCase().includes(needle))return false;
      if(!check.checked)return true;
      const gguf=f.path.toLowerCase().endsWith(".gguf");
-     return gguf?((f.llm_recommendation&&f.llm_recommendation.score>=80)||f.llm_best||f.lmstudio_best)
+     const rt=gguf&&f.runtimes&&f.runtimes[preferredRuntime(f)];
+     return gguf?(rt?(rt.recommendation&&rt.recommendation.score>=80)||rt.best:(f.llm_recommendation&&f.llm_recommendation.score>=80)||f.llm_best||f.lmstudio_best)
                 :((f.recommendation&&f.recommendation.score>=80)||f.best);
     });
     for(const f of visible.slice(0,80)){
@@ -746,16 +821,18 @@ function repoCard(repo){
      const top=text("div","","repo-file-heading");
      top.append(text("strong",f.name||f.path.split("/").pop()));
      const gguf=f.path.toLowerCase().endsWith(".gguf");
-     const rec=gguf?f.llm_recommendation:f.recommendation;
-     const ratedFit=gguf?(f.llm_fit||f.lmstudio_fit):f.fit;
+     const rtKey=gguf?preferredRuntime(f):null,rt=rtKey&&f.runtimes[rtKey];
+     const rec=gguf?(rt?rt.recommendation:f.llm_recommendation):f.recommendation;
+     const ratedFit=gguf?(rt?rt.fit:(f.llm_fit||f.lmstudio_fit)):f.fit;
      if(f.on_pc)top.append(text("span","✓ Installed","repo-chip repo-chip-installed"));
-     else if(rec&&rec.score!=null)top.append(text("span",rec.score+"/100 · "+rec.label+(gguf?" · Lemonade estimate":""),"repo-chip"));
+     else if(rec&&rec.score!=null)top.append(text("span",rec.score+"/100 · "+rec.label+(gguf?" · "+(rtKey?LLM_SERVERS[rtKey].label:"Lemonade")+" estimate":""),"repo-chip"));
      else if(ratedFit&&ratedFit.level)top.append(text("span",ratedFit.level==="good"?"✓ Fits GPU":ratedFit.level==="ok"?"△ May run":"⚠ Poor fit","repo-chip"));
      else if(gguf)top.append(text("span","LLM fit unknown","repo-chip"));
      item.append(top);
      if(f.path!==(f.name||f.path.split("/").pop()))item.append(text("div",f.path,"model-sub"));
      const note=(rec&&rec.reasons&&rec.reasons.length?rec.reasons.join(" · "):ratedFit&&ratedFit.note)||"Compatibility not verified";
      item.append(text("div",(f.size_bytes?fmt(f.size_bytes)+" · ":"")+note,"model-sub"));
+     const hint=gguf&&runtimeHint(f,rtKey||"llamacpp");if(hint)item.append(text("div",hint.text,"runtime-hint"));
      if(gguf)item.append(text("div","GGUF file · use Inspect repository to choose an LLM runtime. Download here saves a file; it does not import into llama.cpp, Ollama or Lemonade.","repo-gguf-notice"));
      item.append(fileRow("",f.on_pc,repo.provider+":"+repo.id+"/"+f.path,
       {provider:repo.provider,repository:repo.id,remote_path:f.path,get folder(){return folder.value;}},f));
@@ -776,7 +853,8 @@ function hfInspectCard(data){
  const title=text("strong",data.repository);
  const badges=[];
  if(data.base_model)badges.push("Base: "+data.base_model);
- if(data.model_type)badges.push("Type: "+data.model_type);
+ const isLlm=data.model_type==="LLM";
+ if(data.model_type)badges.push("Type: "+(isLlm?"Language model (runs in llama.cpp, Ollama, Lemonade or LM Studio)":data.model_type));
  if(data.trigger_words&&data.trigger_words.length)badges.push("Trigger: "+data.trigger_words.join(", "));
  if(data.downloads!=null)badges.push("↓ "+Number(data.downloads).toLocaleString());
  if(data.likes)badges.push("♥ "+Number(data.likes).toLocaleString());
@@ -795,6 +873,7 @@ function hfInspectCard(data){
   warn.append(findBtn);info.append(warn);
  }
  const folderRow=text("div","","inspect-folder-row");
+ const ctxRow=isLlm?contextRow(data.gguf,()=>inspectLink(data.inspected_url)):"";
  folderRow.append(text("span","Save into: ","muted"));
  const folderSelect=document.createElement("select");folderSelect.setAttribute("aria-label","Target folder");
  const hasGguf=data.files.some(f=>isOllamaCompatiblePath(f.path));
@@ -816,6 +895,12 @@ function hfInspectCard(data){
  if(lmstudioFile&&agent&&agent.online&&agent.lmstudio&&agent.lmstudio.status==="connected"&&agent.lmstudio_count!=null)
   folderSelect.prepend(new Option("LM Studio (download GGUF)","lmstudio"));
  folderRow.append(folderSelect);
+ // A language model has no ComfyUI folder; without a reachable LLM server there is nowhere to put it.
+ if(isLlm&&!folderSelect.options.length){
+  const link=document.createElement("a");link.href=data.url;link.target="_blank";link.rel="noopener noreferrer";link.textContent="Open on Hugging Face ↗";link.className="model-sub";
+  info.append(title,meta,text("p","This is a language model, not a ComfyUI model. Set up llama.cpp, Ollama, Lemonade or LM Studio on "+(browseAgent()||"the PC")+" to download it from here.","companion-warning"),link);
+  card.append(info);return card;
+ }
  const llm=()=>LLM_SERVERS[folderSelect.value];
  const hfRequest=f=>({repository:data.repository,remote_path:f.path,base_model:data.base_model,trigger_words:data.trigger_words,
   get provider(){return llm()?folderSelect.value:"huggingface";},get folder(){return llm()?null:folderSelect.value;}});
@@ -828,17 +913,26 @@ function hfInspectCard(data){
  };
  const hfBehavior=f=>({destination:folderSelect,isAllowed:()=>{if(!llm())return true;const unique=data.files.filter(x=>x.path.split("/").pop().toLowerCase()===f.path.split("/").pop().toLowerCase()).length===1;return folderSelect.value==="lmstudio"?f.path.toLowerCase().endsWith(".gguf")&&!!lmstudioQuant(f.path)&&data.files.filter(x=>x.path.toLowerCase().endsWith(".gguf")&&lmstudioQuant(x.path)===lmstudioQuant(f.path)).length===1:isOllamaCompatiblePath(f.path)&&unique;}});
  const primaryBox=text("div","","primary-file-box");
- if(data.primary_file){
-  const pf=data.primary_file;
-  const header=text("div","","primary-header");
-  header.append(text("span",data.specified_path?"★ Selected file from link":"★ Recommended file for ComfyUI","primary-badge"));
+ // The recommended file depends on where it goes: the best copy for ComfyUI, or the best GGUF for that
+ // LLM server's PC (hf_inspect.recommend_primary). A file named in the link stays selected.
+ const destination=()=>llm()?folderSelect.value:"comfyui";
+ const primaryFor=dest=>{
+  if(!data.primary_file||data.specified_path)return data.primary_file;
+  const path=(data.recommended||{})[dest];
+  return (path&&data.files.find(f=>f.path===path))||data.primary_file;
+ };
+ const renderPrimary=()=>{
+  primaryBox.replaceChildren();
+  const pf=primaryFor(destination());
+  if(!pf){primaryBox.append(text("p","No model files found in repository.","muted"));return;}
+  const header=text("div","","primary-header"),dest=destination();
+  header.append(text("span",data.specified_path?"★ Selected file from link":"★ Recommended for "+(llm()?llm().label+" on "+runtimePc(dest):"ComfyUI on your PC"),"primary-badge"));
   primaryBox.append(header);
   primaryBox.append(fileRow(pf.name+(pf.size_bytes?" · "+fmt(pf.size_bytes):"")+(pf.sha256?"":" · no published hash"),
    ()=>hfInstalled(pf),()=>hfRef(pf),
-   hfRequest(pf),pf,hfBehavior(pf)));
- }else{
-  primaryBox.append(text("p","No model files found in repository.","muted"));
- }
+   hfRequest(pf),pf,{isAllowed:hfBehavior(pf).isAllowed}));
+ };
+ folderSelect.addEventListener("change",renderPrimary);renderPrimary();
  const toggle=text("button","Browse all "+data.files.length+" repository files ▾","repo-action");toggle.type="button";
  const files=text("div","","browse-versions");files.hidden=true;
  toggle.addEventListener("click",()=>{
@@ -846,13 +940,13 @@ function hfInspectCard(data){
   toggle.textContent=files.hidden?"Browse all "+data.files.length+" repository files ▾":"Hide repository files ▴";
  });
  data.files.forEach(f=>{
-  const isPrimary=data.primary_file&&f.path===data.primary_file.path;
-  files.append(fileRow(f.path+(isPrimary?" (recommended)":"")+(f.size_bytes?" · "+fmt(f.size_bytes):"")+(f.sha256?"":" · no published hash"),
+  const label=()=>{const pf=primaryFor(destination());return f.path+(pf&&f.path===pf.path?" (recommended)":"")+(f.size_bytes?" · "+fmt(f.size_bytes):"")+(f.sha256?"":" · no published hash");};
+  files.append(fileRow(label,
    ()=>hfInstalled(f),()=>hfRef(f),
    hfRequest(f),f,hfBehavior(f)));
  });
  const link=document.createElement("a");link.href=data.url;link.target="_blank";link.rel="noopener noreferrer";link.textContent="Open on Hugging Face ↗";link.className="model-sub";
- info.append(title,meta,folderRow,primaryBox,toggle,link);card.append(info,files);return card;
+ info.append(title,meta,ctxRow,folderRow,primaryBox,toggle,link);card.append(info,files);return card;
 }
 async function inspectLink(url){
  url=(url||"").trim();if(!url)return;
@@ -868,7 +962,8 @@ async function inspectLink(url){
    card.append(info,fileRow(data.name,()=>models.some(m=>m.device===browseAgent()+":ollama"&&m.name===data.name),"ollama:"+data.name,{provider:"ollama",ollama_model:data.name}));
    list.replaceChildren(card);$("browse-results").textContent="1 Ollama model";return;
   }
-  const data=await apiRequest("/api/huggingface/inspect?"+new URLSearchParams({url,agent:browseAgent()||""}));
+  const data=await apiRequest("/api/huggingface/inspect?"+new URLSearchParams({url,agent:browseAgent()||"",context:llmContext}));
+  data.inspected_url=url;
   list.replaceChildren(hfInspectCard(data));
   $("browse-results").textContent="1 repository ("+(data.base_model?data.base_model+" ":"")+data.model_type+")";
  }catch(err){
@@ -954,7 +1049,7 @@ function filter(){
  fill($("library"),subset.slice(0,500),"No matching models.");
  if(subset.length>500)$("library").append(text("p","Showing first 500 results. Narrow your filters to see more.","muted"));
 }
-async function refresh(){if(!token){openAuth();return;} $("refresh").disabled=true;try{const response=await fetch("/api/models",{headers:{"X-ModelHarbor-Token":token},cache:"no-store"});if(response.status===401){token="";saveToken("");setStatus(false);showNotice("Token rejected. Enter your configured API token.");openAuth();return;}if(!response.ok)throw Error("Server returned HTTP "+response.status);const data=await response.json();if(!Array.isArray(data))throw Error("Unexpected inventory response");models=data;try{selectedMatches=await apiRequest("/api/selected-matches");}catch(_){selectedMatches=[];}try{const agentsResponse=await fetch("/api/agents",{headers:{"X-ModelHarbor-Token":token},cache:"no-store"});agents=agentsResponse.ok?await agentsResponse.json():[];}catch(_){agents=[];}setStatus(true);showNotice("");render();pollDownloads();loadConverts();}catch(err){setStatus(false);showNotice("Unable to load inventory: "+err.message);}finally{$("refresh").disabled=false;}}
+async function refresh(){if(!token){openAuth();return;} $("refresh").disabled=true;try{const response=await fetch("/api/models",{headers:{"X-ModelHarbor-Token":token},cache:"no-store"});if(response.status===401||response.status===403){const agentOnly=response.status===403;token="";saveToken("");setStatus(false);showNotice(agentOnly?"That is the PC agents' token. Enter the dashboard token (MODELHARBOR_DASHBOARD_TOKEN).":"Token rejected. Enter your configured API token.");openAuth();return;}if(!response.ok)throw Error("Server returned HTTP "+response.status);const data=await response.json();if(!Array.isArray(data))throw Error("Unexpected inventory response");models=data;try{selectedMatches=await apiRequest("/api/selected-matches");}catch(_){selectedMatches=[];}try{const agentsResponse=await fetch("/api/agents",{headers:{"X-ModelHarbor-Token":token},cache:"no-store"});agents=agentsResponse.ok?await agentsResponse.json():[];}catch(_){agents=[];}try{readOnly=(await apiRequest("/api/session")).role==="viewer";}catch(_){readOnly=false;}setStatus(true);showNotice("");render();pollDownloads();loadConverts();}catch(err){setStatus(false);showNotice("Unable to load inventory: "+err.message);}finally{$("refresh").disabled=false;}}
 document.querySelectorAll(".tab").forEach(b=>b.addEventListener("click",()=>switchView(b.dataset.view)));
 window.addEventListener("hashchange",()=>{const v=location.hash.slice(1)||"overview";if(VIEWS.includes(v)&&v!==view)switchView(v);});
 if(VIEWS.includes(location.hash.slice(1)))switchView(location.hash.slice(1));
