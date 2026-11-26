@@ -70,23 +70,49 @@ def variant_key(path):
 
 
 # An LLM needs room beyond its weights for the context (KV) cache and compute buffers.
-# About 10% plus 1.5 GB covers an 8K context for most models; longer contexts need more.
+# Without the model's shape, about 10% plus 1.5 GB covers an 8K context for most models.
 LLM_OVERHEAD = 1.5 * GB
 LLM_OVERHEAD_RATIO = 1.1
+DEFAULT_CONTEXT = 8192
+# With the shape known (gguf_meta.kv_bytes_per_token), the KV cache is counted exactly and this covers
+# llama.cpp's compute buffers and the runtime itself.
+COMPUTE_OVERHEAD = 0.75 * GB
 
-def rate_llm(name, size, hw, runtime="Lemonade"):
-    """Rate a GGUF for an LLM runtime PC using its GPU, RAM, and optional free disk with context headroom."""
+
+def _ctx(tokens):
+    return f"{tokens // 1024}K" if tokens % 1024 == 0 else f"{tokens:,}-token"
+
+
+def _a(word):
+    """ "an 8K", "an 11K", "an 18K" but "a 16K": the article for how a number is said."""
+    return ("an " if word.startswith("8") or word.startswith(("11", "18")) and not word.startswith(("110", "180")) else "a ") + word
+
+
+def llm_memory(size, context=DEFAULT_CONTEXT, kv_per_token=None):
+    """Bytes of GPU (or GPU + RAM) memory a GGUF needs for its weights plus a context of that many tokens."""
+    if kv_per_token:
+        return size + kv_per_token * context + COMPUTE_OVERHEAD + size * 0.02
+    return size * LLM_OVERHEAD_RATIO + LLM_OVERHEAD * max(1.0, context / DEFAULT_CONTEXT)
+
+
+def rate_llm(name, size, hw, runtime="Lemonade", context=None, kv_per_token=None):
+    """Rate a GGUF for an LLM runtime PC using its GPU, RAM, and optional free disk with context headroom.
+    kv_per_token (from the GGUF's header) makes the context's share exact instead of a rule of thumb."""
     if not hw or not size or not name.lower().endswith(".gguf"):
         return None
+    context = context or DEFAULT_CONTEXT
     gpu, vram, ram, free = hw.get("gpu") or "GPU", hw.get("vram_bytes") or 0, hw.get("ram_bytes") or 0, hw.get("free_bytes")
     if free is not None and size + HEADROOM > free:
         return {"level": "bad", "note": f"Not enough free disk on the {runtime} PC ({_gb(free)} free)"}
-    needed = size * LLM_OVERHEAD_RATIO + LLM_OVERHEAD
+    needed = llm_memory(size, context, kv_per_token)
+    detail = f"; needs about {needed / GB:.1f} GB with a {_ctx(context)} context" if kv_per_token else ""
     if vram and needed <= vram:
-        return {"level": "good", "note": f"Fits in the {gpu}'s {_gb(vram)} of VRAM with room for an 8K context"}
+        return {"level": "good", "note": f"Fits in the {gpu}'s {_gb(vram)} of VRAM with room for {_a(_ctx(context))} context"
+                + (f" (about {needed / GB:.1f} GB)" if kv_per_token else ""), "needed_bytes": int(needed)}
     if ram and needed <= vram + ram * 0.75:
-        return {"level": "ok", "note": f"Bigger than the {_gb(vram)} of VRAM: part runs from system RAM, slower"}
-    return {"level": "bad", "note": f"Too big for the {runtime} PC"}
+        return {"level": "ok", "note": f"Bigger than the {_gb(vram)} of VRAM{detail}: part runs from system RAM, slower",
+                "needed_bytes": int(needed)}
+    return {"level": "bad", "note": f"Too big for the {runtime} PC{detail}", "needed_bytes": int(needed)}
 
 # Unquantized GGUFs: twice the size of Q8_0 for no quality anyone can see, so a quant that fits wins.
 FULL_PRECISION_GGUF = re.compile(r"(?<![a-z0-9])(bf16|f16|fp16|f32|fp32)(?![a-z0-9])", re.I)
@@ -117,9 +143,9 @@ def mark_best(files, key, fit_field="fit", best_field="best"):
 
 
 
-def recommend_file(name, size, hw, meta=None, runtime="comfyui"):
+def recommend_file(name, size, hw, meta=None, runtime="comfyui", context=None, kv_per_token=None):
     """Explainable heuristic recommendation; never present estimates as benchmarks."""
-    fit = rate_llm(name, size, hw, runtime) if runtime != "comfyui" else rate(name, size, hw, meta)
+    fit = rate_llm(name, size, hw, runtime, context, kv_per_token) if runtime != "comfyui" else rate(name, size, hw, meta)
     if fit is None:
         return {"score": None, "label": "Unknown", "reasons": ["Hardware or file size unavailable"], "confidence": "low"}
     if fit["level"] == "bad":
@@ -184,7 +210,7 @@ def importable_gguf(name):
     return "mmproj" not in stem.lower() and not SPLIT_GGUF.search(stem)
 
 
-def gguf_runtime(name, size=None, hw=None):
+def gguf_runtime(name, size=None, hw=None, context=None, kv_per_token=None, moe=None):
     """{"runtime": "llamacpp" | "ollama" | "either", "reason": ..., "ollama_ok": bool} for a GGUF, or None.
 
     hw is the PC that runs llama.cpp and Ollama (the agent's PC): a mixture-of-experts model bigger than its
@@ -200,7 +226,7 @@ def gguf_runtime(name, size=None, hw=None):
         return {"runtime": "llamacpp", "ollama_ok": False,
                 "reason": "One part of a split model: llama.cpp loads split GGUFs, Ollama can't import them"}
     vram = (hw or {}).get("vram_bytes") or 0
-    if MOE.search(stem) and vram and size and size * LLM_OVERHEAD_RATIO + LLM_OVERHEAD > vram:
+    if (moe if moe is not None else MOE.search(stem)) and vram and size and llm_memory(size, context or DEFAULT_CONTEXT, kv_per_token) > vram:
         return {"runtime": "llamacpp", "ollama_ok": True,
                 "reason": f"Mixture-of-experts model bigger than your {_gb(vram)} of VRAM: llama.cpp can keep the "
                           "experts in system RAM (--cpu-moe), which runs much faster than Ollama's layer split"}
@@ -248,12 +274,17 @@ def recommended_gguf_among(candidates, runtime):
         min(candidates, key=lambda f: f.get("size_bytes") or 0)
 
 
-def annotate_listing(listing, hw, llm_hw=None, lmstudio_hw=None, runtime_hw=None):
+def annotate_listing(listing, hw, llm_hw=None, lmstudio_hw=None, runtime_hw=None, context=None, kv_per_token=None,
+                     moe=None):
     """Rate files for ComfyUI and any configured Lemonade or LM Studio runtime hardware.
 
     runtime_hw maps an LLM server ("llamacpp", "ollama", "lemonade", "lmstudio") to the hardware of the PC it
     runs on. Each GGUF then gets "runtimes": {server: {"fit", "recommendation", "best"}}, and every GGUF gets
-    "optimized_for", the server it suits best on the agent's PC (see gguf_runtime)."""
+    "optimized_for", the server it suits best on the agent's PC (see gguf_runtime).
+
+    context is the context length to leave room for (default 8K); kv_per_token, from the GGUF's header,
+    makes that room exact; moe (the header's expert count) replaces guessing mixture-of-experts from names."""
+    llm = {"context": context, "kv_per_token": kv_per_token}
     if hw:
         for f in listing["files"]:
             f["fit"] = rate(f["name"], f.get("size_bytes"), hw)
@@ -261,12 +292,12 @@ def annotate_listing(listing, hw, llm_hw=None, lmstudio_hw=None, runtime_hw=None
         mark_recommended(listing["files"], lambda f: variant_key(f["path"]))
     if llm_hw:
         for f in listing["files"]:
-            f["llm_fit"] = rate_llm(f["name"], f.get("size_bytes"), llm_hw)
-            f["llm_recommendation"] = recommend_file(f["name"], f.get("size_bytes"), llm_hw, runtime="Lemonade")
+            f["llm_fit"] = rate_llm(f["name"], f.get("size_bytes"), llm_hw, **llm)
+            f["llm_recommendation"] = recommend_file(f["name"], f.get("size_bytes"), llm_hw, runtime="Lemonade", **llm)
         mark_best(listing["files"], lambda f: variant_key(f["path"]), "llm_fit", "llm_best")
     if lmstudio_hw:
         for f in listing["files"]:
-            f["lmstudio_fit"] = rate_llm(f["name"], f.get("size_bytes"), lmstudio_hw, "LM Studio")
+            f["lmstudio_fit"] = rate_llm(f["name"], f.get("size_bytes"), lmstudio_hw, "LM Studio", **llm)
         mark_best(listing["files"], lambda f: variant_key(f["path"]), "lmstudio_fit", "lmstudio_best")
     ggufs = [f for f in listing["files"] if f["name"].lower().endswith(".gguf")]
     for runtime, runtime_pc in (runtime_hw or {}).items():
@@ -275,8 +306,8 @@ def annotate_listing(listing, hw, llm_hw=None, lmstudio_hw=None, runtime_hw=None
         label = RUNTIME_LABELS.get(runtime, runtime)
         for f in ggufs:
             f.setdefault("runtimes", {})[runtime] = {
-                "fit": rate_llm(f["name"], f.get("size_bytes"), runtime_pc, label),
-                "recommendation": recommend_file(f["name"], f.get("size_bytes"), runtime_pc, runtime=label)}
+                "fit": rate_llm(f["name"], f.get("size_bytes"), runtime_pc, label, **llm),
+                "recommendation": recommend_file(f["name"], f.get("size_bytes"), runtime_pc, runtime=label, **llm)}
         groups = {}
         for f in ggufs:
             if importable_gguf(f["path"]):
@@ -289,5 +320,5 @@ def annotate_listing(listing, hw, llm_hw=None, lmstudio_hw=None, runtime_hw=None
                 f.pop("_fit")
                 f["runtimes"][runtime]["best"] = f is pick
     for f in ggufs:
-        f["optimized_for"] = gguf_runtime(f["name"], f.get("size_bytes"), (runtime_hw or {}).get("llamacpp") or hw)
+        f["optimized_for"] = gguf_runtime(f["name"], f.get("size_bytes"), (runtime_hw or {}).get("llamacpp") or hw, moe=moe, **llm)
     return listing

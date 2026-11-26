@@ -8,7 +8,7 @@ import time
 from contextlib import asynccontextmanager, closing
 from pathlib import Path
 from pathlib import PurePosixPath
-from fastapi import FastAPI, Header, HTTPException
+from fastapi import FastAPI, Header, HTTPException, Query
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
@@ -18,6 +18,7 @@ from urllib.parse import quote
 from .hf_repository import list_model_files, validate_repo
 from .hf_inspect import inspect_huggingface, recommend_primary
 from .suggest_matches import suggest_matches, link_huggingface
+from . import gguf_meta
 from . import browse, converts, deletes, downloads, fit, civitai_credentials, workflow_audit
 from .sources import _civitai_model, _file_sha, fetch
 from .sources import annotate, ignore_key, civitai_check, civitai_link, civitai_unlink, civitai_versions, ensure_tables as ensure_source_tables, start_worker
@@ -456,16 +457,30 @@ def discover(provider: str, q: str, x_modelharbor_token: str | None = Header(def
     return {"provider": provider, "query": q, "verified": False,
             "results": provider_search(provider, q)}
 
+def _gguf_shape(repo, files):
+    """The LLM's shape read from one of its GGUFs (all quants of a model share it), or None."""
+    path = next((f["path"] for f in files if fit.importable_gguf(f["path"])), None)
+    return gguf_meta.read_header(repo, path) if path else None
+
 @app.get("/api/huggingface/repository")
-def huggingface_repository(repo: str, q: str = "", agent: str = "", x_modelharbor_token: str | None = Header(default=None)):
+def huggingface_repository(repo: str, q: str = "", agent: str = "",
+                           context: int = Query(default=fit.DEFAULT_CONTEXT, ge=512, le=1_048_576),
+                           x_modelharbor_token: str | None = Header(default=None)):
     authorize(x_modelharbor_token)
     with closing(connect()) as db:
         shas, hw, llm_hw, lmstudio_hw = browse.local_shas(db), _hardware(db, agent), _llm_hardware(db, agent), _hardware(db, agent, "lmstudio")
         runtime_hw = _runtime_hardware(db, agent)
-    return fit.annotate_listing(browse.mark_huggingface(list_model_files(repo, q), shas), hw, llm_hw, lmstudio_hw, runtime_hw)
+    listing = browse.mark_huggingface(list_model_files(repo, q), shas)
+    shape = _gguf_shape(repo, listing["files"])
+    listing = fit.annotate_listing(listing, hw, llm_hw, lmstudio_hw, runtime_hw, context, shape and shape["kv_bytes_per_token"],
+                                     bool(shape.get("experts")) if shape else None)
+    listing["gguf"], listing["context"] = shape, context
+    return listing
 
 @app.get("/api/huggingface/inspect")
-def huggingface_inspect(url: str, agent: str = "", x_modelharbor_token: str | None = Header(default=None)):
+def huggingface_inspect(url: str, agent: str = "",
+                        context: int = Query(default=fit.DEFAULT_CONTEXT, ge=512, le=1_048_576),
+                        x_modelharbor_token: str | None = Header(default=None)):
     authorize(x_modelharbor_token)
     try:
         data = inspect_huggingface(url)
@@ -474,7 +489,12 @@ def huggingface_inspect(url: str, agent: str = "", x_modelharbor_token: str | No
     with closing(connect()) as db:
         shas, hw, llm_hw = browse.local_shas(db), _hardware(db, agent), _llm_hardware(db, agent)
         lmstudio_hw, runtime_hw = _hardware(db, agent, "lmstudio"), _runtime_hardware(db, agent)
-    annotated = fit.annotate_listing(browse.mark_huggingface({"files": data["files"]}, shas), hw, llm_hw, lmstudio_hw, runtime_hw)
+    # Reading the header costs one small ranged request; only worth it for a model an LLM server runs.
+    shape = _gguf_shape(data["repository"], data["files"]) if data.get("model_type") == "LLM" else None
+    data["gguf"], data["context"] = shape, context
+    annotated = fit.annotate_listing(browse.mark_huggingface({"files": data["files"]}, shas), hw, llm_hw, lmstudio_hw,
+                                     runtime_hw, context, shape and shape["kv_bytes_per_token"],
+                                     bool(shape.get("experts")) if shape else None)
     data["files"] = annotated["files"]
     if data.get("primary_file"):
         match = next((f for f in data["files"] if f["path"] == data["primary_file"]["path"]), None)

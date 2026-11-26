@@ -32,6 +32,12 @@ Only single-file GGUF models can be downloaded. Split models (`-00001-of-00003.g
 
 A pasted link to a language model (a Hugging Face repository whose pipeline is text generation, or one with only GGUF files and nothing marking it as an image or video model) is shown as **Language model**. It is offered only to the LLM servers on the PC, never a ComfyUI folder such as `checkpoints`, and it has no base-model warning. If the PC has no LLM server, the card says so instead of offering a download. The NAS also refuses any Hugging Face or ModelScope GGUF saved into `checkpoints`, because ComfyUI's checkpoint loader can't read GGUF; ComfyUI-GGUF diffusion models go in `diffusion_models`.
 
+## How much memory a model needs
+
+A language model needs memory for its weights and for its context (the KV cache), which grows with every token of context. For a language-model link, the NAS reads the first 2 MB of one of its GGUF files from Hugging Face: the header that lists the model's layers and attention heads. That gives the context's exact memory per token. The card shows the architecture, the longest context the model was trained for, and the context memory at the chosen size.
+
+Pick the context you'll run with under **Context** (4K to 256K, up to what the model supports; 8K by default, remembered in this browser). Every file's fit and the recommended file are worked out again for it: a longer context can make a smaller quant the best choice. Without the header (a gated repository, say), a rule of thumb is used instead. The estimate assumes an f16 KV cache and counts sliding-window layers in full, so it errs on the high side.
+
 ## llama.cpp or Ollama?
 
 When **Save into** is an LLM server, each GGUF file shows which server it suits best on the PC:

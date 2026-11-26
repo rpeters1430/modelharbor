@@ -608,6 +608,28 @@ function lemonadeModelName(repository,path){
 // llama.cpp lists each GGUF in its models folder by file name (mirrors downloads.create_llamacpp).
 const llamacppModelName=(repository,path)=>(path||"").split("/").pop();
 const LLM_SERVERS={llamacpp:{label:"llama.cpp",name:llamacppModelName},ollama:{label:"Ollama",name:ollamaModelName},lemonade:{label:"Lemonade",name:lemonadeModelName},lmstudio:{label:"LM Studio",name:(repo,path)=>"lmstudio:"+repo+":"+lmstudioQuant(path)}};
+// The context length LLM files are rated for (fit.rate_llm); remembered per browser.
+const CONTEXTS=[4096,8192,16384,32768,65536,131072,262144];
+let llmContext=8192;
+try{const saved=Number(localStorage.getItem("modelharbor_llm_context"));if(CONTEXTS.includes(saved))llmContext=saved;}catch(_){}
+const ctxLabel=n=>n>=1024?Math.round(n/1024)+"K":String(n);
+// Context picker plus what the GGUF header says about the model (gguf_meta.summary).
+function contextRow(shape,onChange){
+ const row=text("div","","inspect-folder-row");row.append(text("span","Context: ","muted"));
+ const select=document.createElement("select");select.setAttribute("aria-label","Context length to leave room for");
+ const max=shape&&shape.context_length;
+ CONTEXTS.filter(n=>!max||n<=max||n===8192).forEach(n=>select.append(new Option(ctxLabel(n),n,n===llmContext,n===llmContext)));
+ select.onchange=()=>{llmContext=Number(select.value);try{localStorage.setItem("modelharbor_llm_context",String(llmContext));}catch(_){}onChange();};
+ row.append(select);
+ const facts=[];
+ if(shape){
+  if(shape.architecture)facts.push(shape.architecture+(shape.experts?" (mixture of experts)":""));
+  if(shape.context_length)facts.push("trained for up to "+ctxLabel(shape.context_length));
+  if(shape.kv_bytes_per_token)facts.push("context memory "+fmt(shape.kv_bytes_per_token*llmContext)+" at "+ctxLabel(llmContext));
+ }else facts.push("model shape unknown: using a rule of thumb for the context's memory");
+ row.append(text("span",facts.join(" · "),"model-sub"));
+ return row;
+}
 // An LLM server that runs on another PC (Lemonade, LM Studio) is rated for that PC, the rest for the agent's.
 const runtimePc=p=>p==="lemonade"||p==="lmstudio"?"the "+LLM_SERVERS[p].label+" PC":"your PC";
 // The LLM server the selected PC's agent can reach, in the order Browse prefers them.
@@ -744,7 +766,7 @@ function repoCard(repo){
   if(files.hidden||loaded)return;
   files.replaceChildren(text("p","Loading repository files…","muted"));
   try{
-   const listing=await apiRequest("/api/"+repo.provider+"/repository?"+new URLSearchParams({repo:repo.id,agent:browseAgent()||""}));
+   const listing=await apiRequest("/api/"+repo.provider+"/repository?"+new URLSearchParams({repo:repo.id,agent:browseAgent()||"",context:llmContext}));
    files.replaceChildren();
    loaded=true;
    if(!listing.files.length){files.append(text("p","No downloadable model files found.","muted"));return;}
@@ -823,6 +845,7 @@ function hfInspectCard(data){
   warn.append(findBtn);info.append(warn);
  }
  const folderRow=text("div","","inspect-folder-row");
+ const ctxRow=isLlm?contextRow(data.gguf,()=>inspectLink(data.inspected_url)):"";
  folderRow.append(text("span","Save into: ","muted"));
  const folderSelect=document.createElement("select");folderSelect.setAttribute("aria-label","Target folder");
  const hasGguf=data.files.some(f=>isOllamaCompatiblePath(f.path));
@@ -895,7 +918,7 @@ function hfInspectCard(data){
    hfRequest(f),f,hfBehavior(f)));
  });
  const link=document.createElement("a");link.href=data.url;link.target="_blank";link.rel="noopener noreferrer";link.textContent="Open on Hugging Face ↗";link.className="model-sub";
- info.append(title,meta,folderRow,primaryBox,toggle,link);card.append(info,files);return card;
+ info.append(title,meta,ctxRow,folderRow,primaryBox,toggle,link);card.append(info,files);return card;
 }
 async function inspectLink(url){
  url=(url||"").trim();if(!url)return;
@@ -911,7 +934,8 @@ async function inspectLink(url){
    card.append(info,fileRow(data.name,()=>models.some(m=>m.device===browseAgent()+":ollama"&&m.name===data.name),"ollama:"+data.name,{provider:"ollama",ollama_model:data.name}));
    list.replaceChildren(card);$("browse-results").textContent="1 Ollama model";return;
   }
-  const data=await apiRequest("/api/huggingface/inspect?"+new URLSearchParams({url,agent:browseAgent()||""}));
+  const data=await apiRequest("/api/huggingface/inspect?"+new URLSearchParams({url,agent:browseAgent()||"",context:llmContext}));
+  data.inspected_url=url;
   list.replaceChildren(hfInspectCard(data));
   $("browse-results").textContent="1 repository ("+(data.base_model?data.base_model+" ":"")+data.model_type+")";
  }catch(err){
