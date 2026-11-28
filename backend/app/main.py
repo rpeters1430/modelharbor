@@ -171,6 +171,8 @@ class Heartbeat(BaseModel):
     lemonade: LemonadeInfo | None = None  # the Lemonade PC, which may not be the agent's PC
     lmstudio_count: int | None = Field(default=None, ge=0)
     lmstudio: LMStudioInfo | None = None
+    unsloth_count: int | None = Field(default=None, ge=0)
+    unsloth: LMStudioInfo | None = None
     llamacpp_count: int | None = Field(default=None, ge=0)  # GGUF files in the llama.cpp models folder
     ollama: OllamaInfo | None = None
     hardware: Hardware | None = None
@@ -218,6 +220,10 @@ def _migrate(db):
         db.execute("ALTER TABLE agent_heartbeats ADD COLUMN llamacpp_count INTEGER")
     if "ollama" not in heartbeat_columns:
         db.execute("ALTER TABLE agent_heartbeats ADD COLUMN ollama TEXT")  # JSON: where Ollama runs
+    if "unsloth_count" not in heartbeat_columns:
+        db.execute("ALTER TABLE agent_heartbeats ADD COLUMN unsloth_count INTEGER")
+    if "unsloth" not in heartbeat_columns:
+        db.execute("ALTER TABLE agent_heartbeats ADD COLUMN unsloth TEXT")
     db.execute("""CREATE TABLE IF NOT EXISTS agent_status (
         device TEXT PRIMARY KEY, phase TEXT NOT NULL, done INTEGER, total INTEGER,
         done_bytes INTEGER, total_bytes INTEGER, current TEXT, message TEXT,
@@ -269,8 +275,8 @@ def _unreachable_runtimes(db):
     """Inventory devices ("pc:lemonade") of LLM servers the agent could not reach on its last sync.
     The agent keeps their old list so it returns when the server is back; until then it is not shown."""
     hidden = set()
-    for device, ollama, lemonade, lmstudio, llamacpp in db.execute(
-            "SELECT device,ollama_count,lemonade_count,lmstudio,llamacpp_count FROM agent_heartbeats"):
+    for device, ollama, lemonade, lmstudio, llamacpp, unsloth in db.execute(
+            "SELECT device,ollama_count,lemonade_count,lmstudio,llamacpp_count,unsloth FROM agent_heartbeats"):
         if ollama is None:
             hidden.add(device + ":ollama")
         # The agent clears llama.cpp's list when it is not configured, so None means its folder was missing.
@@ -284,6 +290,11 @@ def _unreachable_runtimes(db):
                 hidden.add(device + ":lmstudio")
         except (TypeError, ValueError, AttributeError):
             pass
+        try:
+            if unsloth and json.loads(unsloth).get("status") != "connected":
+                hidden.add(device + ":unsloth")
+        except (TypeError, ValueError, AttributeError):
+            hidden.add(device + ":unsloth")
     return hidden
 
 def authorize(value):
@@ -316,6 +327,7 @@ def heartbeat(payload: Heartbeat, x_modelharbor_token: str | None = Header(defau
             lemonade = payload.lemonade and payload.lemonade.model_dump_json()
             lmstudio = payload.lmstudio and payload.lmstudio.model_dump_json()
             ollama = payload.ollama and payload.ollama.model_dump_json()
+            unsloth = payload.unsloth and payload.unsloth.model_dump_json()
             db.execute("""INSERT INTO agent_heartbeats (device,last_seen,comfyui_count,ollama_count,lemonade_count,lemonade,hardware,lmstudio_count,lmstudio,llamacpp_count,ollama)
                 VALUES (?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(device) DO UPDATE SET last_seen=excluded.last_seen,
                 ollama=COALESCE(excluded.ollama,agent_heartbeats.ollama),
@@ -328,6 +340,9 @@ def heartbeat(payload: Heartbeat, x_modelharbor_token: str | None = Header(defau
                 llamacpp_count=excluded.llamacpp_count""",
                 (payload.device, int(time.time()), payload.comfyui_count, payload.ollama_count,
                  payload.lemonade_count, lemonade, hardware, payload.lmstudio_count, lmstudio, payload.llamacpp_count, ollama))
+            if payload.unsloth is not None:
+                db.execute("UPDATE agent_heartbeats SET unsloth_count=?,unsloth=? WHERE device=?",
+                           (payload.unsloth_count, unsloth, payload.device))
     return {"ok": True}
 
 @app.get("/api/agents")
@@ -336,7 +351,7 @@ def agents(x_modelharbor_token: str | None = Header(default=None)):
     with closing(connect()) as db:
         rows = db.execute("""SELECT h.device,h.last_seen,h.comfyui_count,h.ollama_count,
             s.phase,s.done,s.total,s.done_bytes,s.total_bytes,s.current,s.message,s.started_at,s.updated_at,
-            s.worker_seen,s.scan_requested_at,h.hardware,h.lemonade_count,h.lemonade,h.lmstudio_count,h.lmstudio,h.llamacpp_count
+            s.worker_seen,s.scan_requested_at,h.hardware,h.lemonade_count,h.lemonade,h.lmstudio_count,h.lmstudio,h.llamacpp_count,h.unsloth_count,h.unsloth
             FROM agent_heartbeats h LEFT JOIN agent_status s ON s.device=h.device ORDER BY h.device""").fetchall()
     now = int(time.time())
     result = []
@@ -348,6 +363,7 @@ def agents(x_modelharbor_token: str | None = Header(default=None)):
             "comfyui_count": r[2], "ollama_count": r[3], "lemonade_count": r[16],
             "lemonade": json.loads(r[17]) if r[17] else None, "status": status,
             "lmstudio_count": r[18], "lmstudio": json.loads(r[19]) if r[19] else None, "llamacpp_count": r[20],
+            "unsloth_count": r[21], "unsloth": json.loads(r[22]) if r[22] else None,
             # The worker polls every ~20 s, so two minutes of silence means it is not running.
             "worker_running": now - worker_seen <= 120, "worker_seen": worker_seen or None,
             "scan_requested": bool(r[14]), "hardware": json.loads(r[15]) if r[15] else None})
@@ -369,7 +385,7 @@ def remove_agent(device: str, x_modelharbor_token: str | None = Header(default=N
             if int(time.time()) - max(row) <= 3900:
                 raise HTTPException(409, "This device is online. Stop its agent before removing it.")
             sources = (device, *(device + ":" + runtime for runtime in
-                                ("comfyui", "ollama", "lemonade", "lmstudio", "llamacpp")))
+                                ("comfyui", "ollama", "lemonade", "lmstudio", "llamacpp", "unsloth")))
             placeholders = ",".join("?" for _ in sources)
             removed = db.execute(f"DELETE FROM models WHERE device IN ({placeholders})", sources).rowcount
             for table in ("selected_matches", "hash_jobs"):
@@ -395,9 +411,12 @@ def _runtime_hardware(db, agent):
     Lemonade and LM Studio report their own hardware, which may be another PC's."""
     hw = _hardware(db, agent)
     ollama = _hardware(db, agent, "ollama")
+    unsloth = _hardware(db, agent, "unsloth")
+    if not unsloth or unsloth.get("status") != "connected" or not (unsloth.get("vram_bytes") or unsloth.get("ram_bytes")):
+        unsloth = None
     # Ollama on another machine (ollama_url): its hardware is unknown, so its files go unrated.
     return {"llamacpp": hw, "ollama": None if ollama and ollama.get("local") is False else hw, "lemonade": _hardware(db, agent, "lemonade"),
-            "lmstudio": _hardware(db, agent, "lmstudio")}
+            "lmstudio": _hardware(db, agent, "lmstudio"), "unsloth": unsloth}
 
 class AgentStatus(BaseModel):
     device: str = Field(min_length=1, max_length=100)
@@ -838,7 +857,7 @@ def inspect_ollama(model: str, x_modelharbor_token: str | None = Header(default=
 class NewDownload(BaseModel):
     ollama_model: str | None = Field(default=None, max_length=512)
     agent: str = Field(min_length=1, max_length=100)
-    provider: str = Field(pattern=r"^(civitai|huggingface|modelscope|ollama|lemonade|lmstudio|llamacpp)$")
+    provider: str = Field(pattern=r"^(civitai|huggingface|modelscope|ollama|lemonade|lmstudio|llamacpp|unsloth)$")
     model_id: int | None = Field(default=None, ge=1)
     version_id: int | None = Field(default=None, ge=1)
     file_id: int | None = Field(default=None, ge=1)
@@ -858,7 +877,7 @@ def new_download(payload: NewDownload, x_modelharbor_token: str | None = Header(
         with closing(connect()) as db:
             with db:
                 return downloads.create_ollama_pull(db, payload.agent, name)
-    if payload.provider in ("ollama", "lemonade", "lmstudio", "llamacpp"):  # a Hugging Face GGUF for the PC's LLM server
+    if payload.provider in ("ollama", "lemonade", "lmstudio", "llamacpp", "unsloth"):  # a Hugging Face GGUF for the PC's LLM server
         repo = validate_repo(payload.repository or "")
         files = list_model_files(repo)["files"]
         if not any(f["path"] == payload.remote_path for f in files):
@@ -879,6 +898,8 @@ def new_download(payload: NewDownload, x_modelharbor_token: str | None = Header(
                     return downloads.create_lemonade(db, payload.agent, repo, payload.remote_path, size)
                 if payload.provider == "lmstudio":
                     return downloads.create_lmstudio(db, payload.agent, repo, payload.remote_path, files)
+                if payload.provider == "unsloth":
+                    return downloads.create_unsloth(db, payload.agent, repo, payload.remote_path, files)
                 return downloads.create_ollama(db, payload.agent, repo, payload.remote_path)
     if payload.provider == "civitai":
         try:

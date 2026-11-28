@@ -9,6 +9,8 @@
   "lemonade_load_after_pull": true,
   "lmstudio_enabled": false,
   "lmstudio_url": "http://127.0.0.1:1234",
+  "unsloth_enabled": false,
+  "unsloth_url": "http://127.0.0.1:8888",
   "llamacpp_models_dir": "",
   "llamacpp_restart_command": ["docker", "restart", "llama-cpp"],
   "llamacpp_url": "http://127.0.0.1:8080",

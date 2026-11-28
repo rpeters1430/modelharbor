@@ -6,6 +6,42 @@ from backend.app.main import app
 def test_health():
     assert TestClient(app).get("/api/health").json() == {"status": "ok"}
 
+def test_unsloth_heartbeat_reports_connection_and_hides_offline_inventory(tmp_path, monkeypatch):
+    from backend.app import main
+    monkeypatch.setattr(main, "DB", tmp_path / "unsloth.sqlite3")
+    client, headers = TestClient(app), {"X-ModelHarbor-Token": "test-token"}
+    model = {"device": "pc:unsloth", "path": "unsloth://cached-gguf/a/b", "name": "a/b", "kind": "unsloth/gguf", "size_bytes": 1, "modified_ns": 0}
+    assert client.post('/api/inventory', headers=headers, json={'device': model['device'], 'models': [model]}).status_code == 200
+    beat = {'device': 'pc', 'comfyui_count': 0, 'unsloth_count': 1, 'unsloth': {'status': 'connected', 'host': 'localhost'}}
+    assert client.post('/api/agents/heartbeat', headers=headers, json=beat).status_code == 200
+    agent = client.get('/api/agents', headers=headers).json()[0]
+    assert agent['unsloth_count'] == 1 and agent['unsloth']['status'] == 'connected'
+    assert len(client.get('/api/models', headers=headers).json()) == 1
+    client.post('/api/agents/heartbeat', headers=headers, json={**beat, 'unsloth_count': None, 'unsloth': {'status': 'unavailable'}})
+    assert client.get('/api/models', headers=headers).json() == []
+
+def test_unsloth_delete_job_uses_inventoried_cache_reference(tmp_path, monkeypatch):
+    from backend.app import main
+    monkeypatch.setattr(main, 'DB', tmp_path / 'unsloth-delete.sqlite3')
+    client, headers = TestClient(app), {'X-ModelHarbor-Token': 'test-token'}
+    model = {'device': 'pc:unsloth', 'path': 'unsloth://cached-gguf/a/b', 'name': 'a/b', 'kind': 'unsloth/gguf', 'size_bytes': 1, 'modified_ns': 0,
+             'runtime_meta': {'repo_id': 'a/b', 'cache_path': 'ref:abc'}}
+    client.post('/api/inventory', headers=headers, json={'device': model['device'], 'models': [model]})
+    response = client.post('/api/models/delete', headers=headers, json={'device': model['device'], 'path': model['path']})
+    assert response.status_code == 202
+    job = client.get('/api/deletes/next?agent=pc', headers=headers).json()['job']
+    assert job['device'] == 'pc:unsloth' and job['runtime_meta']['cache_path'] == 'ref:abc'
+
+def test_unsloth_download_queues_selected_repository_file(tmp_path, monkeypatch):
+    from backend.app import main
+    monkeypatch.setattr(main, 'DB', tmp_path / 'unsloth-download.sqlite3')
+    monkeypatch.setattr(main, 'list_model_files', lambda repo: {'files': [{'path': 'model-Q4_K_M.gguf', 'size_bytes': 42}]})
+    client, headers = TestClient(app), {'X-ModelHarbor-Token': 'test-token'}
+    response = client.post('/api/downloads/new', headers=headers, json={'agent': 'pc', 'provider': 'unsloth', 'repository': 'a/b', 'remote_path': 'model-Q4_K_M.gguf'})
+    assert response.status_code == 202
+    job = client.get('/api/downloads/next?agent=pc', headers=headers).json()['job']
+    assert job['provider'] == 'unsloth' and job['url'] == 'a/b' and job['file_name'] == 'model-Q4_K_M.gguf'
+
 def test_auth_required():
     assert TestClient(app).get("/api/models").status_code == 401
 

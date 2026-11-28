@@ -230,11 +230,11 @@ async function browseRepository(){
 $("repo-browse").addEventListener("click",browseRepository);
 $("repo-filter").addEventListener("input",displayRepoFiles);
 // LLM server models have no hash; they are linked by name and size instead.
-const isLlmServer=m=>m.kind.startsWith("lemonade/")||m.kind.startsWith("lmstudio/");
+const isLlmServer=m=>m.kind.startsWith("lemonade/")||m.kind.startsWith("lmstudio/")||m.kind.startsWith("unsloth/");
 const isUnmatched=m=>(!!m.sha256||isLlmServer(m))&&!m.source&&!m.hard_link&&!m.kind.startsWith("ollama/")&&!m.match_ignored;
 function modelRow(m){const b=text("button","", "model");b.type="button";b.append(text("span","◈","glyph"));const info=text("span","","model-text");info.append(text("div",m.name,"model-name"),text("div",m.kind+" · "+m.device+" · "+fmt(m.size_bytes)+(m.possible_duplicate?(m.duplicate_verified?" · Duplicate":" · Possible duplicate"):"")+(m.hard_link?(isLlmServer(m)?" · Alias":" · Hard link"):"")+(m.source?" · ✓ "+providerName(m.source.provider):"")+(m.update?" · ⬆ Update":"")+(isUnmatched(m)?" · Unmatched":"")+(m.match_ignored?" · Local only":""),"model-sub"));b.append(info,text("span","›","chevron"));b.addEventListener("click",()=>details(m));return b;}
 function fill(target,items,empty){target.replaceChildren();if(!items.length)target.append(text("p",empty,"muted"));else items.forEach(m=>target.append(modelRow(m)));}
-const providerName=p=>({civitai:"Civitai",huggingface:"Hugging Face",modelscope:"ModelScope",ollama:"Ollama",lemonade:"Lemonade",lmstudio:"LM Studio",llamacpp:"llama.cpp"})[p]||p;
+const providerName=p=>({civitai:"Civitai",huggingface:"Hugging Face",modelscope:"ModelScope",ollama:"Ollama",lemonade:"Lemonade",lmstudio:"LM Studio",llamacpp:"llama.cpp",unsloth:"Unsloth"})[p]||p;
 function linkRow(dl,label,caption,url){const a=document.createElement("a");a.href=url;a.target="_blank";a.rel="noopener noreferrer";a.textContent=caption;const dd=document.createElement("dd");dd.append(a);dl.append(text("dt",label),dd);}
 function downloadStatus(j){
  if(!j)return "Saved next to the current file. Once its SHA-256 matches the published file, the old version is deleted.";
@@ -252,6 +252,19 @@ function downloadStatus(j){
 }
 function renderDelete(m){
  const box=$("delete-box");box.replaceChildren();
+ if(m.device.endsWith(":unsloth")){
+  if(!m.runtime_meta?.cache_path){box.append(text("p","Unsloth did not identify the cache copy. Delete this model in Unsloth Studio.","muted"));return;}
+  const b=text("button","Delete from Unsloth…","repo-action danger"),status=text("p","","muted");b.type="button";box.append(b,status);
+  b.addEventListener("click",async()=>{
+   if(!confirm("Permanently delete "+m.name+" from this Unsloth cache?\n\nThis repository may be shared with other applications. This cannot be undone."))return;
+   b.disabled=true;
+   try{let job=await apiRequest("/api/models/delete","POST",{device:m.device,path:m.path});
+    while(job.state==="queued"||job.state==="running"){status.textContent="Waiting for Unsloth to delete the cached repository…";await new Promise(r=>setTimeout(r,3000));job=await apiRequest("/api/deletes/"+encodeURIComponent(job.id));}
+    if(job.state==="failed"){status.textContent="Not deleted: "+job.error;b.disabled=false;return;}
+    $("detail-dialog").close();await refresh();showNotice("Deleted "+m.name+" from Unsloth");
+   }catch(err){status.textContent=err.message;b.disabled=false;}
+  });return;
+ }
  if(!/:(comfyui|llamacpp)$/.test(m.device)||!m.sha256)return;
  const pc=m.device.replace(/:(comfyui|llamacpp)$/,""),links=m.file_id?models.filter(x=>x.device===m.device&&x.file_id===m.file_id):[m];
  const b=text("button","Delete from "+pc+"…","repo-action danger");b.type="button";const status=text("p","","muted");box.append(b,status);
@@ -565,7 +578,8 @@ function renderAgents(){
   card.append(text("div",agentStatusText(a),"agent-status"+(s&&s.phase==="error"?" agent-error":"")));
   if(s&&s.phase==="hashing"&&s.total_bytes){const bar=text("div","","bar");const inner=text("span");inner.style.width=Math.min(100,s.done_bytes/s.total_bytes*100)+"%";bar.append(inner);card.append(bar);}
   if(a.hardware)card.append(text("div",[a.hardware.gpu,a.hardware.vram_bytes?Math.round(a.hardware.vram_bytes/2**30)+" GB VRAM":"",a.hardware.ram_bytes?Math.round(a.hardware.ram_bytes/2**30)+" GB RAM":""].filter(Boolean).join(" · "),"model-sub"));
-  card.append(text("div","ComfyUI: "+a.comfyui_count+(a.ollama_count!=null?" · Ollama: "+a.ollama_count:"")+(a.lemonade_count!=null?" · Lemonade: "+a.lemonade_count:"")+(a.lmstudio?.status==="connected"?" · LM Studio: "+a.lmstudio_count:"")+(a.llamacpp_count!=null?" · llama.cpp: "+a.llamacpp_count:"")+" · last full sync "+ago(a.last_seen),"model-sub"));
+  card.append(text("div","ComfyUI: "+a.comfyui_count+(a.ollama_count!=null?" · Ollama: "+a.ollama_count:"")+(a.lemonade_count!=null?" · Lemonade: "+a.lemonade_count:"")+(a.lmstudio?.status==="connected"?" · LM Studio: "+a.lmstudio_count:"")+(a.unsloth?.status==="connected"?" · Unsloth: "+a.unsloth_count:"")+(a.llamacpp_count!=null?" · llama.cpp: "+a.llamacpp_count:"")+" · last full sync "+ago(a.last_seen),"model-sub"));
+  if(a.unsloth?.status==="unavailable")card.append(text("div","Unsloth unavailable: "+(a.unsloth.error||"check the server and API key"),"model-sub"));
   const lm=a.lmstudio;
   if(lm?.status==="connected")card.append(text("div","LM Studio · "+(lm.status||"unknown")+(lm.host?" ("+lm.host+")":"")+(lm.error?" · "+lm.error:"")+([lm.gpu,lm.vram_bytes?Math.round(lm.vram_bytes/2**30)+" GB VRAM":"",lm.ram_bytes?Math.round(lm.ram_bytes/2**30)+" GB RAM":""].filter(Boolean).length?" · "+[lm.gpu,lm.vram_bytes?Math.round(lm.vram_bytes/2**30)+" GB VRAM":"",lm.ram_bytes?Math.round(lm.ram_bytes/2**30)+" GB RAM":""].filter(Boolean).join(" · "):""),"model-sub"));
   const lem=a.lemonade;
@@ -608,12 +622,14 @@ function newDownloadStatus(j){
  if(j.state==="done"&&j.provider.startsWith("llamacpp-"))return "✓ llama.cpp "+j.provider.slice("llamacpp-".length)+" request finished";
  if(j.state==="running"&&j.provider.startsWith("lmstudio-"))return "LM Studio is processing a "+j.provider.slice("lmstudio-".length)+" request…";
  if(j.state==="running"&&j.provider==="lmstudio")return "LM Studio is downloading "+(j.bytes_done?fmt(j.bytes_done)+(j.size_bytes?" of "+fmt(j.size_bytes):"")+" ":"")+j.file_name+"…";
+ if(j.state==="running"&&j.provider==="unsloth")return "Unsloth is downloading "+(j.bytes_done?fmt(j.bytes_done)+(j.size_bytes?" of "+fmt(j.size_bytes):"")+" ":"")+j.file_name+"…";
  if(j.state==="running"&&j.provider==="lemonade")return "Lemonade is downloading "+(j.bytes_done?fmt(j.bytes_done)+(j.size_bytes?" of "+fmt(j.size_bytes):"")+" ":"")+"then loading "+j.file_name+"…";
  if(j.state==="running")return "Downloading "+fmt(j.bytes_done)+(j.size_bytes?" of "+fmt(j.size_bytes):"")+"…";
  if(j.state==="done"&&j.provider==="ollama")return "✓ In Ollama as "+j.file_name;
  if(j.state==="done"&&j.provider==="lemonade")return "✓ In Lemonade as "+j.file_name;
  if(j.state==="done"&&j.provider==="llamacpp")return "✓ Verified and in llama.cpp as "+j.file_name.replace(/\.gguf$/i,"");
  if(j.state==="done"&&j.provider==="lmstudio")return "✓ Downloaded by LM Studio (not hash verified)";
+ if(j.state==="done"&&j.provider==="unsloth")return "✓ Downloaded by Unsloth (not hash verified)";
  if(j.state==="done"&&j.provider.startsWith("lmstudio-"))return "✓ LM Studio "+j.provider.slice("lmstudio-".length)+" request finished";
  if(j.state==="done")return "✓ Downloaded and verified: "+shortPath(j.result_path);
  return "Download failed: "+(j.error||"unknown error");
@@ -635,7 +651,7 @@ function lemonadeModelName(repository,path){
 }
 // llama.cpp lists each GGUF in its models folder by file name (mirrors downloads.create_llamacpp).
 const llamacppModelName=(repository,path)=>(path||"").split("/").pop();
-const LLM_SERVERS={llamacpp:{label:"llama.cpp",name:llamacppModelName},ollama:{label:"Ollama",name:ollamaModelName},lemonade:{label:"Lemonade",name:lemonadeModelName},lmstudio:{label:"LM Studio",name:(repo,path)=>"lmstudio:"+repo+":"+lmstudioQuant(path)}};
+const LLM_SERVERS={llamacpp:{label:"llama.cpp",name:llamacppModelName},ollama:{label:"Ollama",name:ollamaModelName},lemonade:{label:"Lemonade",name:lemonadeModelName},lmstudio:{label:"LM Studio",name:(repo,path)=>"lmstudio:"+repo+":"+lmstudioQuant(path)},unsloth:{label:"Unsloth",name:(repo,path)=>repo+":"+path}};
 // The context length LLM files are rated for (fit.rate_llm); remembered per browser.
 const CONTEXTS=[4096,8192,16384,32768,65536,131072,262144];
 let llmContext=8192;
@@ -659,7 +675,7 @@ function contextRow(shape,onChange){
  return row;
 }
 // An LLM server that runs on another PC (Lemonade, LM Studio) is rated for that PC, the rest for the agent's.
-const runtimePc=p=>p==="lemonade"||p==="lmstudio"?"the "+LLM_SERVERS[p].label+" PC":"your PC";
+const runtimePc=p=>["lemonade","lmstudio","unsloth"].includes(p)?"the "+LLM_SERVERS[p].label+" PC":"your PC";
 // The LLM server the selected PC's agent can reach, in the order Browse prefers them.
 function preferredRuntime(f){
  const a=agents.find(x=>x.device===browseAgent()),rts=f.runtimes||{};
@@ -681,9 +697,11 @@ function fileRow(label,onPc,ref,request,f={},behavior={}){
  // LLM GGUFs are rated against the selected runtime PC when its hardware is known.
  const fitSpan=text("span","","fit");fitSpan.hidden=true;row.append(fitSpan);
  const hintSpan=text("span","","runtime-hint");hintSpan.hidden=true;row.append(hintSpan);
+ const compatibility=text("span","","model-sub");row.append(compatibility);
  const paintFit=()=>{
   if(typeof label==="function")labelSpan.textContent=label();
   const p=request.provider,server=LLM_SERVERS[p],rt=f.runtimes&&f.runtimes[p];
+  compatibility.textContent=server?(allowed()?"Format eligible for "+server.label+"; architecture support is unverified"+(rt?.fit?"; memory fit is estimated":"; memory fit unknown"):"Not importable by "+server.label):"";
   const legacy=p==="lmstudio"?[f.lmstudio_fit,f.lmstudio_best]:p==="lemonade"?[f.llm_fit,f.llm_best]:server?[null,false]:[f.fit,f.best];
   const fit=rt?rt.fit:legacy[0],best=rt?rt.best:legacy[1];
   const hint=runtimeHint(f,p);hintSpan.hidden=!hint;
@@ -700,7 +718,7 @@ function fileRow(label,onPc,ref,request,f={},behavior={}){
  const show=j=>{
   if(!j){status.textContent="";button.hidden=false;return;}
   status.textContent=newDownloadStatus(j);button.hidden=j.state!=="failed";button.textContent=j.state==="failed"?"Retry download":"Download";
-  if(j&&j.state==="done"&&j.provider==="lmstudio")refresh();
+  if(j&&j.state==="done"&&(j.provider==="lmstudio"||j.provider==="unsloth"))refresh();
   if((j.state==="queued"||j.state==="running")&&j.source_ref===currentRef())setTimeout(async()=>{
    if(view!=="browse"||j.source_ref!==currentRef())return;
    try{show((await apiRequest("/api/downloads")).find(x=>x.id===j.id));}catch(_){}
@@ -910,6 +928,8 @@ function hfInspectCard(data){
  const lmstudioFile=hasGguf&&data.files.some(f=>f.path.toLowerCase().endsWith(".gguf")&&lmstudioQuant(f.path));
  if(lmstudioFile&&agent&&agent.online&&agent.lmstudio&&agent.lmstudio.status==="connected"&&agent.lmstudio_count!=null)
   folderSelect.prepend(new Option("LM Studio (download GGUF)","lmstudio"));
+ if(hasGguf&&agent?.online&&agent.unsloth?.status==="connected")
+  folderSelect.prepend(new Option("Unsloth (download GGUF)","unsloth"));
  folderRow.append(folderSelect);
  // A language model has no ComfyUI folder; without a reachable LLM server there is nowhere to put it.
  if(isLlm&&!folderSelect.options.length){
@@ -923,11 +943,13 @@ function hfInspectCard(data){
  const hfRef=f=>llm()?(folderSelect.value==="lmstudio"?llm().name(data.repository,f.path):folderSelect.value+":"+llm().name(data.repository,f.path)):"huggingface:"+data.repository+"/"+f.path;
  const hfInstalled=f=>{
   if(!llm())return !!f.on_pc;
+  if(folderSelect.value==="unsloth")return false; // Repository inventory does not identify individual variants.
   const name=llm().name(data.repository,f.path).toLowerCase(),device=(browseAgent()||"")+":"+folderSelect.value;
   if(folderSelect.value==="lmstudio")return models.some(m=>m.device===device&&m.runtime_meta&&m.runtime_meta.model_key&&m.runtime_meta.model_key.toLowerCase().includes(data.repository.toLowerCase())&&String(m.runtime_meta.quantization&&m.runtime_meta.quantization.name||"").toUpperCase()===lmstudioQuant(f.path));
   return models.some(m=>m.device===device&&m.name.toLowerCase()===name);
  };
  const hfBehavior=f=>({destination:folderSelect,isAllowed:()=>{if(!llm())return true;const unique=data.files.filter(x=>x.path.split("/").pop().toLowerCase()===f.path.split("/").pop().toLowerCase()).length===1;return folderSelect.value==="lmstudio"?f.path.toLowerCase().endsWith(".gguf")&&!!lmstudioQuant(f.path)&&data.files.filter(x=>x.path.toLowerCase().endsWith(".gguf")&&lmstudioQuant(x.path)===lmstudioQuant(f.path)).length===1:isOllamaCompatiblePath(f.path)&&unique;}});
+ if(agent?.unsloth?.status==="connected")folderRow.append(text("span"," Compatibility is an estimate: format and memory fit do not guarantee architecture support.","model-sub"));
  const primaryBox=text("div","","primary-file-box");
  // The recommended file depends on where it goes: the best copy for ComfyUI, or the best GGUF for that
  // LLM server's PC (hf_inspect.recommend_primary). A file named in the link stays selected.
@@ -1258,7 +1280,7 @@ function renderDownloadTray(){
    fill.style.width=Math.min(100,(j.bytes_done/j.size_bytes)*100)+"%";bar.append(fill);row.append(bar);
    row.append(text("small",fmt(j.bytes_done)+" / "+fmt(j.size_bytes),"model-sub"));
   }else if(j.state==="done"){
-   row.append(text("small",j.provider==="lmstudio"?"✓ Downloaded by LM Studio (not hash verified)":j.provider.startsWith("lmstudio-")?"✓ LM Studio "+j.provider.slice("lmstudio-".length)+" request finished":"✓ Verified & saved: "+shortPath(j.result_path),"model-sub"));
+   row.append(text("small",j.provider==="lmstudio"?"✓ Downloaded by LM Studio (not hash verified)":j.provider==="unsloth"?"✓ Downloaded by Unsloth (not hash verified)":j.provider.startsWith("lmstudio-")?"✓ LM Studio "+j.provider.slice("lmstudio-".length)+" request finished":"✓ Verified & saved: "+shortPath(j.result_path),"model-sub"));
   }else if(j.state==="failed"){
    row.append(text("small","✗ "+(j.error||"failed"),"model-sub"));
   }

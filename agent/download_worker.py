@@ -9,6 +9,7 @@ from pathlib import Path
 from urllib.parse import urlsplit
 import requests
 import llamacpp_scan
+import unsloth_scan
 from hash_worker import allowed_file
 from hash_cache import sha256_file
 from lemonade_scan import DEFAULT_URL as LEMONADE_URL, auth_headers as lemonade_headers
@@ -316,7 +317,7 @@ def download_llamacpp(session, job, models_dir, restart_command, report_progress
 
 def process_one(session, server, token, agent, roots, ollama_url, lemonade_url=LEMONADE_URL, lemonade_load=True,
                 lmstudio_url="http://127.0.0.1:1234", llamacpp_dir=None, llamacpp_restart=None,
-                llamacpp_url=llamacpp_scan.DEFAULT_URL):
+                llamacpp_url=llamacpp_scan.DEFAULT_URL, unsloth_url="http://127.0.0.1:8888", unsloth_enabled=False):
     headers = {"X-ModelHarbor-Token": token}
     base = server.rstrip("/") + "/api/downloads/"
     res = session.get(base + "next", params={"agent": agent}, headers=headers, timeout=20)
@@ -340,6 +341,12 @@ def process_one(session, server, token, agent, roots, ollama_url, lemonade_url=L
                 session, lemonade_url, job, report_progress, lemonade_load)
         elif job["provider"] == "lmstudio":
             result["sha256"], result["result_path"] = pull_lmstudio(session, lmstudio_url, job, report_progress)
+        elif job["provider"] == "unsloth":
+            if not unsloth_enabled:
+                raise ValueError("Unsloth is disabled in the agent configuration")
+            unsloth_scan.download(session, unsloth_url, job["url"], job["file_name"], report_progress,
+                                  job.get("runtime_job_id"), expected_bytes=job.get("size_bytes"))
+            result["result_path"] = "unsloth://" + job["url"]
         elif job["provider"] in ("lmstudio-load", "lmstudio-unload"):
             result["sha256"], result["result_path"] = run_lmstudio_action(session, lmstudio_url, job)
         elif job["provider"] in ("llamacpp-load", "llamacpp-unload"):
@@ -388,7 +395,7 @@ def delete_files(job, roots, hasher=sha256_file):
             if side.is_file() and not side.is_symlink():
                 side.unlink()
 
-def process_delete(session, server, token, agent, roots, llamacpp_dir=None, llamacpp_restart=None):
+def process_delete(session, server, token, agent, roots, llamacpp_dir=None, llamacpp_restart=None, unsloth_url="http://127.0.0.1:8888", unsloth_enabled=False):
     headers = {"X-ModelHarbor-Token": token}
     base = server.rstrip("/") + "/api/deletes/"
     res = session.get(base + "next", params={"agent": agent}, headers=headers, timeout=20)
@@ -399,8 +406,13 @@ def process_delete(session, server, token, agent, roots, llamacpp_dir=None, llam
     error = None
     llama_root = Path(llamacpp_dir).resolve() if llamacpp_dir else None
     try:
-        delete_files(job, list(roots) + ([str(llama_root)] if llama_root else []))
-    except (OSError, ValueError) as exc:
+        if job.get("device", "").endswith(":unsloth"):
+            if not unsloth_enabled:
+                raise ValueError("Unsloth is disabled in the agent configuration")
+            unsloth_scan.delete_cached(session, unsloth_url, job.get("runtime_meta") or {})
+        else:
+            delete_files(job, list(roots) + ([str(llama_root)] if llama_root else []))
+    except (OSError, ValueError, requests.RequestException) as exc:
         error = str(exc)[:300]
     # llama-server only reads its folder at start, so it would keep offering the deleted model.
     if not error and llama_root and any(Path(p).resolve().parent == llama_root for p in job["paths"]):

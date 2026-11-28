@@ -1,5 +1,7 @@
 # ModelHarbor
 
+Unsloth Desktop and Studio setup is documented in [docs/UNSLOTH.md](docs/UNSLOTH.md).
+
 Self-hosted, mobile-friendly AI model inventory and management dashboard for **ComfyUI**, **llama.cpp**, **Ollama**, **Lemonade Server** and **LM Studio**. Designed for a lightweight Docker deployment on NAS hardware, with an inventory agent for Windows and Linux PCs.
 
 ## Features
