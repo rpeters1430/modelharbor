@@ -197,7 +197,7 @@ IQUANT = re.compile(r"(?<![a-z0-9])(iq[1-4]_(?:xxs|xs|s|m|nl)|tq[12]_0)(?![a-z0-
 UNSLOTH_DYNAMIC = re.compile(r"(?<![a-z0-9])ud[-_]", re.I)
 STANDARD_QUANT = re.compile(r"(?<![a-z0-9])(q[2-6]_k(?:_[sml])?|q[458]_[01])(?![a-z0-9])", re.I)
 MOE = re.compile(r"(?<![a-z0-9])(a\d+(?:\.\d+)?b|moe|mixtral|gpt-oss|\d+x\d+b)(?![a-z0-9])", re.I)
-RUNTIME_LABELS = {"llamacpp": "llama.cpp", "ollama": "Ollama", "lemonade": "Lemonade", "lmstudio": "LM Studio"}
+RUNTIME_LABELS = {"llamacpp": "llama.cpp", "ollama": "Ollama", "lemonade": "Lemonade", "lmstudio": "LM Studio", "unsloth": "Unsloth"}
 
 
 def importable_gguf(name):

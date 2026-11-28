@@ -6,6 +6,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "agent"))
 import modelharbor_agent as agent
+import download_worker
 
 
 def test_lanes_split_long_jobs_from_quick_ones(monkeypatch):
@@ -18,6 +19,20 @@ def test_lanes_split_long_jobs_from_quick_ones(monkeypatch):
                               "converts_enabled": False, "deletes_enabled": False}, "t")
     assert {name: [label for label, _ in steps] for name, steps in off.items()} == {
         "scan": ["Scan request"], "hashes": ["Hash job"]}
+
+
+def test_disabled_unsloth_delete_job_is_failed_without_contacting_server():
+    class Response:
+        def raise_for_status(self): pass
+        def json(self): return {'job': {'id': '1', 'device': 'pc:unsloth', 'paths': ['unsloth://repo'], 'runtime_meta': {}}}
+    class Session:
+        def __init__(self): self.result = None
+        def get(self, *args, **kwargs): return Response()
+        def post(self, url, **kwargs): self.result = kwargs['json']; return Response()
+        def delete(self, *args, **kwargs): raise AssertionError('Unsloth must not be contacted')
+    session = Session()
+    assert download_worker.process_delete(session, 'http://nas', 'token', 'pc', [])
+    assert 'disabled' in session.result['error']
 
 
 def test_lane_drains_its_queue_and_survives_errors():

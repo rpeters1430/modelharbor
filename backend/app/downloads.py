@@ -178,7 +178,7 @@ def request_cleanup(db, job_id):
     if not row:
         raise HTTPException(404, "Unknown download")
     device, path, provider, state, result_path, cleanup = row
-    if provider in ("ollama", "lemonade", "lmstudio", "lmstudio-load", "lmstudio-unload", "llamacpp-load", "llamacpp-unload"):
+    if provider in ("ollama", "lemonade", "lmstudio", "unsloth", "lmstudio-load", "lmstudio-unload", "llamacpp-load", "llamacpp-unload"):
         raise HTTPException(409, "The LLM server manages its own model files")
     if state != "done" or not result_path:
         raise HTTPException(409, "The new version must finish downloading and pass its hash check first")
@@ -351,6 +351,23 @@ def create_lmstudio(db, agent, repo, remote_path, files):
         VALUES (?,?,?,'','lmstudio',?,?,?,'queued',?,?,?)""",
         (job_id, agent, agent + ":lmstudio", "https://huggingface.co/" + quote(repo, safe="/"), quantization,
          same_quant[0].get("size_bytes"), now, now, source_ref))
+    return dict(zip(FIELDS, db.execute(f"SELECT {','.join(FIELDS)} FROM download_jobs WHERE id=?", (job_id,)).fetchone()))
+
+
+def create_unsloth(db, agent, repo, remote_path, files):
+    _single_gguf(remote_path, "Unsloth")
+    matches = [f for f in files if f.get("path") == remote_path]
+    if len(matches) != 1:
+        raise HTTPException(404, "File not found in that Hugging Face repository")
+    source_ref = f"unsloth:{repo}:{remote_path}"
+    existing = db.execute(f"SELECT {','.join(FIELDS)} FROM download_jobs WHERE source_ref=? AND agent=? AND state IN (?,?)",
+                          (source_ref, agent, *ACTIVE)).fetchone()
+    if existing:
+        return dict(zip(FIELDS, existing))
+    now, job_id = int(time.time()), uuid.uuid4().hex
+    db.execute("""INSERT INTO download_jobs (id,agent,device,path,provider,url,file_name,size_bytes,state,created_at,updated_at,source_ref)
+        VALUES (?,?,?,'','unsloth',?,?,?,'queued',?,?,?)""",
+        (job_id, agent, agent + ':unsloth', repo, remote_path, matches[0].get('size_bytes'), now, now, source_ref))
     return dict(zip(FIELDS, db.execute(f"SELECT {','.join(FIELDS)} FROM download_jobs WHERE id=?", (job_id,)).fetchone()))
 
 def create_lmstudio_action(db, agent, device, path, action, model_key, instance_id=None, context_length=None):

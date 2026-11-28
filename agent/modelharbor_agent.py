@@ -12,6 +12,7 @@ from scan import scan
 from ollama_scan import collect
 import lemonade_scan
 import lmstudio_scan
+import unsloth_scan
 import llamacpp_scan
 from hash_worker import process_one
 from hash_cache import fill_hashes
@@ -144,12 +145,25 @@ def run_once(cfg, token, dry_run=False, reporter=None, lock=None):
             except (requests.RequestException, ValueError) as exc:
                 lmstudio_info = {"status": "unavailable", "error": str(exc)[:250]}
                 LOG.warning("LM Studio unavailable; preserving previous inventory: %s", exc)
+        unsloth = None
+        unsloth_info = {"status": "disabled"}
+        if cfg.get("unsloth_enabled", False):
+            unsloth_url = cfg.get("unsloth_url", "http://127.0.0.1:8888")
+            try:
+                unsloth = unsloth_scan.collect(session, unsloth_url, device + ":unsloth")
+                unsloth_info = lmstudio_scan.endpoint_info(unsloth_url)
+                unsloth_info["status"] = "connected"
+                if unsloth_info.pop("local", False):
+                    unsloth_info.update(detect_hardware() or {})
+            except (requests.RequestException, ValueError) as exc:
+                unsloth_info = {"status": "unavailable", "error": "Could not connect to Unsloth; check URL and API key"}
+                LOG.warning("Unsloth unavailable; preserving previous inventory: %s", type(exc).__name__)
         LOG.info("Found %d ComfyUI models, %s Ollama models, %s Lemonade models and %s LM Studio models", len(comfy),
                  len(ollama) if ollama is not None else "unavailable", len(lemonade) if lemonade is not None else "unavailable",
                  len(lmstudio) if lmstudio is not None else "disabled or unavailable")
         if llama_dir:
             LOG.info("Found %s llama.cpp models", len(llamacpp) if llamacpp is not None else "unavailable")
-        llms = (ollama or []) + (lemonade or []) + (lmstudio or []) + (llamacpp or [])
+        llms = (ollama or []) + (lemonade or []) + (lmstudio or []) + (unsloth or []) + (llamacpp or [])
         if dry_run:
             for m in (comfy + llms)[:25]:
                 print(m["kind"], m["name"])
@@ -162,8 +176,8 @@ def run_once(cfg, token, dry_run=False, reporter=None, lock=None):
         else:
             LOG.warning("No ComfyUI roots discovered; set comfyui_models_dirs in config")
         # A runtime switched off in config is gone from this PC: clear its old inventory.
-        for runtime, found in (("ollama", ollama), ("lemonade", lemonade), ("lmstudio", lmstudio)):
-            if found is not None or not cfg.get(runtime + "_enabled", runtime != "lmstudio"):
+        for runtime, found in (("ollama", ollama), ("lemonade", lemonade), ("lmstudio", lmstudio), ("unsloth", unsloth)):
+            if found is not None or not cfg.get(runtime + "_enabled", runtime not in ("lmstudio", "unsloth")):
                 post_inventory(session, server, token, device + ":" + runtime, found or [])
         if llamacpp is not None:  # an empty list also clears it when llama.cpp is not configured
             post_inventory(session, server, token, device + ":llamacpp", llamacpp)
@@ -176,6 +190,8 @@ def run_once(cfg, token, dry_run=False, reporter=None, lock=None):
                   "lmstudio_count": len(lmstudio) if lmstudio is not None else 0 if not cfg.get("lmstudio_enabled", False) else None,
                   "lemonade": lemonade_info,
                   "lmstudio": lmstudio_info,
+                  "unsloth_count": len(unsloth) if unsloth is not None else None,
+                  "unsloth": unsloth_info,
                   "llamacpp_count": len(llamacpp) if llama_dir and llamacpp is not None else None,
                   "ollama": lmstudio_scan.endpoint_info(cfg.get("ollama_url", "http://127.0.0.1:11434")),
                   "hardware": detect_hardware()}, timeout=20)
@@ -183,6 +199,7 @@ def run_once(cfg, token, dry_run=False, reporter=None, lock=None):
         reporter.update("idle", done=len(comfy), total=len(comfy), message=f"Synced {len(comfy)} ComfyUI files"
                         + "".join(f", {len(found)} {label} models" for label, found in
                                   (("Ollama", ollama), ("Lemonade", lemonade), ("LM Studio", lmstudio),
+                                   ("Unsloth", unsloth),
                                    ("llama.cpp", llamacpp if llama_dir else None)) if found is not None))
 
 
@@ -222,7 +239,8 @@ def worker_lanes(cfg, token):
     if cfg.get("deletes_enabled", True):
         control.append(("Delete", lambda s: download_worker.process_delete(
             s, server, token, agent, roots, cfg.get("llamacpp_models_dir"),
-            cfg.get("llamacpp_restart_command", llamacpp_scan.DEFAULT_RESTART))))
+            cfg.get("llamacpp_restart_command", llamacpp_scan.DEFAULT_RESTART),
+            cfg.get("unsloth_url", "http://127.0.0.1:8888"), cfg.get("unsloth_enabled", False))))
     if cfg.get("downloads_enabled", True):
         control.append(("Cleanup", lambda s: download_worker.process_cleanup(s, server, token, agent, roots)))
     lanes = {"scan": [("Scan request", scan_request)],
@@ -235,7 +253,8 @@ def worker_lanes(cfg, token):
             cfg.get("lemonade_url", lemonade_scan.DEFAULT_URL), cfg.get("lemonade_load_after_pull", True),
             cfg.get("lmstudio_url", "http://127.0.0.1:1234"), cfg.get("llamacpp_models_dir"),
             cfg.get("llamacpp_restart_command", llamacpp_scan.DEFAULT_RESTART),
-            cfg.get("llamacpp_url", llamacpp_scan.DEFAULT_URL)))]
+            cfg.get("llamacpp_url", llamacpp_scan.DEFAULT_URL), cfg.get("unsloth_url", "http://127.0.0.1:8888"),
+            cfg.get("unsloth_enabled", False)))]
     if cfg.get("converts_enabled", True):
         lanes["converts"] = [("Conversion", lambda s: convert_worker.process_convert(s, server, token, agent, roots, cfg))]
     return lanes
